@@ -37,6 +37,20 @@ type Upstream struct {
 	// upstream nodes. Default false: forwarded traffic mostly targets
 	// internal servers whose certificates are private-CA, self-signed or
 	// awaiting renewal; opt in per site for strict end-to-end verification.
+	// SNIHost pins the upstream TLS handshake ServerName to a fixed hostname
+	// (connection-level, not per-request): every connection in the keep-alive
+	// pool negotiates the same SNI, so reuse across requests for different
+	// domains stays correct — unlike SNIForward, which forwards the TCP
+	// connection's SNI and mismatches when a connection established for
+	// domain A is reused by a request for domain B. Only meaningful for
+	// HTTPS upstream nodes (harmless on HTTP). Mutually exclusive with
+	// SNIForward. The upstream certificate must match this name unless
+	// VerifyTLS is disabled.
+	SNIHost string `json:"sni_host,omitempty"`
+	// VerifyTLS enables strict upstream certificate verification for HTTPS
+	// upstream nodes. Default false: forwarded traffic mostly targets
+	// internal servers whose certificates are private-CA, self-signed or
+	// awaiting renewal; opt in per site for strict end-to-end verification.
 	VerifyTLS bool `json:"verify_tls,omitempty"`
 }
 
@@ -831,7 +845,45 @@ func validDomainEntry(s string) bool {
 
 // validateSite checks one site entry. The error carries the site index so
 // batch validation can report every failing site at once (see Validate).
+// Validate checks the upstream SNI options: sni_forward and sni_host are
+// mutually exclusive, and sni_host must be a bare hostname (no scheme,
+// port, path or whitespace — SNI carries a DNS name only).
+func (u *Upstream) Validate() error {
+	if u.SNIForward && u.SNIHost != "" {
+		return fmt.Errorf("upstream: sni_forward and sni_host are mutually exclusive")
+	}
+	if u.SNIHost != "" && !validSNIHostname(u.SNIHost) {
+		return fmt.Errorf("upstream: sni_host %q is not a valid hostname (bare DNS name only: no scheme, port, path or whitespace)", u.SNIHost)
+	}
+	return nil
+}
+
+// validSNIHostname reports whether s is a bare DNS hostname: letters,
+// digits, dot and hyphen only. Everything else — "https://" scheme,
+// host:port colons, path slashes, whitespace or full-width characters —
+// is rejected; SNI never carries a scheme, port or path.
+func validSNIHostname(s string) bool {
+	if s == "" || strings.TrimSpace(s) != s {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// ValidAlgorithms lists the supported load-balancing algorithms.
+
+
 func (c *Config) validateSite(i int, s *Site, groups map[string]bool) error {
+	if err := s.Upstream.Validate(); err != nil {
+		return fmt.Errorf("config: sites[%d]: %w", i, err)
+	}
 		if len(s.Domains) == 0 {
 			return fmt.Errorf("config: sites[%d].domains is empty", i)
 		}

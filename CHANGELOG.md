@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### 新增
+
+- **upstream `sni_host`（固定回源 SNI）**：HTTPS 上游可配置固定回源 SNI——回源 TLS 握手的 ServerName 使用该域名（连接级，连接复用安全），与 `sni_forward` 互斥；配置校验拒绝非法主机名与两者同设
+
+### 修复
+
+- **`sni_forward` 连接复用场景 SNI 错配**：SNI 转发转发的是 TCP 连接的 SNI 而非请求实际域名——keep-alive 连接被不同域名请求复用时，上游收到错配的 SNI/证书；需要固定回源身份的站点请改用 `sni_host`
+
+### 变更
+
+- **AI 数据源装配收拢为共享构建函数**（ai.NewCenterSources）：aiSources 由装配点内手写字面量改为统一调用，新增 DataSources 字段只改一处即可同步，配反射对称性测试防字段漏接（与主仓同构，跨仓同步不再冲突）
+
 ## v0.7.0-rc1 (2026-09-21)
 
 KingMoat WAF 社区版首个公开候选版本（木兰宽松许可证 Mulan PSL v2）。

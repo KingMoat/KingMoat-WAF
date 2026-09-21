@@ -60,7 +60,7 @@ const upstreamMaxIdleConnsPerHost = 100
 // variables, both wrong for a data-plane proxy. verifyTLS=false skips
 // upstream certificate verification (default: forwarded traffic targets
 // internal servers with private-CA/self-signed certificates).
-func newUpstreamTransport(verifyTLS bool) *http.Transport {
+func newUpstreamTransport(u config.Upstream) *http.Transport {
 	tr := &http.Transport{
 		// Upstream traffic is directed by site config and must bypass
 		// HTTP(S)_PROXY environment settings.
@@ -76,8 +76,14 @@ func newUpstreamTransport(verifyTLS bool) *http.Transport {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
-	if !verifyTLS {
+	if !u.VerifyTLS {
 		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // product default: internal upstreams, per-site opt-in
+	}
+	switch {
+	case u.SNIForward:
+		tr.DialTLSContext = sniForwardDial(u.VerifyTLS)
+	case u.SNIHost != "":
+		tr.DialTLSContext = sniHostDial(u.SNIHost, u.VerifyTLS)
 	}
 	return tr
 }
@@ -110,6 +116,41 @@ func sniForwardDial(verifyTLS bool) func(ctx context.Context, network, addr stri
 		return tc, nil
 	}
 }
+
+func sniHostDial(sniHost string, verifyTLS bool) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	d := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		name := sniHost
+		if name == "" {
+			if host, _, err := net.SplitHostPort(addr); err == nil {
+				name = host
+			} else {
+				name = addr
+			}
+		}
+		cfg := &tls.Config{ServerName: name, NextProtos: []string{"http/1.1"}, InsecureSkipVerify: !verifyTLS} //nolint:gosec // per-site opt-in
+		raw, err := d.DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		tc := tls.Client(raw, cfg)
+		if err := tc.HandshakeContext(ctx); err != nil {
+			_ = raw.Close()
+			return nil, err
+		}
+		return tc, nil
+	}
+}
+
+// buildRouter materializes sites, upstream pools, reverse proxies and
+// optional SNI certificates from the config. respFilter may be nil.
+//
+// prev (the router being replaced) enables incremental reloads: a site whose
+// configuration is byte-identical and whose certificate file did not change
+// adopts its existing pool/transport — live health probes, warm upstream
+// connections and in-flight connection counters survive untouched. The
+// ReverseProxy itself is always rebuilt so per-request closures (response
+// filter, observer) always see the current configuration.
 
 // buildRouter materializes sites, upstream pools, reverse proxies and
 // optional SNI certificates from the config. respFilter may be nil.
@@ -151,10 +192,7 @@ func buildRouter(cfg *config.Config, prev *SiteRouter, logger *slog.Logger, resp
 				router.Close()
 				return nil, fmt.Errorf("site router: site %d: %w", i, err)
 			}
-			tr = newUpstreamTransport(s.Upstream.VerifyTLS)
-			if s.Upstream.SNIForward {
-				tr.DialTLSContext = sniForwardDial(s.Upstream.VerifyTLS)
-			}
+			tr = newUpstreamTransport(s.Upstream)
 			if s.TLSCert != "" {
 				certPEM, err := os.ReadFile(s.TLSCert)
 				if err != nil {

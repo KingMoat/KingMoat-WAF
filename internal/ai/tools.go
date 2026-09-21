@@ -15,12 +15,9 @@ import (
 // sanitizer before leaving the process.
 type DataSources struct {
 	Version string
-	// Logs serves audit-event queries (ring + NDJSON history).
-	Logs interface {
-		Query(q logstore.LogQuery) ([]logstore.Event, error)
-		Aggregate(since, until time.Time) (*logstore.Summary, error)
-		Recent(n int) []logstore.Event
-	}
+	// Logs serves audit-event queries (ring + NDJSON history). Built via
+	// NewCenterSources so every assembly point stays field-complete.
+	Logs LogSource
 	// Current returns (revision, config-as-JSON).
 	Current func() (int64, json.RawMessage)
 	// Revisions returns up to limit revision metadata rows.

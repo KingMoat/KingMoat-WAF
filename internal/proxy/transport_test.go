@@ -10,10 +10,12 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/kingmoat/kingmoat/internal/config"
 )
 
 func TestUpstreamTransportTuning(t *testing.T) {
-	tr := newUpstreamTransport(false)
+	tr := newUpstreamTransport(config.Upstream{})
 	if tr.Proxy != nil {
 		t.Fatal("upstream transport must not inherit HTTP(S)_PROXY environment settings")
 	}

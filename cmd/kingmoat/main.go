@@ -9,7 +9,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -398,42 +397,10 @@ func main() {
 		if aiDB == "" {
 			aiDB = strings.TrimSuffix(*consoleDB, ".db") + "-ai.db"
 		}
-		aiSources := &ai.DataSources{
-			Version: version,
-			Logs:    auditStore,
-			Current: func() (int64, json.RawMessage) {
-				rev, c := center.Current()
-				b, merr := json.Marshal(c)
-				if merr != nil {
-					return rev, nil
-				}
-				return rev, b
-			},
-			Revisions: func(limit int) ([]ai.RevisionInfo, error) {
-				revs, rerr := center.Store().ListRevisions(limit)
-				if rerr != nil {
-					return nil, rerr
-				}
-				out := make([]ai.RevisionInfo, 0, len(revs))
-				for _, rv := range revs {
-					out = append(out, ai.RevisionInfo{ID: rv.ID, CreatedAt: rv.CreatedAt, Author: rv.Author, Note: rv.Note})
-				}
-				return out, nil
-			},
-			Stats: func() map[string]any { return computeStats(auditStore, center) },
-			Status: func() map[string]any {
-				rev, c := center.Current()
-				domains := make([]string, 0, len(c.Sites))
-				for i := range c.Sites {
-					domains = append(domains, c.Sites[i].Domains...)
-				}
-				return map[string]any{
-					"version": version, "revision": rev, "sites": len(c.Sites),
-					"site_domains": domains, "time": time.Now().UTC().Format(time.RFC3339),
-				}
-			},
-		}
-		aiSup := ai.NewSupervisor(logger)
+				// Shared builder: identical field set for the community assembly
+		// point; new DataSources fields are wired once in internal/ai.
+		aiSources := ai.NewCenterSources(center, auditStore, version, func() map[string]any { return computeStats(auditStore, center) })
+				aiSup := ai.NewSupervisor(logger)
 		// KEK guards the stored provider API key; it lives next to the console
 		// DB (same StateDir pattern as the console TLS state).
 		aiSup.SetKEKPath(filepath.Join(cdir, "ai-kek.key"))

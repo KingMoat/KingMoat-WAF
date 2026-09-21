@@ -1,0 +1,644 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KingMoat WAF 控制台</title>
+<style>
+*{box-sizing:border-box;margin:0}
+body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:#f2f3f5;color:#1f2329}
+header{background:#fff;border-bottom:1px solid #e5e6eb;padding:0 24px;height:52px;display:flex;align-items:center;gap:18px}
+header .logo{font-weight:700;font-size:16px}
+header .logo span{color:#d4380d}
+nav a{color:#4e5969;text-decoration:none;font-size:14px;padding:6px 10px;border-radius:6px}
+nav a:hover,nav a.on{background:#f2f3f5;color:#1f2329}
+main{max-width:1180px;margin:24px auto;padding:0 16px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:16px;margin-bottom:24px}
+.card{background:#fff;border-radius:10px;padding:18px 20px;box-shadow:0 1px 4px rgba(0,0,0,.05)}
+.card .v{font-size:26px;font-weight:700}
+.card .l{font-size:13px;color:#86909c;margin-top:4px}
+.panel{background:#fff;border-radius:10px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,.05);margin-bottom:24px}
+.panel h2{font-size:15px;margin-bottom:12px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #f2f3f5}
+th{color:#86909c;font-weight:500}
+.tag{display:inline-block;padding:1px 8px;border-radius:4px;font-size:12px}
+.tag.blocked{background:#ffece8;color:#d4380d}
+.tag.challenged{background:#fff7e8;color:#d46b08}
+.tag.monitor{background:#e8f7ff;color:#0084ff}
+.tag.good{background:#e8ffea;color:#00b42a}
+.tag.unknown{background:#f2f3f5;color:#4e5969}
+.tag.bad{background:#ffece8;color:#d4380d}
+.tag.high{background:#ffece8;color:#d4380d}
+.tag.medium{background:#fff7e8;color:#d46b08}
+.tag.low{background:#e8f7ff;color:#0084ff}
+.tag.candidate{background:#f7f8fa;color:#86909c}
+textarea,input[type=text],input[type=password]{font-family:inherit}
+textarea{width:100%;min-height:320px;font-family:ui-monospace,monospace;font-size:12px;padding:10px;border:1px solid #e5e6eb;border-radius:8px}
+button{background:#165dff;color:#fff;border:none;border-radius:6px;padding:8px 18px;font-size:14px;cursor:pointer}
+button.gray{background:#86909c}
+button.mini{padding:3px 10px;font-size:12px}
+button:hover{opacity:.92}
+.msg{margin:10px 0;font-size:13px;white-space:pre-wrap}
+.msg.ok{color:#00b42a}.msg.err{color:#d4380d}
+.page{display:none}.page.on{display:block}
+.filter{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.filter input,.filter select{padding:6px 10px;border:1px solid #e5e6eb;border-radius:6px;font-size:13px}
+.botbar{display:flex;height:14px;border-radius:7px;overflow:hidden;margin:8px 0}
+.botbar div{height:100%}
+/* AI chat */
+.chat-wrap{display:flex;gap:16px}
+.chat-side{width:230px;flex-shrink:0}
+.chat-side .session{padding:8px 10px;border-radius:6px;font-size:13px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat-side .session:hover,.chat-side .session.on{background:#f2f3f5}
+.chat-main{flex:1;display:flex;flex-direction:column;min-height:420px}
+.chat-log{flex:1;overflow-y:auto;max-height:520px;border:1px solid #e5e6eb;border-radius:8px;padding:14px;background:#fff}
+.bubble{margin:6px 0;padding:10px 14px;border-radius:10px;font-size:14px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+.bubble.user{background:#e8f3ff;margin-left:80px}
+.bubble.assistant{background:#f7f8fa;margin-right:60px}
+.bubble .tool{display:inline-block;font-size:12px;color:#86909c;background:#f2f3f5;border-radius:4px;padding:1px 8px;margin:2px 4px 2px 0}
+.chat-input{display:flex;gap:8px;margin-top:10px}
+.chat-input textarea{min-height:64px}
+.quick{margin:8px 0;display:flex;gap:6px;flex-wrap:wrap}
+.quick button{background:#f2f3f5;color:#1f2329;font-size:12px;padding:4px 10px}
+.chat-meta{font-size:12px;color:#86909c;margin-top:6px}
+.report-md{font-size:14px;line-height:1.7;white-space:pre-wrap;word-break:break-word}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">KingMoat <span>WAF</span> <small style="color:#86909c;font-weight:400">{{.Version}}</small></div>
+  <nav>
+    <a href="#/" data-page="dash" class="on">仪表盘</a>
+    <a href="#/sites" data-page="sites">站点配置</a>
+    <a href="#/logs" data-page="logs">攻击日志</a>
+    <a href="#/assets" data-page="assets">API 资产</a>
+    <a href="#/risks" data-page="risks">专项风险</a>
+    <a href="#/ai" data-page="ai">AI 助手</a>
+    <a href="#/reports" data-page="reports">AI 报告</a>
+    <a href="#/certs" data-page="certs">证书管理</a>
+    <a href="/metrics" target="_blank">Metrics</a>
+    <a href="#" onclick="doLogout()" style="margin-left:auto">退出登录</a>
+  </nav>
+</header>
+<main>
+  <div class="page on" id="page-dash">
+    <div class="cards">
+      <div class="card"><div class="v" id="st-rev">-</div><div class="l">当前配置版本</div></div>
+      <div class="card"><div class="v" id="st-sites">-</div><div class="l">站点数</div></div>
+      <div class="card"><div class="v" id="st-blocked">-</div><div class="l">今日拦截</div></div>
+      <div class="card"><div class="v" id="st-chal">-</div><div class="l">今日人机挑战</div></div>
+      <div class="card"><div class="v" id="st-mon">-</div><div class="l">今日观察记录</div></div>
+    </div>
+    <div class="panel">
+      <h2>BOT 流量分布（最近事件）</h2>
+      <div class="botbar" id="bot-bar"></div>
+      <div style="display:flex;gap:16px;font-size:13px;color:#4e5969" id="bot-legend"></div>
+    </div>
+    <div class="panel">
+      <h2>最近攻击事件</h2>
+      <table><thead><tr><th>时间</th><th>站点</th><th>来源</th><th>路径</th><th>动作</th><th>规则</th><th>BOT</th></tr></thead>
+      <tbody id="recent"></tbody></table>
+    </div>
+  </div>
+
+  <div class="page" id="page-sites">
+    <div class="panel">
+      <h2>站点配置（JSON，保存即发布新版本并热生效）</h2>
+      <textarea id="cfg" spellcheck="false"></textarea>
+      <div class="msg" id="cfg-msg"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button onclick="publish()">发布配置</button>
+        <button class="gray" onclick="loadConfig()">重新加载</button>
+        <button class="gray" onclick="rollback()">回滚上一版本</button>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>版本历史</h2>
+      <table><thead><tr><th>版本</th><th>时间(UTC)</th><th>作者</th><th>备注</th><th></th></tr></thead>
+      <tbody id="revs"></tbody></table>
+    </div>
+  </div>
+
+  <div class="page on" id="page-login" style="max-width:380px;margin:60px auto">
+    <div class="panel">
+      <h2>控制台登录</h2>
+      <div style="margin-top:12px">
+        <input type="password" id="login-pw" placeholder="管理员密码" style="width:100%;padding:8px;box-sizing:border-box" onkeydown="if(event.key==='Enter')doLogin()">
+        <input type="text" id="login-totp" placeholder="两步验证码（如已启用）" style="width:100%;padding:8px;box-sizing:border-box;margin-top:8px">
+        <div class="msg" id="login-msg"></div>
+        <button style="width:100%;margin-top:8px" onclick="doLogin()">登录</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="page" id="page-certs">
+    <div class="panel">
+      <h2>证书管理</h2>
+      <table><thead><tr><th>站点</th><th>来源</th><th>主体/SAN</th><th>签发者</th><th>到期时间</th></tr></thead>
+      <tbody id="certs"></tbody></table>
+    </div>
+  </div>
+
+  <div class="page" id="page-logs">
+    <div class="panel">
+      <h2>攻击事件（最近 200 条）</h2>
+      <div class="filter">
+        <select id="log-bot" onchange="loadLogs()">
+          <option value="">全部 BOT 分类</option>
+          <option value="good">good</option>
+          <option value="unknown">unknown</option>
+          <option value="bad">bad</option>
+        </select>
+      </div>
+      <table><thead><tr><th>时间</th><th>动作</th><th>站点</th><th>来源</th><th>方法</th><th>路径</th><th>规则</th><th>BOT</th><th></th></tr></thead>
+      <tbody id="logs"></tbody></table>
+    </div>
+  </div>
+
+  <div class="page" id="page-assets">
+    <div class="panel">
+      <h2>API 资产清单</h2>
+      <div class="filter">
+        <input type="text" id="as-site" placeholder="站点" style="width:160px">
+        <select id="as-method" onchange="loadAssets()"><option value="">全部方法</option><option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option><option>PATCH</option><option>HEAD</option><option>OPTIONS</option></select>
+        <select id="as-tag" onchange="loadAssets()"><option value="">全部标签</option><option value="auth">auth</option><option value="admin">admin</option><option value="export">export</option><option value="file">file</option></select>
+        <input type="text" id="as-q" placeholder="路径搜索" style="width:180px">
+        <label style="font-size:13px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="as-cand" onchange="loadAssets()"> 含候选</label>
+        <button class="mini" onclick="loadAssets()">查询</button>
+        <button class="mini gray" onclick="exportAssetsCSV()">导出 CSV</button>
+      </div>
+      <div class="msg" id="as-msg"></div>
+      <table><thead><tr><th>方法</th><th>归一化路径</th><th>站点</th><th>标签</th><th>请求数</th><th>状态分布</th><th>凭证比例</th><th>最近可见</th><th>状态</th><th></th></tr></thead>
+      <tbody id="assets"></tbody></table>
+    </div>
+  </div>
+
+  <div class="page" id="page-risks">
+    <div class="panel">
+      <h2>专项风险（observe-only，建议人工复核）</h2>
+      <div class="filter">
+        <select id="rk-status" onchange="loadRisks()"><option value="open">open</option><option value="">全部状态</option><option value="ignored">ignored</option><option value="resolved">resolved</option></select>
+        <select id="rk-level" onchange="loadRisks()"><option value="">全部级别</option><option value="high">high</option><option value="medium">medium</option><option value="low">low</option></select>
+        <select id="rk-kind" onchange="loadRisks()"><option value="">全部类型</option>
+          <option value="sensitive_exposure">R1 敏感数据暴露</option><option value="unauthorized">R2 未授权线索</option>
+          <option value="bruteforce">R3 登录爆破</option><option value="shadow_api">R4 影子 API</option>
+          <option value="zombie_api">R5 僵尸 API</option><option value="admin_exposure">R6 管理面暴露</option>
+          <option value="plaintext_secret">R7 明文敏感参数</option></select>
+        <button class="mini" onclick="runRiskScan()">立即扫描</button>
+      </div>
+      <div class="msg" id="rk-msg"></div>
+      <table><thead><tr><th>级别</th><th>类型</th><th>站点</th><th>资产/线索</th><th>说明</th><th>次数</th><th>更新时间</th><th></th></tr></thead>
+      <tbody id="risks"></tbody></table>
+    </div>
+  </div>
+
+  <div class="page" id="page-ai">
+    <div class="panel" id="ai-disabled" style="display:none">
+      <h2>AI 助手未启用</h2>
+      <div class="msg">在配置文件中添加 <code>ai.enabled=true</code> 并配置 LLM 提供商后重启。AI 助手为只读分析，无法执行任何变更。</div>
+    </div>
+    <div id="ai-enabled">
+      <div class="chat-wrap">
+        <div class="chat-side panel" style="padding:12px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <b style="font-size:13px">会话</b>
+            <button class="mini" onclick="newChat()">新建</button>
+          </div>
+          <div id="sessions"></div>
+        </div>
+        <div class="chat-main panel">
+          <div class="quick">
+            <button onclick="quickAsk('分析今日攻击态势，给出 Top 攻击规则与来源，并评估是否存在误报')">分析今日攻击态势</button>
+            <button onclick="quickAsk('检查当前 WAF 配置的安全风险：过宽 ACL、monitor 长期未切换、限流阈值合理性')">检查配置风险</button>
+            <button onclick="quickAsk('总结最近 24 小时的 BOT 流量分类与可疑爬虫行为')">BOT 行为分析</button>
+          </div>
+          <div class="chat-log" id="chat-log"></div>
+          <div class="chat-input">
+            <textarea id="chat-text" placeholder="向 AI 助手提问（只读分析，无操作能力）…  Ctrl+Enter 发送"></textarea>
+            <button onclick="sendChat()" id="chat-send">发送</button>
+          </div>
+          <div class="chat-meta" id="chat-meta"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="page" id="page-reports">
+    <div class="panel">
+      <h2>AI 分析报告</h2>
+      <div class="filter">
+        <button class="mini" onclick="runReport('attack_summary_daily')">生成今日态势报告</button>
+        <button class="mini" onclick="runReport('attack_summary_weekly')">生成周度报告</button>
+        <button class="mini gray" onclick="runReport('config_review')">生成配置复查报告</button>
+      </div>
+      <div class="msg" id="rp-msg"></div>
+      <table><thead><tr><th>ID</th><th>类型</th><th>触发</th><th>模型</th><th>状态</th><th>时间</th><th>Token</th><th></th></tr></thead>
+      <tbody id="reports"></tbody></table>
+    </div>
+    <div class="panel" id="report-detail" style="display:none">
+      <h2 id="report-title">报告详情</h2>
+      <div class="report-md" id="report-body"></div>
+    </div>
+  </div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => (s||"").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmtT = s => (s||"").replace("T"," ").slice(0,19);
+
+async function api(path, opts) {
+  const r = await fetch(path, Object.assign({headers:{'Content-Type':'application/json'}}, opts));
+  if (r.status === 401) { showLogin(true); throw new Error("未登录或会话已过期"); }
+  if (!r.ok) throw new Error((await r.json().catch(()=>({}))).error || r.statusText);
+  return r.json();
+}
+
+let loginRequired = false;
+let aiEnabled = false;
+function showLogin(on) {
+  loginRequired = on;
+  document.querySelectorAll(".page").forEach(p => p.classList.remove("on"));
+  if (on) { $("#page-login").classList.add("on"); return; }
+  route();
+}
+
+async function doLogin() {
+  const body = {password: $("#login-pw").value, totp: $("#login-totp").value};
+  try {
+    const r = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    if (!r.ok) throw new Error(((await r.json().catch(()=>({}))).error) || "登录失败");
+    showLogin(false); await checkAI(); route();
+  } catch (e) { $("#login-msg").textContent = e.message; $("#login-msg").className = "msg err"; }
+}
+
+async function doLogout() {
+  try { await fetch('/api/logout', {method:'POST'}); } catch (e) {}
+  showLogin(true);
+}
+
+async function loadCerts() {
+  try {
+    const certs = await api('/api/certificates');
+    $("#certs").innerHTML = certs.map(c => `<tr>
+      <td>${esc(c.site)}</td><td><span class="tag ${c.source==="acme"?"monitor":"blocked"}">${esc(c.source)}</span></td>
+      <td>${esc((c.subject||"") + ((c.domains||[]).length ? " · " + c.domains.join(", ") : ""))}</td>
+      <td>${esc(c.issuer||"")}</td><td>${esc(fmtT(c.not_after))}${c.error ? ' <span class="tag blocked">'+esc(c.error)+'</span>' : ''}</td></tr>`).join("") || "<tr><td colspan=5>未配置 TLS 站点</td></tr>";
+  } catch (e) { console.error(e); }
+}
+
+async function loadStats() {
+  try {
+    const s = await api('/api/stats');
+    $('#st-rev').textContent = s.revision;
+    $('#st-sites').textContent = s.sites;
+    $('#st-blocked').textContent = s.blocked_today;
+    $('#st-chal').textContent = s.challenged_today;
+    $('#st-mon').textContent = s.monitor_today;
+    const d = s.bot_distribution || {};
+    const total = (d.good||0)+(d.unknown||0)+(d.bad||0);
+    const seg = (n,cls) => n>0 ? `<div class="${cls}" style="width:${(n/total*100).toFixed(1)}%;background:var(--c)"></div>` : "";
+    const colors = {good:"#00b42a", unknown:"#86909c", bad:"#d4380d"};
+    let bar = "";
+    for (const k of ["good","unknown","bad"]) {
+      if ((d[k]||0) > 0) bar += `<div style="width:${(d[k]/total*100).toFixed(1)}%;background:${colors[k]}" title="${k}: ${d[k]}"></div>`;
+    }
+    $("#bot-bar").innerHTML = bar || '<div style="width:100%;background:#f2f3f5"></div>';
+    $("#bot-legend").innerHTML = ["good","unknown","bad"].map(k =>
+      `<span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${colors[k]};margin-right:4px"></span>${k}: ${d[k]||0}</span>`).join("");
+  } catch (e) { console.error(e); }
+}
+
+function botTag(e) {
+  if (!e || !e.bot_class) return "";
+  return `<span class="tag ${esc(e.bot_class)}" title="score ${e.bot_score||0} · ${esc(e.bot_name||"")}">${esc(e.bot_class)}</span>`;
+}
+
+async function loadRecent() {
+  try {
+    const evs = await api('/api/logs?limit=8');
+    $('#recent').innerHTML = evs.map(e => `<tr>
+      <td>${esc(fmtT(e.ts))}</td>
+      <td>${esc(e.site)}</td><td>${esc(e.client_ip)}</td><td>${esc(e.path)}</td>
+      <td><span class="tag ${esc(e.action)}">${esc(e.action)}</span></td>
+      <td>${esc(e.rule)}</td><td>${botTag(e)}</td></tr>`).join("") || "<tr><td colspan=7>暂无事件</td></tr>";
+  } catch (e) { console.error(e); }
+}
+
+async function loadConfig() {
+  try {
+    const d = await api('/api/config');
+    $('#cfg').value = JSON.stringify(d.config, null, 2);
+    $('#cfg-msg').textContent = "当前版本: " + d.revision;
+    $('#cfg-msg').className = "msg ok";
+  } catch (e) { $('#cfg-msg').textContent = e.message; $('#cfg-msg').className = "msg err"; }
+}
+
+async function publish() {
+  try {
+    const cfg = JSON.parse($('#cfg').value);
+    const d = await api('/api/config/publish', {method:'POST', body: JSON.stringify({note:'console publish', config: cfg})});
+    $('#cfg-msg').textContent = "发布成功，版本 " + d.revision + "，已热生效";
+    $('#cfg-msg').className = "msg ok";
+    loadStats(); loadRevs();
+  } catch (e) { $('#cfg-msg').textContent = "发布失败: " + e.message; $('#cfg-msg').className = "msg err"; }
+}
+
+async function rollback() {
+  try {
+    const revs = await api('/api/revisions');
+    if (revs.length < 2) throw new Error("没有可回滚的历史版本");
+    const prev = revs[1].id;
+    const d = await api('/api/revisions/' + prev + '/rollback', {method:'POST'});
+    $('#cfg-msg').textContent = "已回滚至版本 " + prev + "，发布为新版本 " + d.revision;
+    $('#cfg-msg').className = "msg ok";
+    loadConfig(); loadStats(); loadRevs();
+  } catch (e) { $('#cfg-msg').textContent = "回滚失败: " + e.message; $('#cfg-msg').className = "msg err"; }
+}
+
+async function loadRevs() {
+  try {
+    const revs = await api('/api/revisions');
+    $('#revs').innerHTML = revs.map(v => `<tr><td>${v.id}</td><td>${esc(fmtT(v.created_at))}</td><td>${esc(v.author)}</td><td>${esc(v.note)}</td>
+      <td><button class="gray mini" onclick="rollbackTo(${v.id})">回滚到此版本</button></td></tr>`).join("");
+  } catch (e) { console.error(e); }
+}
+
+async function rollbackTo(id) {
+  try {
+    const d = await api('/api/revisions/' + id + '/rollback', {method:'POST'});
+    $('#cfg-msg').textContent = "已回滚至版本 " + id + "，发布为新版本 " + d.revision;
+    $('#cfg-msg').className = "msg ok";
+    loadConfig(); loadStats(); loadRevs();
+  } catch (e) { $('#cfg-msg').textContent = "回滚失败: " + e.message; $('#cfg-msg').className = "msg err"; }
+}
+
+let allLogs = [];
+async function loadLogs() {
+  try {
+    const evs = await api('/api/logs?limit=200');
+    allLogs = evs;
+    renderLogs();
+  } catch (e) { console.error(e); }
+}
+
+function renderLogs() {
+  const bot = $("#log-bot").value;
+  const evs = bot ? allLogs.filter(e => e.bot_class === bot) : allLogs;
+  $('#logs').innerHTML = evs.map((e, i) => `<tr>
+    <td>${esc(fmtT(e.ts))}</td>
+    <td><span class="tag ${esc(e.action)}">${esc(e.action)}</span></td>
+    <td>${esc(e.site)}</td><td>${esc(e.client_ip)}</td><td>${esc(e.method)}</td><td>${esc(e.path)}</td>
+    <td>${esc(e.rule)}</td><td>${botTag(e)}</td>
+    <td><button class="gray mini" onclick='askAboutEvent(allLogs.find(x=>x.ts===${JSON.stringify(e.ts)}))'>问AI</button></td></tr>`).join("")
+    || "<tr><td colspan=9>暂无事件</td></tr>";
+}
+
+async function loadAssets() {
+  try {
+    const p = new URLSearchParams({
+      site: $("#as-site").value, method: $("#as-method").value, tag: $("#as-tag").value,
+      q: $("#as-q").value, candidates: $("#as-cand").checked ? "1" : "0"
+    });
+    const d = await api('/api/assets/apis?' + p);
+    $("#as-msg").textContent = `共 ${d.total} 条（页面 ${d.assets.length} 条）· 学习器跟踪 ${d.collector.tracked} 条、丢弃 ${d.collector.dropped} 条`;
+    window._assets = d.assets;
+    $("#assets").innerHTML = d.assets.map((a, i) => `<tr>
+      <td><b>${esc(a.method)}</b></td><td>${esc(a.norm_path)}</td><td>${esc(a.site)}</td>
+      <td>${(a.tags||[]).map(t=>`<span class="tag monitor">${esc(t)}</span>`).join(" ")}</td>
+      <td>${a.hits}</td>
+      <td>${Object.entries(a.status_dist||{}).map(([k,v])=>`${esc(k)}:${v}`).join(" ") || "-"}</td>
+      <td>${(a.authed_ratio*100).toFixed(0)}%</td>
+      <td>${esc(fmtT(a.last_seen))}</td>
+      <td>${a.candidate ? '<span class="tag candidate">候选</span>' : '<span class="tag good">资产</span>'}</td>
+      <td>${a.candidate ? "" : `<button class="gray mini" onclick="ignoreAsset(${a.id}, true)">忽略</button>`}</td></tr>`).join("")
+      || "<tr><td colspan=10>暂无资产（确认 api_assets.enabled 已开启且流量已产生）</td></tr>";
+  } catch (e) { $("#as-msg").textContent = e.message; $("#as-msg").className = "msg err"; }
+}
+
+function exportAssetsCSV() {
+  const rows = [["method","norm_path","site","tags","hits","authed_ratio","first_seen","last_seen"]];
+  (window._assets||[]).forEach(a => rows.push([a.method, a.norm_path, a.site, (a.tags||[]).join("|"), a.hits, a.authed_ratio, a.first_seen, a.last_seen]));
+  const csv = rows.map(r => r.map(c => `"${String(c==null?"":c).replace(/"/g,'""')}"`).join(",")).join("\n");
+  const blob = new Blob(["\ufeff" + csv], {type: "text/csv"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = "kingmoat_api_assets.csv"; a.click();
+}
+
+async function ignoreAsset(id, ignored) {
+  try {
+    await api('/api/assets/apis/' + id + '/ignore', {method:'POST', body: JSON.stringify({ignored})});
+    loadAssets();
+  } catch (e) { alert(e.message); }
+}
+
+async function loadRisks() {
+  try {
+    const p = new URLSearchParams({status: $("#rk-status").value, level: $("#rk-level").value, kind: $("#rk-kind").value});
+    const d = await api('/api/risks?' + p);
+    $("#risks").innerHTML = d.risks.map(r => `<tr>
+      <td><span class="tag ${esc(r.level)}">${esc(r.level)}</span></td>
+      <td>${esc(r.kind)}</td><td>${esc(r.site)}</td><td>${esc(r.asset_ref)}</td>
+      <td>${esc(r.message)}</td><td>${r.count}</td><td>${esc(fmtT(r.updated_at))}</td>
+      <td>${r.status === "open" ? `<button class="gray mini" onclick="setRisk('${esc(r.id)}','ignored')">忽略</button> <button class="gray mini" onclick="setRisk('${esc(r.id)}','resolved')">标记解决</button>` : esc(r.status)}</td></tr>`).join("")
+      || "<tr><td colspan=8>暂无风险项</td></tr>";
+  } catch (e) { $("#rk-msg").textContent = e.message; $("#rk-msg").className = "msg err"; }
+}
+
+async function setRisk(id, status) {
+  try {
+    await api('/api/risks/' + id + '/status', {method:'POST', body: JSON.stringify({status})});
+    loadRisks();
+  } catch (e) { alert(e.message); }
+}
+
+async function runRiskScan() {
+  try {
+    const d = await api('/api/risks/scan', {method:'POST'});
+    $("#rk-msg").textContent = "扫描完成，新发现 " + d.new_findings + " 项";
+    $("#rk-msg").className = "msg ok";
+    loadRisks();
+  } catch (e) { $("#rk-msg").textContent = e.message; $("#rk-msg").className = "msg err"; }
+}
+
+/* ---------- AI assistant ---------- */
+let chatSession = null, chatBusy = false;
+
+async function checkAI() {
+  try {
+    const d = await api('/api/ai/config');
+    aiEnabled = !!d.enabled;
+    $("#ai-disabled").style.display = aiEnabled ? "none" : "block";
+    $("#ai-enabled").style.display = aiEnabled ? "block" : "none";
+  } catch (e) { aiEnabled = false; }
+}
+
+async function loadSessions() {
+  if (!aiEnabled) return;
+  try {
+    const sessions = await api('/api/ai/sessions');
+    $("#sessions").innerHTML = sessions.map(s =>
+      `<div class="session ${s.id===chatSession?"on":""}" onclick="openSession('${esc(s.id)}')" title="${esc(s.title)}">${esc(s.title)}</div>`).join("");
+  } catch (e) { console.error(e); }
+}
+
+function newChat() { chatSession = null; $("#chat-log").innerHTML = ""; $("#chat-meta").textContent = ""; loadSessions(); }
+
+async function openSession(id) {
+  chatSession = id;
+  try {
+    const msgs = await api('/api/ai/sessions/' + id + '/messages');
+    $("#chat-log").innerHTML = msgs.map(m => `<div class="bubble ${esc(m.role)}">${renderMD(m.content)}</div>`).join("");
+    $("#chat-log").scrollTop = $("#chat-log").scrollHeight;
+    loadSessions();
+  } catch (e) { console.error(e); }
+}
+
+function renderMD(text) {
+  return esc(text)
+    .replace(/```([\s\S]*?)```/g, (m, code) => `<code style="display:block;background:#0f1115;color:#d6e2f0;padding:10px;border-radius:8px;white-space:pre-wrap">${code}</code>`)
+    .replace(/`([^`]+)`/g, '<code style="background:#f2f3f5;padding:1px 5px;border-radius:4px">$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+}
+
+function quickAsk(q) { $("#chat-text").value = q; sendChat(); }
+
+function askAboutEvent(ev) {
+  if (!ev) return;
+  location.hash = "#/ai";
+  route();
+  window._pendingEvent = ev;
+  $("#chat-text").value = "解读这条被拦截的请求，判断攻击类型、威胁等级与处置建议";
+}
+
+function appendBubble(role, text) {
+  const div = document.createElement("div");
+  div.className = "bubble " + role;
+  div.innerHTML = renderMD(text);
+  $("#chat-log").appendChild(div);
+  $("#chat-log").scrollTop = $("#chat-log").scrollHeight;
+  return div;
+}
+
+async function sendChat() {
+  if (chatBusy || !aiEnabled) return;
+  const text = $("#chat-text").value.trim();
+  if (!text) return;
+  chatBusy = true; $("#chat-send").disabled = true;
+  $("#chat-text").value = "";
+  appendBubble("user", text);
+  const thinking = appendBubble("assistant", "思考中…");
+  let acc = "";
+  const pending = window._pendingEvent; window._pendingEvent = null;
+
+  try {
+    const resp = await fetch('/api/ai/chat', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({session_id: chatSession, message: text, context_event: pending || undefined})
+    });
+    if (resp.status === 401) { showLogin(true); return; }
+    if (!resp.ok) throw new Error((await resp.json().catch(()=>({}))).error || resp.statusText);
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {stream: true});
+      const frames = buf.split("\n\n");
+      buf = frames.pop();
+      for (const frame of frames) {
+        const evLine = frame.split("\n").find(l => l.startsWith("event: "));
+        const dataLine = frame.split("\n").find(l => l.startsWith("data: "));
+        if (!evLine || !dataLine) continue;
+        const type = evLine.slice(7).trim();
+        const data = JSON.parse(dataLine.slice(6));
+        if (type === "delta") { acc += data.text; thinking.innerHTML = renderMD(acc); $("#chat-log").scrollTop = $("#chat-log").scrollHeight; }
+        else if (type === "tool") { thinking.innerHTML = `<span class="tool">调用工具 ${esc(data.tool)}</span>` + renderMD(acc || "正在查询数据…"); }
+        else if (type === "done") {
+          if (data.text) { acc = data.text; thinking.innerHTML = renderMD(acc); }
+          if (data.session_id) chatSession = data.session_id;
+          if (data.usage) $("#chat-meta").textContent = `模型已响应 · tokens: ${data.usage.prompt_tokens}+${data.usage.completion_tokens}`;
+        }
+        else if (type === "error") { thinking.innerHTML = `<span style="color:#d4380d">错误：${esc(data.text)}</span>`; }
+      }
+    }
+  } catch (e) {
+    thinking.innerHTML = `<span style="color:#d4380d">请求失败：${esc(e.message)}</span>`;
+  } finally {
+    chatBusy = false; $("#chat-send").disabled = false;
+    loadSessions();
+  }
+}
+
+/* ---------- AI reports ---------- */
+async function loadReports() {
+  if (!aiEnabled) return;
+  try {
+    const reports = await api('/api/ai/reports');
+    $("#reports").innerHTML = reports.map(r => `<tr>
+      <td>${r.id}</td><td>${esc(r.kind)}</td><td>${esc(r.trigger)}</td><td>${esc(r.model)}</td>
+      <td><span class="tag ${r.status==="done"?"good":"blocked"}">${esc(r.status)}</span></td>
+      <td>${esc(fmtT(r.created_at))}</td><td>${r.prompt_tokens}+${r.completion_tokens}</td>
+      <td><button class="gray mini" onclick="openReport(${r.id})">查看</button></td></tr>`).join("")
+      || "<tr><td colspan=8>暂无报告</td></tr>";
+  } catch (e) { console.error(e); }
+}
+
+async function openReport(id) {
+  try {
+    const r = await api('/api/ai/reports/' + id);
+    $("#report-detail").style.display = "block";
+    $("#report-title").textContent = r.kind + " · " + fmtT(r.created_at);
+    $("#report-body").textContent = r.content_md;
+    $("#report-detail").scrollIntoView({behavior: "smooth"});
+  } catch (e) { alert(e.message); }
+}
+
+async function runReport(kind) {
+  try {
+    $("#rp-msg").textContent = "报告生成中，约需数十秒…";
+    $("#rp-msg").className = "msg";
+    const d = await api('/api/ai/reports/run', {method:'POST', body: JSON.stringify({kind})});
+    $("#rp-msg").textContent = "生成完成，报告 #" + d.id;
+    $("#rp-msg").className = "msg ok";
+    loadReports();
+  } catch (e) { $("#rp-msg").textContent = e.message; $("#rp-msg").className = "msg err"; }
+}
+
+function route() {
+  if (loginRequired) { showLogin(true); return; }
+  const h = location.hash || "#/";
+  const page = h.startsWith("#/sites") ? "sites" : h.startsWith("#/logs") ? "logs"
+    : h.startsWith("#/assets") ? "assets" : h.startsWith("#/risks") ? "risks"
+    : h.startsWith("#/ai") ? "ai" : h.startsWith("#/reports") ? "reports"
+    : h.startsWith("#/certs") ? "certs" : "dash";
+  document.querySelectorAll(".page").forEach(p => p.classList.remove("on"));
+  const el = $("#page-" + page);
+  if (el) el.classList.add("on");
+  document.querySelectorAll("nav a[data-page]").forEach(a => a.classList.toggle("on", a.dataset.page === page));
+  if (page === "dash") { loadStats(); loadRecent(); }
+  if (page === "sites") { loadConfig(); loadRevs(); }
+  if (page === "logs") loadLogs();
+  if (page === "assets") loadAssets();
+  if (page === "risks") loadRisks();
+  if (page === "ai") { checkAI().then(() => { loadSessions(); if (window._pendingEvent) sendChat(); }); }
+  if (page === "reports") { checkAI().then(loadReports); }
+  if (page === "certs") loadCerts();
+}
+window.addEventListener("hashchange", route);
+document.addEventListener("keydown", e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") sendChat();
+});
+(async function init() {
+  try {
+    const r = await fetch('/api/status');
+    if (r.status === 401) { showLogin(true); return; }
+  } catch (e) {}
+  await checkAI();
+  route();
+})();
+setInterval(() => { if (location.hash.startsWith("#/logs")) loadLogs(); }, 10000);
+</script>
+</body>
+</html>

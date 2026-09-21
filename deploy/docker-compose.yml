@@ -1,0 +1,58 @@
+# KingMoat all-in-one compose stack: data plane + console in ONE container.
+#
+# Usage:
+#   1. prepare the data dir on a LOCAL disk (SQLite fails on NFS/SMB/network drives):
+#        mkdir -p data
+#        cp config.example.json data/config.json
+#        # inside Docker the process runs as NON-ROOT (uid 65532) and cannot bind
+#        # privileged ports: set listen_http ":8080" / listen_https ":8443" in
+#        # data/config.json; host-side 80/443 is provided by the ports mapping below.
+#        chown -R 65532:65532 data          # let the container user write /data
+#   2. (optional) anchor the console admin password, see environment section below
+#   3. docker compose -f deploy/docker-compose.yml up -d --build
+#   4. verify:
+#        console    https://localhost:8081   (self-signed cert; accept the warning)
+#        data plane http://localhost:80      (mapped to container :8080)
+#        logs       docker logs -f kingmoat
+services:
+  kingmoat:
+    build:
+      context: ..                      # repo root: the Dockerfile builds from source
+      dockerfile: deploy/Dockerfile
+    image: kingmoat:local
+    container_name: kingmoat
+    restart: unless-stopped            # restart on crash and on docker daemon restart
+    ports:
+      - "80:8080"                      # data plane HTTP   (host 80  -> container listen_http :8080)
+      - "443:8443"                     # data plane HTTPS  (host 443 -> container listen_https :8443)
+      - "127.0.0.1:8081:8081"          # console (HTTPS + /api/* + /metrics); keep host-side loopback
+                                       # or replace "127.0.0.1" with an admin interface IP / remove it
+    environment:
+      # OPTIONAL but recommended for internet-exposed consoles: anchor the admin
+      # password with an argon2id hash (skips the default-credential window).
+      # Generate it with a locally downloaded kingmoat-cli:
+      #   kingmoat-cli hash-password -stdin  <<< 'YourStrongPassw0rd!'
+      # If unset, sign in with the bootstrap account kmadmin / KingMoat@2026 —
+      # a password change is forced at first login.
+      # KINGMOAT_ADMIN_HASH: "$argon2id$v=19$m=65536,t=3,p=4$..."
+      # Optional TOTP seed (base32) for two-factor login of the built-in account:
+      # KINGMOAT_ADMIN_TOTP: "<base32-secret>"
+      # AI provider API key (only when config.json ai.provider.api_key_env points here):
+      # KINGMOAT_AI_API_KEY: "<your-api-key>"
+    volumes:
+      - ./data:/data                   # MUST be a local disk; SQLite breaks on network file systems
+    # Healthcheck (optional): the distroless image has NO shell/curl, so this exec
+    # form only proves the binary runs — not that listeners are up. For a real
+    # probe, poll the console status API from the host or a sidecar instead:
+    #   curl -ksf https://127.0.0.1:8081/api/status
+    healthcheck:
+      test: ["CMD", "/kingmoat-cli", "version"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    logging:                           # keep the JSON-lines stdout log from growing unbounded
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"

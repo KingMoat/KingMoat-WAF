@@ -1,0 +1,78 @@
+{
+  "listen_http": ":80",
+  "listen_https": ":443",
+  "audit_log_dir": "logs",
+  "audit_retention_days": 7,
+  "audit_archive": { "enabled": true, "retention_days": 30 },
+  "api_assets": {
+    "enabled": false,
+    "sample_rate": 1.0,
+    "min_hits": 5,
+    "purge_days": 90
+  },
+  "risks": {
+    "enabled": false,
+    "zombie_days": 30,
+    "notify_webhook": ""
+  },
+  "ai": {
+    "enabled": false,
+    "provider": {
+      "template": "deepseek",
+      "model": "deepseek-chat",
+      "api_key_env": "KINGMOAT_AI_API_KEY",
+      "timeout_sec": 120,
+      "max_tokens": 4096,
+      "temperature": 0.2
+    },
+    "sanitize": {
+      "enabled": true,
+      "mask_public_ip": false,
+      "mask_internal_hosts": true,
+      "mask_credentials": true,
+      "payload_max_chars": 512,
+      "custom_terms": []
+    },
+    "chat": { "history_turns": 20, "max_sessions": 100 },
+    "analysis": {
+      "enabled": false,
+      "schedules": [
+        { "kind": "attack_summary_daily", "cron": "0 8 * * *", "webhook": "" }
+      ],
+      "spike": { "enabled": true, "window": "1h", "multiplier": 3.0 },
+      "max_tokens_per_day": 200000
+    },
+    "mcp": { "enabled": true, "path": "/mcp" }
+  },
+  "sites": [
+    {
+      "domains": ["localhost", "127.0.0.1"],
+      "mode": "intercept",
+      "upstream": {
+        "nodes": [
+          { "address": "127.0.0.1:9000" }
+        ]
+      },
+      "security": {
+        "bot_detect": {
+          "enabled": true,
+          "actions": { "good": "allow", "unknown": "observe", "bad": "observe" },
+          "rate_threshold": { "requests": 300, "window_sec": 60 },
+          "good_bot_bypass_challenge": true
+        }
+      },
+      "waf": {
+        "enabled": true,
+        "body_over_limit": "reject"
+      },
+      "real_ip": {
+        "enabled": true,
+        "trusted_proxies": ["10.0.0.0/8", "172.16.0.0/12"]
+      },
+      "headers": {
+        "set": { "X-Client-Real-IP": "$client_ip" },
+        "del": ["X-Internal-Trace"]
+      }
+    }
+  ]
+}

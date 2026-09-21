@@ -1,0 +1,259 @@
+// Package coraza hosts the KingMoat signature-detection stage built on
+// Coraza (ModSecurity SecLang compatible) with the OWASP CRS 4.x embedded.
+// One coraza.WAF instance is built per site; a single Stage dispatches
+// by site domain (see docs/ARCHITECTURE.md §3.3).
+package coraza
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+
+	coreruleset "github.com/corazawaf/coraza-coreruleset/v4"
+	coraza "github.com/corazawaf/coraza/v3"
+	"github.com/corazawaf/coraza/v3/types"
+
+	"github.com/kingmoat/kingmoat/internal/config"
+	"github.com/kingmoat/kingmoat/internal/pipeline"
+)
+
+// Stage implements pipeline.Stage with per-site Coraza WAF instances.
+type Stage struct {
+	byDomain map[string]*siteWAF
+	logger   *slog.Logger
+}
+
+type siteWAF struct {
+	waf coraza.WAF
+}
+
+// New builds the multi-site Coraza stage. Sites with waf.enabled=false are
+// skipped; every enabled site gets its own WAF instance compiled from the
+// embedded CRS plus optional custom SecLang rules.
+func New(cfg *config.Config, logger *slog.Logger) (*Stage, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	byDomain := make(map[string]*siteWAF)
+	for i := range cfg.Sites {
+		s := &cfg.Sites[i]
+		if !s.WAF.IsEnabled() {
+			continue
+		}
+		waf, err := buildWAF(s, cfg.Policy)
+		if err != nil {
+			return nil, fmt.Errorf("coraza: site %d (%s): %w", i, strings.Join(s.Domains, ","), err)
+		}
+		sw := &siteWAF{waf: waf}
+		for _, d := range s.Domains {
+			byDomain[strings.ToLower(strings.TrimSpace(d))] = sw
+		}
+	}
+	return &Stage{byDomain: byDomain, logger: logger}, nil
+}
+
+// buildWAF compiles one site's WAF: embedded CRS 4.x + optional custom rules.
+// The site body limit is mirrored into Coraza's request body limits so the
+// proxy buffer and the engine never disagree.
+func buildWAF(s *config.Site, policy *config.Policy) (coraza.WAF, error) {
+	directives := strings.Join([]string{
+		"Include @coraza.conf-recommended",
+		"",
+		"# --- KingMoat CRS setup (defaults derived from crs-setup.conf.example;",
+		"#     the official example ships all thresholds commented out) ---",
+		`SecAction "id:900001,phase:1,pass,t:none,nolog,setvar:tx.inbound_anomaly_score_threshold=`+strconv.Itoa(policy.InboundOrDefault())+`"`,
+		`SecAction "id:900002,phase:1,pass,t:none,nolog,setvar:tx.outbound_anomaly_score_threshold=`+strconv.Itoa(policy.OutboundOrDefault())+`"`,
+		`SecAction "id:900003,phase:1,pass,t:none,nolog,setvar:tx.paranoia_level=1"`,
+		`SecAction "id:900004,phase:1,pass,t:none,nolog,setvar:tx.allowed_methods=GET HEAD POST OPTIONS PUT PATCH DELETE"`,
+		`SecAction "id:900005,phase:1,pass,t:none,nolog,setvar:tx.allowed_request_content_type=|application/x-www-form-urlencoded| |multipart/form-data| |text/xml| |application/xml| |application/soap+xml| |application/json| |text/plain|"`,
+		`SecAction "id:900006,phase:1,pass,t:none,nolog,setvar:tx.allowed_http_versions=HTTP/1.0 HTTP/1.1 HTTP/2 HTTP/2.0 HTTP/3"`,
+		`SecAction "id:900007,phase:1,pass,t:none,nolog,setvar:tx.restricted_extensions=.asa/ .asax/ .ascx/ .axd/ .asx/ .asmx/ .config/ .cs/ .csproj/ .ccb/ .jsp/ .jspa/ .ldb/ .ldf/ .mdb/ .mdf/ .bak/ .java/ .class/ .ini/"`,
+		`SecAction "id:900008,phase:1,pass,t:none,nolog,setvar:tx.restricted_headers=/proxy-connection/ /content-length/ /transfer-encoding/"`,
+		`SecAction "id:900009,phase:1,pass,t:none,nolog,tag:'OWASP_CRS',ver:'OWASP_CRS/4.25.0',setvar:tx.crs_setup_version=4250"`,
+		"",
+		"Include @owasp_crs/*.conf",
+		"# KingMoat: the recommended conf ships DetectionOnly; enforce blocking.",
+		"SecRuleEngine On",
+		"",
+		"# --- KingMoat built-in hardening (always on) ---",
+		"# Command substitution via paired backticks in query parameters: CRS",
+		"# 932xxx covers shell syntax like $(...) but the bare backtick variant",
+		"# (`id`) is not matched at paranoia level 1. Always deny, query only",
+		"# (ARGS_GET) so markdown-style backticks in request bodies stay clean.",
+		`SecRule ARGS_GET "@rx \x60[^\x60\n]{0,512}\x60" "id:1000001,phase:2,deny,log,t:none,msg:'KingMoat built-in: command substitution via backticks'"`,
+	}, "\n")
+	if s.WAF != nil && s.WAF.CustomRulesFile != "" {
+		b, err := os.ReadFile(s.WAF.CustomRulesFile)
+		if err != nil {
+			return nil, fmt.Errorf("read custom rules: %w", err)
+		}
+		directives += "\n# --- site custom rules ---\n" + string(b)
+	}
+	if policy != nil && strings.TrimSpace(policy.CustomRules) != "" {
+		directives += "\n# --- global custom rules (strategy console) ---\n" + policy.CustomRules
+	}
+	// False-positive exceptions: numeric rule IDs are removed per-site
+	// ("一键加白" for CRS rules). Stage-level rules are handled dynamically
+	// by the exceptions stage.
+	if policy != nil {
+		for _, e := range policy.Exceptions {
+			if e.RuleID == "" || !isNumericRuleID(e.RuleID) {
+				continue
+			}
+			if e.Site != "" && !siteMatches(s.Domains, e.Site) {
+				continue
+			}
+			directives += "\nSecRuleRemoveById " + e.RuleID
+		}
+	}
+	limit := int(s.WAF.BodyLimit())
+	conf := coraza.NewWAFConfig().
+		WithRootFS(slashFS{inner: coreruleset.FS}).
+		WithDirectives(directives).
+		WithRequestBodyAccess().
+		WithRequestBodyLimit(limit).
+		WithRequestBodyInMemoryLimit(limit)
+	return coraza.NewWAF(conf)
+}
+
+// Name implements pipeline.Stage.
+func (st *Stage) Name() string { return "coraza" }
+
+// Inspect implements pipeline.Stage: header phase first, then body phase
+// when a buffered body is present (docs/ARCHITECTURE.md §3.1 steps ③⑤).
+// Trusted requests (ACL whitelist) skip detection entirely.
+func (st *Stage) Inspect(ctx context.Context, rc *pipeline.RequestContext) pipeline.Verdict {
+	if rc.Values["trusted"] == true {
+		return pipeline.Allow()
+	}
+	sw := st.byDomain[strings.ToLower(rc.Site.Domain)]
+	if sw == nil {
+		return pipeline.Allow()
+	}
+	return sw.inspect(rc, st.logger)
+}
+
+func (w *siteWAF) inspect(rc *pipeline.RequestContext, logger *slog.Logger) pipeline.Verdict {
+	r := rc.Request
+	tx := w.waf.NewTransaction()
+	defer tx.Close()
+
+	clientHost, clientPort := addrParts(r.RemoteAddr)
+	// Real-IP resolution (config.Site.RealIP): when the proxy resolved the
+	// true client address, CRS REMOTE_ADDR sees it instead of the LB/CDN peer.
+	if ip := pipeline.ClientIPFromContext(r.Context()); ip != nil {
+		clientHost = ip.String()
+	}
+	serverHost, serverPort := addrParts(r.Host)
+	tx.ProcessConnection(clientHost, clientPort, serverHost, serverPort)
+	tx.ProcessURI(r.URL.RequestURI(), r.Method, r.Proto)
+	// Coraza does not parse the query string into ARGS_GET automatically;
+	// inject it so CRS rules (942 SQLi, 930 LFI, ...) inspect query params.
+	for k, vv := range r.URL.Query() {
+		for _, v := range vv {
+			tx.AddGetRequestArgument(k, v)
+		}
+	}
+	tx.AddRequestHeader("Host", r.Host) // Go strips Host from the header map
+	if r.ContentLength >= 0 && r.Header.Get("Content-Length") == "" {
+		tx.AddRequestHeader("Content-Length", strconv.FormatInt(r.ContentLength, 10))
+	}
+	for k, vv := range r.Header {
+		for _, v := range vv {
+			tx.AddRequestHeader(k, v)
+		}
+	}
+
+	var it *types.Interruption
+	if it = tx.ProcessRequestHeaders(); it != nil {
+		tx.ProcessLogging()
+		return verdictFrom(it, tx.MatchedRules())
+	}
+
+	if len(rc.Body) > 0 {
+		var err error
+		if it, _, err = tx.WriteRequestBody(rc.Body); err != nil {
+			logger.Error("coraza: write request body failed",
+				"err", err, "trace", rc.Values["trace_id"])
+		}
+		if it != nil {
+			tx.ProcessLogging()
+			return verdictFrom(it, tx.MatchedRules())
+		}
+	}
+
+	// Phase 2 rules must run even for bodiless GETs (SQLi/LFI in ARGS_GET).
+	if it, err := tx.ProcessRequestBody(); err != nil {
+		logger.Error("coraza: process request body failed",
+			"err", err, "trace", rc.Values["trace_id"])
+	} else if it != nil {
+		tx.ProcessLogging()
+		return verdictFrom(it, tx.MatchedRules())
+	}
+
+	tx.ProcessLogging()
+	return pipeline.Allow()
+}
+
+// verdictFrom converts a Coraza interruption into a pipeline Verdict.
+// Internal rule messages are kept in Reason (logs/audit only, never the
+// client-facing block page).
+func verdictFrom(it *types.Interruption, matched []types.MatchedRule) pipeline.Verdict {
+	status := it.Status
+	if status == 0 {
+		status = http.StatusForbidden
+	}
+	reason := it.Data
+	var ids []string
+	for _, mr := range matched {
+		if msg := mr.Message(); msg != "" {
+			ids = append(ids, fmt.Sprintf("%d %q", mr.Rule().ID(), msg))
+		}
+	}
+	if len(ids) > 0 {
+		reason = strings.Join(ids, "; ")
+	}
+	if reason == "" {
+		reason = "blocked by WAF rule"
+	}
+	return pipeline.Verdict{
+		Action: pipeline.ActionDeny,
+		Status: status,
+		Rule:   fmt.Sprintf("coraza/rule-%d", it.RuleID),
+		Reason: reason,
+	}
+}
+
+func addrParts(addr string) (string, int) {
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr, 0
+	}
+	p, _ := strconv.Atoi(portStr)
+	return host, p
+}
+
+// isNumericRuleID reports whether the ID is a numeric Coraza rule id.
+func isNumericRuleID(id string) bool {
+	for _, c := range id {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return len(id) > 0
+}
+
+// siteMatches reports whether the domain matches any of the site's domains.
+func siteMatches(domains []string, domain string) bool {
+	for _, d := range domains {
+		if strings.EqualFold(d, domain) {
+			return true
+		}
+	}
+	return false
+}

@@ -1,0 +1,31 @@
+# binaries
+/kingmoat
+/kingmoat-cli
+*.exe
+
+# local configs & secrets
+/config.local.json
+*.local.json
+
+# runtime state
+/kingmoat.db
+/kingmoat.db-*
+/logs/
+
+# build artifacts
+/dist/
+coverage.out
+coverage.html
+
+# editors
+.idea/
+.vscode/
+*.swp
+
+# internal working notes (agent planning artifacts)
+/.flocks/
+
+# frontend build deps
+web/console/node_modules/
+web/console/dist/
+build-tmp/

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KingMoat WAF 控制台</title>
+  <script>
+    // Boot theme before first paint to avoid a flash of the wrong palette.
+    (function () {
+      try {
+        var t = localStorage.getItem('km-theme')
+        var theme = (t === 'dark' || t === 'light') ? t : 'light'
+        document.documentElement.setAttribute('data-theme', theme)
+        if (theme === 'dark') document.documentElement.classList.add('dark')
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'light')
+      }
+    })()
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

@@ -2,9 +2,20 @@
 
 本目录收录 KingMoat WAF 社区版的部署物料。**新用户请从本文档开始**，按「部署前置 → 三条部署路径任选其一 → 首次上线检查单」的顺序操作即可完成上线；日常备份、升级、回滚见第 6 节。
 
+### ⚡ 一键部署（推荐）
+
+Linux（Debian 12+ / Ubuntu 24.04+ / openEuler 22.03+）可跳过本文档全部手动步骤，直接运行：
+
+```bash
+curl -fsSL https://gitee.com/kingmoat/KingMoat-WAF/raw/main/deploy/install.sh | bash
+```
+
+脚本自动安装依赖、下载最新 Release、交互式选安装/数据目录、注册 systemd 守护并自启动。详见脚本头部注释与下方第 3 节（路径 B）。
+
 | 文件 | 用途 |
 |---|---|
 | `README.md`（本文） | 部署总览：前置规划、三条部署路径、上线检查单、日常运维、FAQ |
+| **`install.sh`** | **一键部署脚本（Linux，推荐新用户使用）** |
 | `Dockerfile` | All-in-one 镜像构建（distroless，非 root 运行） |
 | `docker-compose.yml` | Docker Compose 编排示例（端口、卷、健康检查） |
 | `kingmoat.service` | Linux systemd 单元（非 root + 仅授予绑低端口能力） |
@@ -17,7 +28,7 @@ KingMoat 是**纯 Go 单二进制**：数据面（反向代理 + WAF）与控制
 - **all-in-one（推荐）**：`kingmoat -config config.json -console-addr :28443`。`-console-addr` 一旦指定即启用内嵌控制台，配置持久化到 SQLite（`-console-db`，默认工作目录下 `kingmoat.db`），控制台发布配置热生效、无需重启。
 - **static（静态配置文件模式）**：只给 `-config`、不给 `-console-addr`。无控制台、无热更新，配置即 `config.json` 本身。适合嵌入式/极简场景，本文不再展开。
 
-> 本文档默认 all-in-one。二进制与 `kingmoat-cli` 工具从 [Releases](https://github.com/kingmoat/kingmoat/releases) 下载，或按仓库根 README 自行构建。
+> 本文档默认 all-in-one。二进制与 `kingmoat-cli` 工具从 [Releases](https://gitee.com/kingmoat/KingMoat-WAF/releases) 下载，或按仓库根 README 自行构建。
 
 ## 1. 部署前置（Prerequisites）
 

@@ -18,7 +18,9 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -41,6 +43,7 @@ import (
 	"github.com/kingmoat/kingmoat/internal/metrics"
 	"github.com/kingmoat/kingmoat/internal/proxy"
 	"github.com/kingmoat/kingmoat/internal/redact"
+	"github.com/kingmoat/kingmoat/internal/telemetry"
 	"github.com/kingmoat/kingmoat/internal/webui"
 )
 
@@ -342,6 +345,16 @@ func main() {
 
 	var aiBuilder func(cfg *config.Config)
 
+	// Telemetry wiring (state + builder) lives at this scope so the hot-reload
+	// goroutine below can call it; the client itself is only created in
+	// all-in-one mode where the console (and thus the switch) exists.
+	var (
+		telMu        sync.Mutex
+		telClient    *telemetry.Telemetry
+		telPrev      bool
+		buildTelemetry func(cfg *config.Config)
+	)
+
 	// Hot reload wiring per mode.
 	switch {
 	case center != nil:
@@ -362,6 +375,7 @@ func main() {
 					if aiBuilder != nil {
 						aiBuilder(cfg) // ai toggle hot-applies (close+rebuild)
 					}
+					buildTelemetry(cfg) // telemetry switch hot-applies
 					buildEngines(cfg) // alerts + risks toggle hot-applies
 				}
 			}
@@ -414,6 +428,72 @@ func main() {
 		}
 		buildAI(activeCfg)
 		aiBuilder = buildAI
+
+		// Anonymous install statistics (opt-in via config telemetry.enabled;
+		// hot-applied on publish). Three consecutive unreachable endpoints stop
+		// reporting for this install (persisted); toggling the switch off→on
+		// resets that marker. Nothing is sent while the switch is off.
+		telMethod := strings.TrimSpace(os.Getenv("KINGMOAT_INSTALL_METHOD"))
+		if telMethod == "" {
+			if _, err := os.Stat("/.dockerenv"); err == nil {
+				telMethod = "docker"
+			} else if runtime.GOOS == "windows" {
+				telMethod = "windows"
+			} else {
+				telMethod = "binary"
+			}
+		}
+		telMu.Lock()
+		oldTel := telClient
+		telClient = nil
+		telMu.Unlock()
+		if oldTel != nil {
+			oldTel.Stop()
+		}
+		buildTelemetry = func(cfg *config.Config) {
+			enabled := cfg.Telemetry != nil && cfg.Telemetry.Enabled
+			telMu.Lock()
+			old := telClient
+			telClient = nil
+			telMu.Unlock()
+			if old != nil {
+				old.Stop()
+			}
+			if !enabled {
+				telMu.Lock()
+				telPrev = false
+				telMu.Unlock()
+				return
+			}
+			tc := telemetry.New(telemetry.Config{
+				Endpoint:      "https://tele.aiuc.cc/api/check",
+				Version:       version,
+				AppName:       "kingmoat",
+				Product:       "kingmoat-waf",
+				InstallMethod: telMethod,
+				IDFile:        filepath.Join(cdir, "telemetry_id"),
+			})
+			telMu.Lock()
+			prev := telPrev
+			telMu.Unlock()
+			if !prev {
+				tc.ResetStopFlag() // 开关 关→开：清除 3 次不可达标记，给一次重新尝试
+			}
+			tc.Start()
+			telMu.Lock()
+			telClient = tc
+			telPrev = true
+			telMu.Unlock()
+		}
+		buildTelemetry(activeCfg)
+		defer func() {
+			telMu.Lock()
+			tc := telClient
+			telMu.Unlock()
+			if tc != nil {
+				tc.Stop()
+			}
+		}()
 
 		mux := http.NewServeMux()
 		logsStorage := &api.LogsStorageInfo{

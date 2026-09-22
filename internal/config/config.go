@@ -349,6 +349,10 @@ type Config struct {
 	// Security bundles console security policy (user management → security
 	// settings): password rules and session lifetime.
 	Security *ConsoleSecuritySettings `json:"security,omitempty"`
+	// Telemetry opts in to anonymous install statistics (random install ID,
+	// version, OS/arch, install method). Default nil = disabled: no requests,
+	// no local state. The user-facing switch lives in the console settings.
+	Telemetry *TelemetrySettings `json:"telemetry,omitempty"`
 	Sites []Site            `json:"sites"`
 }
 
@@ -527,6 +531,15 @@ type ConsoleSecuritySettings struct {
 	// PasswordHistoryCount blocks reusing any of the last N passwords
 	// (default 0 = off; max 24).
 	PasswordHistoryCount int `json:"password_history_count,omitempty"`
+}
+
+// TelemetrySettings opts in to anonymous install statistics. Default nil
+// (= absent from config) means disabled: no requests, no local state. The
+// collected set is deliberately minimal (random install ID, version,
+// OS/arch, install method) and is documented in the README telemetry
+// disclosure. DO_NOT_TRACK always wins over this switch.
+type TelemetrySettings struct {
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 // MinLenOrDefault returns the effective password minimum length (default 8).

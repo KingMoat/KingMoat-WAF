@@ -3,7 +3,10 @@
   "listen_https": ":443",
   "audit_log_dir": "logs",
   "audit_retention_days": 7,
-  "audit_archive": { "enabled": true, "retention_days": 30 },
+  "audit_archive": {
+    "enabled": true,
+    "retention_days": 30
+  },
   "api_assets": {
     "enabled": false,
     "sample_rate": 1.0,
@@ -33,31 +36,60 @@
       "payload_max_chars": 512,
       "custom_terms": []
     },
-    "chat": { "history_turns": 20, "max_sessions": 100 },
+    "chat": {
+      "history_turns": 20,
+      "max_sessions": 100
+    },
     "analysis": {
       "enabled": false,
       "schedules": [
-        { "kind": "attack_summary_daily", "cron": "0 8 * * *", "webhook": "" }
+        {
+          "kind": "attack_summary_daily",
+          "cron": "0 8 * * *",
+          "webhook": ""
+        }
       ],
-      "spike": { "enabled": true, "window": "1h", "multiplier": 3.0 },
+      "spike": {
+        "enabled": true,
+        "window": "1h",
+        "multiplier": 3.0
+      },
       "max_tokens_per_day": 200000
     },
-    "mcp": { "enabled": true, "path": "/mcp" }
+    "mcp": {
+      "enabled": true,
+      "path": "/mcp"
+    }
+  },
+  "telemetry": {
+    "enabled": false
   },
   "sites": [
     {
-      "domains": ["localhost", "127.0.0.1"],
+      "domains": [
+        "localhost",
+        "127.0.0.1"
+      ],
       "mode": "intercept",
       "upstream": {
         "nodes": [
-          { "address": "127.0.0.1:9000" }
+          {
+            "address": "127.0.0.1:9000"
+          }
         ]
       },
       "security": {
         "bot_detect": {
           "enabled": true,
-          "actions": { "good": "allow", "unknown": "observe", "bad": "observe" },
-          "rate_threshold": { "requests": 300, "window_sec": 60 },
+          "actions": {
+            "good": "allow",
+            "unknown": "observe",
+            "bad": "observe"
+          },
+          "rate_threshold": {
+            "requests": 300,
+            "window_sec": 60
+          },
           "good_bot_bypass_challenge": true
         }
       },
@@ -67,11 +99,18 @@
       },
       "real_ip": {
         "enabled": true,
-        "trusted_proxies": ["10.0.0.0/8", "172.16.0.0/12"]
+        "trusted_proxies": [
+          "10.0.0.0/8",
+          "172.16.0.0/12"
+        ]
       },
       "headers": {
-        "set": { "X-Client-Real-IP": "$client_ip" },
-        "del": ["X-Internal-Trace"]
+        "set": {
+          "X-Client-Real-IP": "$client_ip"
+        },
+        "del": [
+          "X-Internal-Trace"
+        ]
       }
     }
   ]

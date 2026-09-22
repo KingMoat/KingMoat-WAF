@@ -15,6 +15,7 @@
 | `audit_archive` | object | 开启 | 每日 DB 快照归档，见 [AuditArchiveSettings](#auditarchivesettings) |
 | `audit_query` | object | 空 | 日志查询治理：并发上限/超时/紧急降级，见 [AuditQuerySettings](#auditquerysettings)；发布即热生效 |
 | `metrics` | object | 空 | 可选 Prometheus 文本端点（/metrics，控制台认证内），见 [MetricsSettings](#metricssettings)；发布热生效 |
+| `telemetry` | object | 空 | 匿名安装统计（**默认关**）：`{ "enabled": true }` 开启后仅上报随机安装 ID / 版本 / OS 架构 / 安装方式；`DO_NOT_TRACK` 环境变量优先级更高；连续 3 次不可达自动停止；详见 README 遥测声明 |
 | `webhook` | object | 空 | 告警推送，见 [WebhookSettings](#webhooksettings) |
 | `log_shipper` | object | 空 | 审计日志外发，见 [ShipperSettings](#shippersettings) |
 | `policy` | object | 空 | 全局策略：CRS 阈值 / 自定义 SecLang 规则 / 全局 IP 黑白名单，见 [Policy](#policy) |

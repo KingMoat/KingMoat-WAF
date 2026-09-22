@@ -26,6 +26,10 @@
             <el-form-item label="风险引擎">
               <el-switch v-model="f.risks_enabled" />
             </el-form-item>
+            <el-form-item label="匿名安装统计">
+              <el-switch v-model="f.telemetry_enabled" />
+              <span class="km-dim" style="margin-left:10px;font-size:12px">默认关。开启后仅上报随机安装 ID、软件版本、操作系统架构与安装方式；不采集主机名、用户名、内网 IP 或任何业务数据；支持 DO_NOT_TRACK 环境变量一键关闭；连续 3 次无法连接统计服务会自动停止上报。保存并发布后生效。</span>
+            </el-form-item>
         <el-form-item label="Prometheus /metrics 端点">
           <el-switch v-model="f.metrics_enabled" />
           <span class="km-dim" style="margin-left:10px;font-size:12px">可选指标端点（文本格式，控制台认证内；默认关，热生效）</span>
@@ -573,6 +577,7 @@ const f = reactive({
   email_user: '', email_pass: '', email_ssl: true, email_to: [],
   // 安全设置
   sec_min_len: 8, sec_complexity: false, sec_max_age: 0, sec_session: 0,
+  telemetry_enabled: false,
   sec_pw_history: 0, sec_login_max: 10, sec_lockout_min: 15,
   bp_title: '', bp_message: '', bp_footer: '', bp_html: '',
   shipper_enabled: false, shipper_type: 'clickhouse', shipper_url: '', shipper_index: 'kingmoat',
@@ -672,6 +677,7 @@ async function load() {
   const d = await api('/api/config')
   const c = d.config
   f.capture_requests = !!c.capture_requests
+  f.telemetry_enabled = !!(c.telemetry && c.telemetry.enabled)
   f.api_assets_enabled = !!c.api_assets?.enabled
   f.risks_enabled = !!c.risks?.enabled
   f.audit_retention_days = c.audit_retention_days > 0 ? c.audit_retention_days : 7
@@ -864,6 +870,9 @@ async function save() {
   const d = await api('/api/config')
   const cfg = d.config
   cfg.capture_requests = f.capture_requests
+  // 匿名安装统计：缺省键 = 关闭（与后端语义一致）
+  if (f.telemetry_enabled) cfg.telemetry = { enabled: true }
+  else delete cfg.telemetry
   cfg.audit_retention_days = f.audit_retention_days
   cfg.audit_archive = { ...(cfg.audit_archive || {}), retention_days: f.archive_retention_days, enabled: cfg.audit_archive?.enabled !== false }
   if (f.query_degraded) cfg.audit_query = { ...(cfg.audit_query || {}), degraded: true }

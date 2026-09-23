@@ -41,6 +41,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 			"/api/certificates/uploads":   getOp("已上传证书库", nil),
 			"/api/certificates/uploads/{name}": deleteOp("删除证书库条目（被站点/控制台引用时拒绝）"),
 			"/api/policy/whitelist": postOp("一键加白 → 生成微引擎放行规则（站点+路径条件，action=allow 跳过全部检测；幂等，重复返回 unchanged）", nil),
+			"/api/policy/micro-rules/hits": getOp("微引擎规则命中计数（进程内计数，重启归零，与每条规则的审计开关无关）", nil),
 			"/api/policy/exceptions": mergeOps(getOp("[deprecated] 误报加白例外列表（旧版，改用 /api/policy/whitelist）", nil), postOp("[deprecated] 新增加白例外（旧版，改用 /api/policy/whitelist）", nil)),
 			"/api/policy/exceptions/{index}": deleteOp("[deprecated] 撤销加白例外（旧版）"),
 			"/api/ipgroups":               getOp("IP 组订阅列表（含预览）", nil),

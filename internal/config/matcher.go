@@ -79,7 +79,12 @@ type MatcherRule struct {
 	// DisableStages lists detection modules switched off for the matched
 	// sites while this rule is enabled (Action = disable).
 	DisableStages []string `json:"disable_stages,omitempty"`
-	Comment    string             `json:"comment,omitempty"`
+	// LogEnabled controls audit logging for this rule's hits (default
+	// false: hits are counted but produce no audit events; true: each hit
+	// writes an audit event carrying "matcher/<name>", enabling per-rule
+	// drill-down from the console). The rule action is unaffected.
+	LogEnabled bool   `json:"log_enabled,omitempty"`
+	Comment    string `json:"comment,omitempty"`
 }
 
 // Validate checks one matcher rule.

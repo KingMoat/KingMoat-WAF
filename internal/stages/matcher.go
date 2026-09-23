@@ -112,6 +112,7 @@ func (m *Matcher) Inspect(ctx context.Context, rc *pipeline.RequestContext) pipe
 		if !conditionsMatch(cm, rc) {
 			continue
 		}
+		matcherHitInc(cm.rule.Name)
 		switch cm.rule.Action {
 		case config.ActionDeny:
 			m.logger.Warn("matcher: rule denied request",
@@ -120,10 +121,12 @@ func (m *Matcher) Inspect(ctx context.Context, rc *pipeline.RequestContext) pipe
 		case config.ActionAllow:
 			rc.Values["trusted"] = true
 			rc.Values["exception_applied"] = cm.rule.Name
+			rc.Values["matcher_rule"] = cm.rule.Name
 			return pipeline.Allow()
 		case config.ActionMonitor:
 			m.logger.Info("matcher: rule matched (monitor)",
 				"rule", cm.rule.Name, "site", rc.Site.Domain, "trace", rc.Values["trace_id"])
+			rc.Values["matcher_rule"] = cm.rule.Name
 			return pipeline.Allow()
 		case config.ActionDisable:
 			if m.disabled != nil {
@@ -134,6 +137,7 @@ func (m *Matcher) Inspect(ctx context.Context, rc *pipeline.RequestContext) pipe
 			m.logger.Warn("matcher: detection modules disabled for site",
 				"rule", cm.rule.Name, "site", rc.Site.Domain,
 				"stages", strings.Join(cm.rule.DisableStages, ","), "trace", rc.Values["trace_id"])
+			rc.Values["matcher_rule"] = cm.rule.Name
 			return pipeline.Allow()
 		}
 	}

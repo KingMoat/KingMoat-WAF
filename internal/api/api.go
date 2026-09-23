@@ -378,6 +378,7 @@ func New(opts Options) *Server {
 	mux.HandleFunc("GET /api/stats/trend", s.handleStatsTrend)
 	mux.HandleFunc("GET /api/stats/rules", s.handleStatsRules)
 	mux.HandleFunc("GET /api/stats/per-site", s.handleStatsPerSite)
+	mux.HandleFunc("GET /api/policy/micro-rules/hits", s.handleMicroRuleHits)
 	mux.HandleFunc("GET /api/certificates", s.handleCertificates)
 	mux.HandleFunc("POST /api/certificates/upload", s.handleCertUpload)
 	mux.HandleFunc("GET /api/certificates/uploads", s.handleCertUploads)

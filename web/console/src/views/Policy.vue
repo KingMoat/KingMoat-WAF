@@ -117,7 +117,7 @@
           </el-card>
         </template>
 
-        <!-- ④ 微引擎规则防护 + 规则命中 TOP -->
+        <!-- ④ 微引擎规则防护 -->
         <template v-else-if="tab === 'matchers'">
           <el-card shadow="never" style="margin-bottom:16px">
             <div class="km-title" style="margin:0 0 4px">CRS 检测分类全局默认</div>
@@ -144,25 +144,6 @@
               <el-button size="small" @click="dismissMigration">忽略</el-button>
             </div>
           </el-alert>
-
-          <el-card shadow="never" style="margin-bottom:16px">
-            <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
-              <div class="km-title" style="margin:0">规则命中 TOP</div>
-              <el-select v-model="ruleStatsHours" size="small" style="width:110px">
-                <el-option v-for="h in [1, 6, 24, 72, 168, 720]" :key="h" :label="h + ' 小时'" :value="h" />
-              </el-select>
-              <span class="km-dim" style="font-size:12px">窗口内共 {{ ruleStats.total.toLocaleString() }} 次规则命中（攻击口径）· 右侧为占总命中百分比 · 点击规则跳转日志页</span>
-            </div>
-            <div v-if="ruleStatsLoading" class="km-muted" style="font-size:12px;padding:6px 0">统计加载中…</div>
-            <div v-else-if="!ruleStats.items.length" class="km-muted" style="font-size:12px;padding:6px 0">窗口内暂无规则命中</div>
-            <div v-for="(it, i) in ruleStats.items" :key="it.rule" class="km-rule-hit" @click="gotoRuleLogs(it.rule)">
-              <span class="rank">{{ i + 1 }}</span>
-              <span class="rule km-mono" :title="it.rule">{{ it.rule }}</span>
-              <el-progress class="bar" :percentage="rulePct(it.count)" :show-text="false" :stroke-width="8" />
-              <span class="cnt">{{ it.count.toLocaleString() }}</span>
-              <span class="pct">{{ totalPct(it.count) }}</span>
-            </div>
-          </el-card>
 
           <el-card shadow="never" style="margin-bottom:16px">
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
@@ -197,14 +178,27 @@
                   </el-tag>
                 </template>
               </el-table-column>
+              <el-table-column label="命中次数" width="90" align="center">
+                <template #default="{ row }">
+                  <span :style="(matcherHits[row.name] || 0) > 0 ? 'font-weight:700;color:var(--km-soft-blue)' : 'color:var(--km-txt-3)'">{{ (matcherHits[row.name] || 0).toLocaleString() }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="记录日志" width="90" align="center">
+                <template #default="{ row }">
+                  <el-tooltip content="开启后命中该规则的请求写入攻击日志，可点击「日志」查看命中详情" placement="top">
+                    <el-switch v-model="row.log_enabled" size="small" :disabled="!can('operator')" @change="toggleMatcherLog(row)" />
+                  </el-tooltip>
+                </template>
+              </el-table-column>
               <el-table-column label="状态" width="80">
                 <template #default="{ row }">
                   <el-tag size="small" :type="row.enabled ? 'success' : 'info'" effect="dark" class="km-tag">{{ row.enabled ? '启用' : '停用' }}</el-tag>
                 </template>
               </el-table-column>
-              <el-table-column width="130">
+              <el-table-column width="170">
                 <template #default="{ row }">
                   <el-button link type="primary" size="small" @click="openMatcher(matchers.indexOf(row))">编辑</el-button>
+                  <el-button v-if="row.log_enabled && (matcherHits[row.name] || 0) > 0" link type="primary" size="small" @click="gotoRuleLogs('matcher/' + row.name)">日志</el-button>
                   <el-button link type="danger" size="small" @click="removeMatcher(matchers.indexOf(row))">删除</el-button>
                 </template>
               </el-table-column>
@@ -373,6 +367,12 @@
           </div>
         </el-form-item>
         <el-form-item label="备注"><el-input v-model="m.comment" /></el-form-item>
+        <el-form-item label="记录日志">
+          <div>
+            <el-switch v-model="m.log_enabled" />
+            <div class="km-dim" style="font-size:12px;margin-top:4px">开启后，命中该规则的请求写入攻击日志（含站点/来源/路径），可在规则列表点击「日志」查看命中详情；关闭时仅计数不记日志，动作照常执行</div>
+          </div>
+        </el-form-item>
         <el-form-item label="启用"><el-switch v-model="m.enabled" /></el-form-item>
       </el-form>
       <template #footer>
@@ -484,7 +484,7 @@ const engine = ref({})
 const mDlg = ref(false)
 const mEditIndex = ref(-1)
 const savingMatcher = ref(false)
-const m = reactive({ name: '', action: 'deny', logic: 'and', sites: [], enabled: true, comment: '', disable_stages: [], conditions: [{ field: 'client_ip', op: 'contains', value: '' }] })
+const m = reactive({ name: '', action: 'deny', logic: 'and', sites: [], enabled: true, log_enabled: false, comment: '', disable_stages: [], conditions: [{ field: 'client_ip', op: 'contains', value: '' }] })
 const p = reactive({
   inbound: 5, outbound: 4,
   gBlack: [], gWhite: [],
@@ -543,36 +543,48 @@ async function load() {
     version.value = st.version || ''
     engine.value = st.engine || {}
   } catch (e) { /* version card optional */ }
-  loadRuleStats()
+  loadMatcherHits()
 }
 
-// ---- 规则命中 TOP 统计卡（GET /api/stats/rules）----
-const ruleStats = ref({ total: 0, items: [] })
-const ruleStatsHours = ref(24)
-const ruleStatsLoading = ref(false)
-async function loadRuleStats() {
-  ruleStatsLoading.value = true
+// ---- 微引擎规则命中计数（GET /api/policy/micro-rules/hits，进程内计数，重启归零）----
+const matcherHits = ref({})
+async function loadMatcherHits() {
   try {
-    ruleStats.value = await api('/api/stats/rules?hours=' + ruleStatsHours.value + '&limit=10')
+    const d = await api('/api/policy/micro-rules/hits')
+    const m = {}
+    for (const it of (d.items || [])) m[it.rule] = it.count || 0
+    matcherHits.value = m
   } catch (e) {
-    ruleStats.value = { total: 0, items: [] }
-  } finally {
-    ruleStatsLoading.value = false
+    matcherHits.value = {}
   }
 }
-watch(ruleStatsHours, loadRuleStats)
-function rulePct(count) {
-  const max = Math.max(1, ...(ruleStats.value.items || []).map(i => i.count || 0))
-  return Math.max(2, Math.round(count * 100 / max))
-}
-// 占窗口内总命中的百分比（与后端 total 同口径）；total 为 0 时展示占位符
-function totalPct(count) {
-  const total = ruleStats.value.total || 0
-  if (!total) return '-'
-  return (count * 100 / total).toFixed(1) + '%'
-}
+
+// 跳转到攻击日志页并按规则标识过滤（deny 与开启日志的命中事件都携带 matcher/<名称>）
 function gotoRuleLogs(rule) {
   router.push('/logs?rule=' + encodeURIComponent(rule))
+}
+
+// 表格内直接切换「记录日志」：读全量 config → 改对应规则 → publish；失败回滚开关状态
+async function toggleMatcherLog(row) {
+  try {
+    const d = await api('/api/config')
+    const cfg = d.config
+    cfg.policy = cfg.policy || {}
+    const list = cfg.policy.matchers || []
+    const i = matchers.value.indexOf(row)
+    if (i < 0 || i >= list.length) {
+      row.log_enabled = !row.log_enabled
+      return
+    }
+    if (row.log_enabled) list[i].log_enabled = true
+    else delete list[i].log_enabled
+    await post('/api/config/publish', { note: 'matcher log toggle: ' + row.name, config: cfg })
+    ElMessage.success(row.log_enabled ? '已开启命中日志并热生效' : '已关闭命中日志并热生效')
+    load()
+  } catch (e) {
+    ElMessage.error('发布失败：' + e.message)
+    row.log_enabled = !row.log_enabled
+  }
 }
 
 // ---- 列表分页（默认 10，可选 10/20/50/100）----
@@ -830,7 +842,7 @@ function openMatcher(i) {
     Object.assign(m, JSON.parse(JSON.stringify(r)))
     if (!m.conditions.length) m.conditions.push({ field: 'client_ip', op: 'contains', value: '' })
   } else {
-    Object.assign(m, { name: '', action: 'deny', logic: 'and', sites: [], enabled: true, comment: '', disable_stages: [],
+    Object.assign(m, { name: '', action: 'deny', logic: 'and', sites: [], enabled: true, log_enabled: false, comment: '', disable_stages: [],
       conditions: [{ field: 'client_ip', op: 'contains', value: '' }] })
   }
   mDlg.value = true
@@ -845,6 +857,7 @@ async function saveMatcher() {
   cfg.policy.matchers = cfg.policy.matchers || []
   const rule = JSON.parse(JSON.stringify(m))
   rule.logic = rule.logic || 'and'
+  if (!rule.log_enabled) delete rule.log_enabled
   if (rule.action !== 'disable' || !Array.isArray(rule.disable_stages) || !rule.disable_stages.length) delete rule.disable_stages
   if (mEditIndex.value >= 0) cfg.policy.matchers[mEditIndex.value] = rule
   else cfg.policy.matchers.push(rule)
@@ -881,13 +894,6 @@ async function removeMatcher(i) {
 .km-config-row .desc { font-size: 11.5px; color: var(--km-txt-3); }
 .km-config-row .right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
 .km-config-row .val { font-size: 12px; color: var(--km-txt-2); }
-.km-rule-hit { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 8px; cursor: pointer; }
-.km-rule-hit:hover { background: var(--km-panel-2); }
-.km-rule-hit .rank { width: 22px; height: 22px; border-radius: 6px; background: var(--km-panel-2); color: var(--km-txt-2); font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex: none; }
-.km-rule-hit .rule { flex: none; width: 230px; font-size: 12.5px; color: var(--km-txt); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.km-rule-hit .bar { flex: 1; }
-.km-rule-hit .cnt { flex: none; min-width: 64px; text-align: right; font-size: 13px; font-weight: 700; color: var(--km-soft-blue); }
-.km-rule-hit .pct { flex: none; min-width: 52px; text-align: right; font-size: 11.5px; color: var(--km-txt-3); }
 .cat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; }
 .cat-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 12px; border-radius: 8px; background: var(--km-panel-2); border: 1px solid var(--km-line-soft); }
 .cat-item .cat-label { font-size: 12.5px; color: var(--km-txt-2); }

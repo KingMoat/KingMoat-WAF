@@ -554,7 +554,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					"site", site, "trace", traceID,
 					"method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr)
 			}
-			if !trustedFlow(rc) {
+			if h.pipelineAuditAllowed(state.cfg, v, rc) {
 				h.audit.Write(h.newEvent(r, site, v, "blocked", bodyBytes, rc))
 			}
 			metrics.RequestsTotal.Inc(site, "blocked")
@@ -571,7 +571,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"site", site, "trace", traceID,
 				"method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr)
 		}
-		if !trustedFlow(rc) {
+		if h.pipelineAuditAllowed(state.cfg, v, rc) {
 			h.audit.Write(h.newEvent(r, site, v, "monitor", bodyBytes, rc))
 		}
 		metrics.RequestsTotal.Inc(site, outcome)
@@ -621,6 +621,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		metrics.DailyReqInc(site, "monitor_forwarded")
 	}
 
+	// Micro-engine rule hit audit (allow/monitor/disable actions): when the
+	// matched rule opts in to logging (log_enabled), write one monitor-action
+	// event carrying the "matcher/<name>" identifier so the console can
+	// drill down per rule. Deny verdicts are handled in the case above.
+	if v.Action == pipeline.ActionAllow {
+		if name, ok := rc.Values["matcher_rule"].(string); ok && name != "" && matcherLogEnabled(state.cfg, name) {
+			ev := pipeline.Verdict{Action: pipeline.ActionAllow, Rule: "matcher/" + name, Reason: "matched custom rule: " + name}
+			h.audit.Write(h.newEvent(r, site, ev, "monitor", bodyBytes, rc))
+		}
+	}
+
 	// Forward upstream; response pipeline runs in ModifyResponse. The
 	// access-tick side channel reads the bot label and buffered-body parameter
 	// names from the request context (observer nil means no-op).
@@ -666,6 +677,46 @@ func trustedFlow(rc *pipeline.RequestContext) bool {
 	}
 	trusted, ok := rc.Values["trusted"].(bool)
 	return ok && trusted
+}
+
+// matcherRuleOf extracts the rule name from a "matcher/<name>" verdict rule
+// identifier; "" for any other (non-micro-engine) rule.
+func matcherRuleOf(rule string) string {
+	if name, ok := strings.CutPrefix(rule, "matcher/"); ok {
+		return name
+	}
+	return ""
+}
+
+// matcherLogEnabled reports whether the named micro-engine rule is configured
+// to write audit events (config.Policy.Matchers[].log_enabled). Unknown rules
+// (deleted, or read across a config reload) default to false: audit off.
+func matcherLogEnabled(cfg *config.Config, name string) bool {
+	if cfg == nil || cfg.Policy == nil || name == "" {
+		return false
+	}
+	for i := range cfg.Policy.Matchers {
+		if cfg.Policy.Matchers[i].Name == name {
+			return cfg.Policy.Matchers[i].LogEnabled
+		}
+	}
+	return false
+}
+
+// pipelineAuditAllowed gates the deny/challenge audit write points: the
+// event is written when the request is not a trusted flow AND the verdict's
+// rule opts in to logging. Non-matcher rules always log (existing behavior);
+// micro-engine rules log only when their per-rule log_enabled toggle is on,
+// so a rule with logging disabled is still enforced (and counted) but
+// produces no audit events.
+func (h *Handler) pipelineAuditAllowed(cfg *config.Config, v pipeline.Verdict, rc *pipeline.RequestContext) bool {
+	if trustedFlow(rc) {
+		return false
+	}
+	if name := matcherRuleOf(v.Rule); name != "" {
+		return matcherLogEnabled(cfg, name)
+	}
+	return true
 }
 
 func (h *Handler) newEvent(r *http.Request, site string, v pipeline.Verdict, action string, bodyBytes int, rc *pipeline.RequestContext) *logstore.Event {

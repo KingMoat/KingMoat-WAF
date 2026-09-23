@@ -8,9 +8,9 @@
         <div class="lg-slogan-en">KingMoat · Fortress for Every Request</div>
       </div>
       <ul class="lg-feats">
-        <li><i>1</i><span>真开源，不限量：QPS 并发与站点数均不设上限（木兰宽松许可证 MulanPSL-2.0）</span></li>
-        <li><i>2</i><span>Coraza + OWASP CRS 双引擎语义检测，libinjection 精准识别 SQLi / XSS</span></li>
-        <li><i>3</i><span>站点防护图形化配置：签名 / 语义 / CC / GeoIP / 动态防护逐项开关</span></li>
+        <li><i>1</i><span>真开源，不限量：QPS 与站点数无上限，单二进制一键部署（木兰宽松许可证 MulanPSL-2.0）</span></li>
+        <li><i>2</i><span>Coraza + OWASP CRS：签名与语义双检测，libinjection 精准识别 SQLi / XSS</span></li>
+        <li><i>3</i><span>防护粒度细可调：CRS 按 10 类攻击类型独立启停，微引擎规则按条件放行 / 拦截 / 关闭指定检测模块</span></li>
         <li><i>4</i><span>攻击日志全量溯源，命中规则 ID 可一键提交 AI 安全分析师解读</span></li>
         <li><i>5</i><span>审计日志可外发 Elasticsearch / Loki / ClickHouse / S3 / Syslog</span></li>
       </ul>

@@ -326,21 +326,31 @@
           </el-radio-group>
         </el-form-item>
         <el-form-item v-if="m.action === 'disable'" label="关闭模块">
-          <el-checkbox-group v-model="m.disable_stages" style="width:100%">
-            <div>
-              <el-checkbox value="coraza">CRS 签名检测</el-checkbox>
-              <el-checkbox value="semantic">语义检测</el-checkbox>
-              <el-checkbox value="botdetect">BOT 识别</el-checkbox>
-              <el-checkbox value="botchallenge">BOT 挑战</el-checkbox>
-              <el-checkbox value="ratelimit">CC 限流</el-checkbox>
-              <el-checkbox value="captcha">人机验证</el-checkbox>
-              <el-button link type="primary" style="margin-left:4px" @click="catsOpen = !catsOpen">{{ catsOpen ? '收起分类' : '按分类关闭…' }}</el-button>
+          <el-checkbox-group v-model="m.disable_stages" style="width:100%" @change="onStagesChange">
+            <div class="mod-row">
+              <el-checkbox value="coraza" border size="small">CRS 签名检测</el-checkbox>
+              <el-checkbox value="semantic" border size="small">语义检测</el-checkbox>
+              <el-checkbox value="botdetect" border size="small">BOT 识别</el-checkbox>
+              <el-checkbox value="botchallenge" border size="small">BOT 挑战</el-checkbox>
+              <el-checkbox value="ratelimit" border size="small">CC 限流</el-checkbox>
+              <el-checkbox value="captcha" border size="small">人机验证</el-checkbox>
             </div>
-            <div v-if="catsOpen" style="margin-top:4px;padding:6px 10px;border:1px dashed var(--km-line-soft);border-radius:6px">
-              <div class="km-dim" style="font-size:12px;margin-bottom:2px">仅关闭指定攻击分类（与上方「CRS 签名检测」互斥，需两者并存请拆成两条规则）</div>
-              <el-checkbox v-for="c in CRS_CATEGORIES" :key="c.id" :value="'coraza:' + c.id">{{ c.label }}</el-checkbox>
+            <div class="cats-toggle" :class="{ 'cats-on': catsOpen, 'cats-disabled': m.disable_stages.includes('coraza') }"
+                 @click="toggleCats">
+              <el-icon class="cats-arrow" :class="{ open: catsOpen }"><ArrowRight /></el-icon>
+              <span>按分类关闭 CRS</span>
+              <span class="cats-sub">与「CRS 签名检测」整模块互斥</span>
             </div>
-            <div class="km-dim" style="font-size:12px;margin-top:4px">命中该规则后，作用站点的这些检测模块被关闭（重新发布配置或删除规则后恢复）；访问控制类模块不可关闭</div>
+            <el-collapse-transition>
+              <div v-if="catsOpen" class="cats-panel">
+                <div class="cats-grid">
+                  <el-checkbox v-for="c in CRS_CATEGORIES" :key="c.id" :value="'coraza:' + c.id" border size="small"
+                               :disabled="m.disable_stages.includes('coraza')">{{ c.label }}</el-checkbox>
+                </div>
+                <div class="km-dim" style="font-size:11.5px;margin-top:8px">命中后仅这些分类的检测被关闭，其余分类照常拦截；两者并存请拆成两条规则</div>
+              </div>
+            </el-collapse-transition>
+            <div class="km-dim" style="font-size:12px;margin-top:6px">命中该规则后，作用站点的这些检测模块/分类被关闭（重新发布配置或删除规则后恢复）；访问控制类模块不可关闭</div>
           </el-checkbox-group>
         </el-form-item>
         <el-form-item label="作用站点">
@@ -505,6 +515,24 @@ const mEditIndex = ref(-1)
 const mEditName = ref('')
 const savingMatcher = ref(false)
 const catsOpen = ref(false)
+
+// 分类面板开合：整模块 coraza 已勾选时不可展开（互斥）
+function toggleCats() {
+  if (m.disable_stages.includes('coraza')) {
+    ElMessage.info('已勾选「CRS 签名检测」整模块；如需按分类关闭，请先取消整模块勾选')
+    return
+  }
+  catsOpen.value = !catsOpen.value
+}
+
+// 互斥联动：勾选整模块时自动清掉已勾的分类（两类并存保存会被拒绝，提前联动消除冲突态）
+function onStagesChange() {
+  if (!m.disable_stages.includes('coraza')) return
+  if (scopedCorazaCats(m.disable_stages).length) {
+    m.disable_stages = m.disable_stages.filter(s => s.indexOf('coraza:') !== 0)
+    ElMessage.info('「CRS 签名检测」已包含全部分类，已自动取消分类勾选；如需按分类关闭请改用下方「按分类关闭 CRS」')
+  }
+}
 const m = reactive({ name: '', action: 'deny', logic: 'and', sites: [], enabled: true, log_enabled: false, comment: '', disable_stages: [], conditions: [{ field: 'client_ip', op: 'contains', value: '' }] })
 const p = reactive({
   inbound: 5, outbound: 4,
@@ -979,6 +1007,19 @@ async function removeMatcher(row) {
 .cat-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 12px; border-radius: 8px; background: var(--km-panel-2); border: 1px solid var(--km-line-soft); }
 .cat-item .cat-label { font-size: 12.5px; color: var(--km-txt-2); }
 .cat-item.cat-off { opacity: .55; }
+/* 微引擎弹窗：关闭模块复选卡 + 分类面板 */
+.mod-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.mod-row :deep(.el-checkbox.el-checkbox--small.is-bordered) { margin-right: 0; border-radius: 6px; height: 32px; padding: 0 12px; }
+.cats-toggle { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; padding: 5px 12px; border: 1px solid var(--km-line-soft); border-radius: 6px; cursor: pointer; font-size: 12.5px; color: var(--km-txt-2); background: var(--km-panel-2); user-select: none; transition: border-color .15s, color .15s; }
+.cats-toggle:hover { border-color: var(--km-soft-blue); color: var(--km-soft-blue); }
+.cats-toggle.cats-on { border-color: var(--km-soft-blue); color: var(--km-soft-blue); background: transparent; }
+.cats-toggle.cats-disabled { opacity: .5; cursor: not-allowed; }
+.cats-toggle .cats-sub { font-size: 11px; color: var(--km-txt-3); }
+.cats-toggle .cats-arrow { font-size: 12px; transition: transform .15s; }
+.cats-toggle .cats-arrow.open { transform: rotate(90deg); }
+.cats-panel { margin-top: 8px; padding: 10px 12px; background: var(--km-panel-2); border: 1px solid var(--km-line-soft); border-radius: 8px; }
+.cats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; }
+.cats-grid :deep(.el-checkbox.el-checkbox--small.is-bordered) { margin-right: 0; width: 100%; border-radius: 6px; height: 30px; padding: 0 10px; }
 .eng-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .eng-item { border: 1px solid var(--km-line-soft); border-radius: 8px; padding: 9px 11px; background: var(--km-panel-2); transition: border-color .15s, opacity .15s; }
 .eng-item:hover { border-color: var(--km-soft-blue); }

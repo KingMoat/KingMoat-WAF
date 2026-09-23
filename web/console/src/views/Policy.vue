@@ -199,7 +199,7 @@
                 <template #default="{ row }">
                   <el-button link type="primary" size="small" @click="openMatcher(matchers.indexOf(row))">编辑</el-button>
                   <el-button v-if="row.log_enabled && (matcherHits[row.name] || 0) > 0" link type="primary" size="small" @click="gotoRuleLogs('matcher/' + row.name)">日志</el-button>
-                  <el-button link type="danger" size="small" @click="removeMatcher(matchers.indexOf(row))">删除</el-button>
+                  <el-button link type="danger" size="small" @click="removeMatcher(row)">删除</el-button>
                 </template>
               </el-table-column>
             </el-table>
@@ -483,6 +483,7 @@ const version = ref('')
 const engine = ref({})
 const mDlg = ref(false)
 const mEditIndex = ref(-1)
+const mEditName = ref('')
 const savingMatcher = ref(false)
 const m = reactive({ name: '', action: 'deny', logic: 'and', sites: [], enabled: true, log_enabled: false, comment: '', disable_stages: [], conditions: [{ field: 'client_ip', op: 'contains', value: '' }] })
 const p = reactive({
@@ -564,15 +565,17 @@ function gotoRuleLogs(rule) {
   router.push('/logs?rule=' + encodeURIComponent(rule))
 }
 
-// 表格内直接切换「记录日志」：读全量 config → 改对应规则 → publish；失败回滚开关状态
+// 表格内直接切换「记录日志」：读全量 config → 改对应规则 → publish；失败回滚开关状态。
+// 按规则名定位（而非列表下标）：避免其他管理员并发变更列表后开关写错规则。
 async function toggleMatcherLog(row) {
   try {
     const d = await api('/api/config')
     const cfg = d.config
     cfg.policy = cfg.policy || {}
     const list = cfg.policy.matchers || []
-    const i = matchers.value.indexOf(row)
-    if (i < 0 || i >= list.length) {
+    const i = list.findIndex(x => x.name === row.name)
+    if (i < 0) {
+      ElMessage.error('规则 ' + row.name + ' 已被其他管理员修改，请刷新后重试')
       row.log_enabled = !row.log_enabled
       return
     }
@@ -837,15 +840,22 @@ onMounted(load)
 
 function openMatcher(i) {
   mEditIndex.value = i
+  // 记录打开时的规则名：保存时按名字回写，避免并发变更后按下标写错规则
+  mEditName.value = i >= 0 ? (matchers.value[i] ? matchers.value[i].name : '') : ''
   if (i >= 0) {
     const r = matchers.value[i]
-    Object.assign(m, JSON.parse(JSON.stringify(r)))
+    // 先铺默认值再覆盖规则字段：规则缺失的字段（如未开启过 log_enabled）不残留上一次编辑的值
+    Object.assign(m, matcherDefaults(), JSON.parse(JSON.stringify(r)))
     if (!m.conditions.length) m.conditions.push({ field: 'client_ip', op: 'contains', value: '' })
   } else {
-    Object.assign(m, { name: '', action: 'deny', logic: 'and', sites: [], enabled: true, log_enabled: false, comment: '', disable_stages: [],
-      conditions: [{ field: 'client_ip', op: 'contains', value: '' }] })
+    Object.assign(m, matcherDefaults())
   }
   mDlg.value = true
+}
+
+function matcherDefaults() {
+  return { name: '', action: 'deny', logic: 'and', sites: [], enabled: true, log_enabled: false, comment: '', disable_stages: [],
+    conditions: [{ field: 'client_ip', op: 'contains', value: '' }] }
 }
 
 async function saveMatcher() {
@@ -859,8 +869,14 @@ async function saveMatcher() {
   rule.logic = rule.logic || 'and'
   if (!rule.log_enabled) delete rule.log_enabled
   if (rule.action !== 'disable' || !Array.isArray(rule.disable_stages) || !rule.disable_stages.length) delete rule.disable_stages
-  if (mEditIndex.value >= 0) cfg.policy.matchers[mEditIndex.value] = rule
-  else cfg.policy.matchers.push(rule)
+  if (mEditIndex.value >= 0) {
+    // 按打开时的规则名回写（并发安全）：规则已被删除时中止，避免静默变为新增
+    const at = cfg.policy.matchers.findIndex(x => x.name === mEditName.value)
+    if (at < 0) {
+      return ElMessage.error('规则 ' + (mEditName.value || m.name) + ' 已被其他管理员删除，请刷新列表后重试')
+    }
+    cfg.policy.matchers[at] = rule
+  } else cfg.policy.matchers.push(rule)
   try {
     const r = await post('/api/config/publish', { note: 'matcher rule: ' + rule.name, config: cfg })
     ElMessage.success('规则已发布并热生效（版本 ' + r.revision + '）')
@@ -871,14 +887,16 @@ async function saveMatcher() {
   }
 }
 
-async function removeMatcher(i) {
+async function removeMatcher(row) {
   const d = await api('/api/config')
   const cfg = d.config
   cfg.policy = cfg.policy || {}
-  const name = (cfg.policy.matchers[i] || {}).name || ''
+  // 按规则名定位（并发安全）：其他管理员已删除同名规则时提示刷新
+  const i = (cfg.policy.matchers || []).findIndex(x => x.name === row.name)
+  if (i < 0) return ElMessage.error('规则 ' + row.name + ' 已被其他管理员删除，请刷新列表')
   cfg.policy.matchers.splice(i, 1)
   try {
-    await post('/api/config/publish', { note: 'matcher removed: ' + name, config: cfg })
+    await post('/api/config/publish', { note: 'matcher removed: ' + row.name, config: cfg })
     ElMessage.success('已删除并热生效')
     load()
   } catch (e) { ElMessage.error(e.message) }

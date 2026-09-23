@@ -379,7 +379,12 @@ func main() {
 					if aiBuilder != nil {
 						aiBuilder(cfg) // ai toggle hot-applies (close+rebuild)
 					}
-					buildTelemetry(cfg) // telemetry switch hot-applies
+					telMu.Lock()
+					bt := buildTelemetry
+					telMu.Unlock()
+					if bt != nil {
+						bt(cfg) // telemetry switch hot-applies
+					}
 					buildEngines(cfg) // alerts + risks toggle hot-applies
 				}
 			}
@@ -454,6 +459,7 @@ func main() {
 		if oldTel != nil {
 			oldTel.Stop()
 		}
+		telMu.Lock()
 		buildTelemetry = func(cfg *config.Config) {
 			enabled := cfg.Telemetry != nil && cfg.Telemetry.Enabled
 			telMu.Lock()
@@ -489,6 +495,7 @@ func main() {
 			telPrev = true
 			telMu.Unlock()
 		}
+		telMu.Unlock()
 		buildTelemetry(activeCfg)
 		defer func() {
 			telMu.Lock()

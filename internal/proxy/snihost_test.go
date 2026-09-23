@@ -36,11 +36,11 @@ func (s *sniSeen) all() []string {
 }
 
 // startSNITestServer starts an HTTPS test server whose self-signed
-// certificate carries CN/SAN = aihub.genomics.cn and records the TLS
+// certificate carries CN/SAN = sni-test.example.com and records the TLS
 // ServerName (the SNI the client actually sent) of every request.
 func startSNITestServer(t *testing.T) (addr string, seen *sniSeen, conns *atomic.Int64, closeFn func()) {
 	t.Helper()
-	certPEM, keyPEM := genSelfSigned(t, "aihub.genomics.cn")
+	certPEM, keyPEM := genSelfSigned(t, "sni-test.example.com")
 	cert, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {
 		t.Fatalf("X509KeyPair: %v", err)
@@ -69,7 +69,7 @@ func TestSNIHostDialPinsServerName(t *testing.T) {
 	addr, seen, _, closeFn := startSNITestServer(t)
 	defer closeFn()
 
-	tr := newUpstreamTransport(config.Upstream{SNIHost: "aihub.genomics.cn"})
+	tr := newUpstreamTransport(config.Upstream{SNIHost: "sni-test.example.com"})
 	cli := &http.Client{Transport: tr, Timeout: 5 * time.Second}
 
 	ctx := context.WithValue(context.Background(), clientSNIKey{}, "client.example.com")
@@ -84,8 +84,8 @@ func TestSNIHostDialPinsServerName(t *testing.T) {
 	resp.Body.Close()
 
 	got := seen.all()
-	if len(got) != 1 || !strings.HasSuffix(got[0], "=aihub.genomics.cn") {
-		t.Fatalf("server saw %v, want path=aihub.genomics.cn (request URL host %s)", got, addr)
+	if len(got) != 1 || !strings.HasSuffix(got[0], "=sni-test.example.com") {
+		t.Fatalf("server saw %v, want path=sni-test.example.com (request URL host %s)", got, addr)
 	}
 }
 
@@ -97,7 +97,7 @@ func TestSNIHostDialReuseAcrossHosts(t *testing.T) {
 	addr, seen, conns, closeFn := startSNITestServer(t)
 	defer closeFn()
 
-	tr := newUpstreamTransport(config.Upstream{SNIHost: "aihub.genomics.cn"})
+	tr := newUpstreamTransport(config.Upstream{SNIHost: "sni-test.example.com"})
 	cli := &http.Client{Transport: tr, Timeout: 5 * time.Second}
 	get := func(host, path string) {
 		t.Helper()
@@ -127,7 +127,7 @@ func TestSNIHostDialReuseAcrossHosts(t *testing.T) {
 		t.Fatalf("server saw %d requests, want 2: %v", len(got), got)
 	}
 	for _, s := range got {
-		if !strings.HasSuffix(s, "=aihub.genomics.cn") {
+		if !strings.HasSuffix(s, "=sni-test.example.com") {
 			t.Fatalf("reused-connection SNI mismatch: %v (second request must keep the pinned sni_host)", got)
 		}
 	}

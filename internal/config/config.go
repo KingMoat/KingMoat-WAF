@@ -1031,6 +1031,11 @@ func (c *Config) validateSite(i int, s *Site, groups map[string]bool) error {
 					return fmt.Errorf("config: sites[%d].waf.custom_rules_file: %w", i, err)
 				}
 			}
+			for _, cat := range s.WAF.Categories {
+				if !ValidWAFCategory(cat) {
+					return fmt.Errorf("config: sites[%d].waf.categories: %q is not a valid category (valid: %s)", i, cat, strings.Join(WAFDetectionCategories, ", "))
+				}
+			}
 		}
 		if s.Security != nil {
 			if err := s.Security.validateGroups(groups); err != nil {

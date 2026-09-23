@@ -78,6 +78,7 @@ curl -H 'Authorization: Bearer kma1_1a2b3c4d_xxxxxxxxxxxx' http://127.0.0.1:8081
 | GET | `/api/policy/exceptions` | 是 | 误报加白例外列表 |
 | POST | `/api/policy/exceptions` | operator | 新增加白例外（site/path/prefix/rule_id/comment），发布热生效 |
 | DELETE | `/api/policy/exceptions/{index}` | operator | 撤销加白例外（发布热生效） |
+| GET | `/api/policy/disable-state` | 是 | 当前各站点被禁用的检测模块/CRS 分类快照（微引擎 disable 规则命中后的实时状态，发布重置） |
 | GET | `/api/ipgroups` | 是 | IP 组订阅列表（条目数/预览/最后错误） |
 | POST | `/api/ipgroups/{name}/refresh` | operator | 手动刷新订阅组 |
 | GET | `/metrics` | 是 | Prometheus 指标（用 API Key/Basic 采集；`-metrics-addr` 专用监听器无认证） |
@@ -128,8 +129,8 @@ curl -H 'Authorization: Bearer kma1_1a2b3c4d_xxxxxxxxxxxx' http://127.0.0.1:8081
 {"note": "开通站点 b.local", "config": { ... }}
 ```
 
-- `200`：`{"revision": 4}` —— 校验通过、落库、热生效（原子替换，失败保留旧配置）
-- `400`：`{"error":"config: sites[1].upstream.nodes is empty"}` —— 校验失败不落库
+- `200`：`{"revision": 4, "apply": {"revision": 4, "status": "applied", "error": ""}}` —— 校验通过、落库、热生效（原子替换，失败保留旧配置）；`apply.status`：`applied`（数据面已加载）/ `failed`（数据面加载失败，旧配置继续生效，error 携带原因）/ `pending`（无数据面消费者或超时）
+- `400`：`{"error":"config: sites[1].upstream.nodes is empty"}` —— 校验失败不落库（含微引擎上限：per-site 分类 disable 规则 ≤4、全局变体 ≤64）
 
 发布失败不影响线上流量（fail-static）。
 

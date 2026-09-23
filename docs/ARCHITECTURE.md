@@ -137,7 +137,8 @@ accept
 ### 3.3 Coraza 集成设计
 
 ```go
-// internal/coraza/waf.go —— 每个站点一个 WAF 实例（不同站点不同规则集）
+// internal/coraza/stage.go —— 每个站点一个 WAF 实例（不同站点不同规则集），
+// 另按需携带分类变体引擎（见下表）
 type SiteEngine struct {
     waf coraza.WAF          // 不可变实例，热更新时整体替换（copy-on-write）
     txPool sync.Pool        // Transaction 对象池，降低热路径分配
@@ -155,6 +156,7 @@ type SiteEngine struct {
 | 请求体 | `tx.WriteRequestBody` 流式写入；`SecRequestBodyLimit` 与代理层缓冲上限对齐 |
 | 审计日志 | 实现 Coraza `AuditLog` 接口，把 `Serial/Relevant` 日志转入统一审计管道（不落 Coraza 默认文件） |
 | 热更新 | 规则变更 → 新建 WAF 实例 → 原子替换 `atomic.Pointer[SiteEngine]` → 在途请求用旧实例跑完 |
+| 分类变体引擎 | 微引擎 `coraza:<分类>` disable 规则：发布时按「每条规则分类集 + 并集」预编译变体（复用 REQUEST-999 悬空指令过滤），命中后站点内切换变体（请求当次即生效，持续至发布重置），未知组合回退主引擎；变体编译失败仅降级该范围（Error 告警），仅主引擎失败才启动失败；per-site ≤4 条分类规则、全局 ≤64 变体（config.Validate 前置拒绝） |
 | 性能护栏 | `ParanoiaLevel` 按站点可配（默认 1，严格站点 2+）；`executing rules` 耗时直方图暴露到 metrics |
 
 ### 3.4 CC 防护与客户端指纹

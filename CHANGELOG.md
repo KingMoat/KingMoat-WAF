@@ -11,6 +11,7 @@
 
 ### 变更
 
+- **文档同步**：CONFIG.md 补 `matchers.disable_stages` 的 `coraza:<分类>` 复合值/botchallenge/上限/强制审计/重名约束、策略级 `waf_categories` 与站点级 `waf.categories` 字段说明；API.md 补发布响应 `apply` 字段与 `GET /api/policy/disable-state` 端点；ARCHITECTURE.md §3.3 补分类变体引擎设计决策并修正代码路径引用（waf.go → stage.go）
 - **策略页新增「检测分类与引擎」tab（位于「引擎与规则版本」上方）**：「CRS 检测分类全局默认」与「检测引擎启用情况（按站点聚合）」合并为同页双栏——左侧分类默认开关（新增「全部启用」快捷、关闭项弱化显示），右侧引擎聚合改为双列卡片网格（名称 + 启用计数徽标 + 覆盖率进度条，未启用引擎弱化）；微引擎 tab 内的原分类默认卡移除（防重复入口）
 - **微引擎规则名称唯一性校验**：配置校验层拒绝重名的微引擎规则（`policy: matchers[N]: duplicate rule name "..."`）——控制台按名称定位规则（开关/编辑/删除）、审计日志按 `matcher/<名称>` 标记命中，重名会使这些操作有歧义；历史重名配置在下次发布时需先改名
 - **微引擎弹窗「关闭模块」补齐 BOT 挑战（botchallenge）选项**：后端 DisableableStages 已支持，前端此前漏列

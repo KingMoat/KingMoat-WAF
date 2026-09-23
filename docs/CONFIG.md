@@ -50,7 +50,8 @@
 | `outbound_threshold` | int | 4 | CRS 出站异常评分阈值 |
 | `custom_rules` | string | `""` | 全局 SecLang 规则文本（追加在 CRS 之后，发布时编译校验） |
 | `global_acl` | object | 空 | `{"blacklist":[...],"whitelist":[...]}`，先于站点 ACL 生效；条目同站点 ACL（IP/CIDR/group:）。顺序：全局白名单 → 全局黑名单 → 站点白名单 → 站点黑名单，白名单命中即放行并跳过后续全部检测 |
-| `matchers` | array | `[]` | 条件组合规则（MicroEngine 式）：`{name, enabled, sites[], action, logic, conditions[{field,op,value}], disable_stages[]}`；field：client_ip/hostname/path/uri/method/user_agent/referer/body/header:X/query:Y/cookie:Z；op：eq/neq/contains/not_contains/prefix/suffix/regex/cidr/in；action：deny/allow/monitor/disable；action=disable 时 `disable_stages` 列出对该站点关闭的检测模块（coraza/semantic/botdetect/ratelimit/captcha），发布新配置或删除规则后恢复 |
+| `matchers` | array | `[]` | 条件组合规则（MicroEngine 式）：`{name, enabled, sites[], action, logic, conditions[{field,op,value}], disable_stages[], log_enabled}`；field：client_ip/hostname/path/uri/method/user_agent/referer/body/header:X/query:Y/cookie:Z；op：eq/neq/contains/not_contains/prefix/suffix/regex/cidr/in；action：deny/allow/monitor/disable；action=disable 时 `disable_stages` 列出对该站点关闭的检测模块（coraza/semantic/botdetect/botchallenge/ratelimit/captcha，或 `coraza:<分类>` 仅关单个 CRS 检测分类，如 `coraza:sqli`——同一规则内禁止 `coraza` 与 `coraza:<分类>` 混用）；命中后站点级持续生效（发布新配置或删除规则后恢复），`coraza:<分类>` 通过发布时预编译的变体引擎切换（每站点 ≤4 条分类规则、全局 ≤64 个变体，超限发布被拒）；disable 命中**强制审计**（不受 log_enabled 门控）；规则名称必须唯一（重名发布被拒）；`log_enabled` 开启后 deny 以外的命中写攻击日志 |
+| `waf_categories` | array | 空(nil) | CRS 检测分类全局默认：列出启用的分类（sqli/xss/rce/lfi/rfi/php/generic/session/java/scanner），未配置 = 全部启用；站点可用 `waf.categories` 单独覆盖；发布时校验非法值与上限（per-site 分类 disable 规则 ≤4、全局变体 ≤64） |
 
 检测流水线顺序（security 各子块全部可选，缺省即关闭对应阶段）：
 
@@ -67,6 +68,7 @@ ACL → 攻击惩罚（penalty）→ GeoIP → Exceptions → Matcher（含 disa
 | `custom_rules_file` | string | `""` | 自定义 SecLang 规则文件路径 |
 | `body_limit_bytes` | int | 8388608 | 请求体检测缓冲上限 |
 | `body_over_limit` | string | `"reject"` | `reject`(413) / `bypass`（流式透传，仅头检测——存在大包绕过面） / `stream`（深检前 body_limit_bytes，余量原样透传——推荐大包场景） |
+| `categories` | array | 空(nil) | 站点级 CRS 检测分类裁剪：列出启用的分类，未配置 = 全部启用（向后兼容），空列表 `[]` = 仅加载基础设施规则（协议校验/阻塞评分/响应分析，不可关）；关闭分类的规则**不加载**（零性能损耗）；与策略级 `waf_categories`、微引擎 `coraza:<分类>` disable 叠加时只能收窄不能扩大 |
 
 # SecuritySettings
 

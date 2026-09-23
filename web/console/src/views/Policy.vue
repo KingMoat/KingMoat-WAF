@@ -347,10 +347,10 @@
                   <el-checkbox v-for="c in CRS_CATEGORIES" :key="c.id" :value="'coraza:' + c.id" border size="small"
                                :disabled="m.disable_stages.includes('coraza')">{{ c.label }}</el-checkbox>
                 </div>
-                <div class="km-dim" style="font-size:11.5px;margin-top:8px">命中后仅这些分类的检测被关闭，其余分类照常拦截；两者并存请拆成两条规则</div>
+                <div class="km-dim" style="font-size:11.5px;margin-top:14px">命中后仅这些分类的检测被关闭，其余分类照常拦截；两者并存请拆成两条规则</div>
               </div>
             </el-collapse-transition>
-            <div class="km-dim" style="font-size:12px;margin-top:6px">命中该规则后，作用站点的这些检测模块/分类被关闭（重新发布配置或删除规则后恢复）；访问控制类模块不可关闭</div>
+            <div class="km-dim" style="font-size:12px;margin-top:10px">命中该规则后，作用站点的这些检测模块/分类被关闭（重新发布配置或删除规则后恢复）；访问控制类模块不可关闭</div>
           </el-checkbox-group>
         </el-form-item>
         <el-form-item label="作用站点">

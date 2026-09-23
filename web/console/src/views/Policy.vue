@@ -327,6 +327,7 @@
         </el-form-item>
         <el-form-item v-if="m.action === 'disable'" label="关闭模块">
           <el-checkbox-group v-model="m.disable_stages" style="width:100%" @change="onStagesChange">
+            <div class="km-dim" style="font-size:12px;margin-bottom:10px">命中该规则后，作用站点的这些检测模块/分类被关闭（重新发布配置或删除规则后恢复）；访问控制类模块不可关闭</div>
             <div class="mod-row">
               <el-checkbox value="coraza" border size="small">CRS 签名检测</el-checkbox>
               <el-checkbox value="semantic" border size="small">语义检测</el-checkbox>
@@ -350,7 +351,6 @@
                 <div class="km-dim" style="font-size:11.5px;margin-top:14px">命中后仅这些分类的检测被关闭，其余分类照常拦截；两者并存请拆成两条规则</div>
               </div>
             </el-collapse-transition>
-            <div class="km-dim" style="font-size:12px;margin-top:10px">命中该规则后，作用站点的这些检测模块/分类被关闭（重新发布配置或删除规则后恢复）；访问控制类模块不可关闭</div>
           </el-checkbox-group>
         </el-form-item>
         <el-form-item label="作用站点">
@@ -1017,7 +1017,7 @@ async function removeMatcher(row) {
 .cats-toggle .cats-sub { font-size: 11px; color: var(--km-txt-3); }
 .cats-toggle .cats-arrow { font-size: 12px; transition: transform .15s; }
 .cats-toggle .cats-arrow.open { transform: rotate(90deg); }
-.cats-panel { margin-top: 8px; padding: 10px 12px; background: var(--km-panel-2); border: 1px solid var(--km-line-soft); border-radius: 8px; }
+.cats-panel { margin-top: 10px; padding: 12px 14px; background: var(--km-panel-2); border: 1px solid var(--km-line-soft); border-radius: 8px; }
 .cats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; }
 .cats-grid :deep(.el-checkbox.el-checkbox--small.is-bordered) { margin-right: 0; width: 100%; border-radius: 6px; height: 30px; padding: 0 10px; }
 .eng-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }

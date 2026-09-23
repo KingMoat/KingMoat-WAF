@@ -119,6 +119,24 @@
 
         <!-- ④ 微引擎规则防护 + 规则命中 TOP -->
         <template v-else-if="tab === 'matchers'">
+          <el-card shadow="never" style="margin-bottom:16px">
+            <div class="km-title" style="margin:0 0 4px">CRS 检测分类全局默认</div>
+            <div class="km-dim" style="font-size:12px;margin-bottom:12px">
+              新建站点与未单独配置分类的站点按此默认装载 CRS 检测类别；站点可在「站点管理」页单独覆盖
+            </div>
+            <div class="cat-grid">
+              <div v-for="c in CRS_CATEGORIES" :key="c.id" class="cat-item">
+                <span class="cat-label">{{ c.label }}</span>
+                <el-switch v-model="wafCats[c.id]" size="small" />
+              </div>
+            </div>
+            <div style="text-align:right;margin-top:12px">
+              <el-button type="primary" :loading="saving" :disabled="!can('operator')" @click="saveWafCategories">
+                保存并发布（热生效）
+              </el-button>
+            </div>
+          </el-card>
+
           <el-alert v-if="legacyWhitelist.length" type="warning" :closable="false" style="margin-bottom:16px">
             <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
               <span>发现 {{ legacyWhitelist.length }} 条旧版误报加白记录（exception 模式），可一键迁移为微引擎放行规则</span>
@@ -133,7 +151,7 @@
               <el-select v-model="ruleStatsHours" size="small" style="width:110px">
                 <el-option v-for="h in [1, 6, 24, 72, 168, 720]" :key="h" :label="h + ' 小时'" :value="h" />
               </el-select>
-              <span class="km-dim" style="font-size:12px">窗口内共 {{ ruleStats.total.toLocaleString() }} 次规则命中（攻击口径）· 点击规则跳转日志页</span>
+              <span class="km-dim" style="font-size:12px">窗口内共 {{ ruleStats.total.toLocaleString() }} 次规则命中（攻击口径）· 右侧为占总命中百分比 · 点击规则跳转日志页</span>
             </div>
             <div v-if="ruleStatsLoading" class="km-muted" style="font-size:12px;padding:6px 0">统计加载中…</div>
             <div v-else-if="!ruleStats.items.length" class="km-muted" style="font-size:12px;padding:6px 0">窗口内暂无规则命中</div>
@@ -142,6 +160,7 @@
               <span class="rule km-mono" :title="it.rule">{{ it.rule }}</span>
               <el-progress class="bar" :percentage="rulePct(it.count)" :show-text="false" :stroke-width="8" />
               <span class="cnt">{{ it.count.toLocaleString() }}</span>
+              <span class="pct">{{ totalPct(it.count) }}</span>
             </div>
           </el-card>
 
@@ -423,6 +442,20 @@ const tabs = [
 ]
 const tab = ref('thresholds')
 
+// CRS 10 个检测类别：固定顺序与中英文标签，与 Sites 页站点级子面板、后端规则类别一致
+const CRS_CATEGORIES = [
+  { id: 'sqli', label: 'SQL 注入' },
+  { id: 'xss', label: 'XSS 跨站' },
+  { id: 'rce', label: '远程代码执行' },
+  { id: 'lfi', label: '本地文件包含' },
+  { id: 'rfi', label: '远程文件包含' },
+  { id: 'php', label: 'PHP 攻击' },
+  { id: 'generic', label: '通用攻击' },
+  { id: 'session', label: '会话固定' },
+  { id: 'java', label: 'Java 攻击' },
+  { id: 'scanner', label: '扫描器' },
+]
+
 const FIELD_LABELS = {
   client_ip: '来源 IP', hostname: '域名', path: '路径', uri: '完整 URI', method: '请求方法',
   user_agent: 'User-Agent', referer: 'Referer', body: '请求体',
@@ -460,6 +493,9 @@ const p = reactive({
   penalty_action: 'deny', penalty_per_min: 10
 })
 
+// CRS 检测分类全局默认开关状态（policy.waf_categories；nil = 全部启用）
+const wafCats = reactive({})
+
 // 站点级引擎启用统计(读当前配置聚合)
 const totalSites = ref(0)
 const engineStats = ref([])
@@ -494,6 +530,9 @@ async function load() {
   p.penalty_ban = c.policy?.penalty?.ban_sec || 3600
   p.penalty_action = c.policy?.penalty?.action || 'deny'
   p.penalty_per_min = c.policy?.penalty?.throttle_per_min || 10
+  const wafCatCfg = c.policy?.waf_categories
+  const activeCats = Array.isArray(wafCatCfg) ? wafCatCfg : CRS_CATEGORIES.map(x => x.id)
+  for (const x of CRS_CATEGORIES) wafCats[x.id] = activeCats.includes(x.id)
   matchers.value = c.policy?.matchers || []
   aggregateEngines(c)
   try { legacyWhitelist.value = migrationDismissed.value ? [] : (await api('/api/policy/exceptions') || []) }
@@ -525,6 +564,12 @@ watch(ruleStatsHours, loadRuleStats)
 function rulePct(count) {
   const max = Math.max(1, ...(ruleStats.value.items || []).map(i => i.count || 0))
   return Math.max(2, Math.round(count * 100 / max))
+}
+// 占窗口内总命中的百分比（与后端 total 同口径）；total 为 0 时展示占位符
+function totalPct(count) {
+  const total = ruleStats.value.total || 0
+  if (!total) return '-'
+  return (count * 100 / total).toFixed(1) + '%'
 }
 function gotoRuleLogs(rule) {
   router.push('/logs?rule=' + encodeURIComponent(rule))
@@ -699,6 +744,25 @@ async function saveThresholds() {
   }
 }
 
+async function saveWafCategories() {
+  const enabled = CRS_CATEGORIES.map(x => x.id).filter(id => wafCats[id])
+  if (!enabled.length) return ElMessage.error('至少启用一个分类')
+  saving.value = true
+  try {
+    const d = await api('/api/config')
+    const cfg = d.config
+    cfg.policy = { ...(cfg.policy || {}) }
+    // 全部启用 = 恢复默认，不写 waf_categories 字段（后端字段缺省即全类别装载）
+    if (enabled.length === CRS_CATEGORIES.length) delete cfg.policy.waf_categories
+    else cfg.policy.waf_categories = enabled
+    await publish(cfg, 'policy: waf categories default')
+  } catch (e) {
+    ElMessage.error('发布失败（旧配置保持生效）：' + e.message)
+  } finally {
+    saving.value = false
+  }
+}
+
 async function saveACL() {
   saving.value = true
   try {
@@ -823,4 +887,8 @@ async function removeMatcher(i) {
 .km-rule-hit .rule { flex: none; width: 230px; font-size: 12.5px; color: var(--km-txt); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .km-rule-hit .bar { flex: 1; }
 .km-rule-hit .cnt { flex: none; min-width: 64px; text-align: right; font-size: 13px; font-weight: 700; color: var(--km-soft-blue); }
+.km-rule-hit .pct { flex: none; min-width: 52px; text-align: right; font-size: 11.5px; color: var(--km-txt-3); }
+.cat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; }
+.cat-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 12px; border-radius: 8px; background: var(--km-panel-2); border: 1px solid var(--km-line-soft); }
+.cat-item .cat-label { font-size: 12.5px; color: var(--km-txt-2); }
 </style>

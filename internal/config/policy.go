@@ -164,6 +164,13 @@ type Policy struct {
 	// accumulates >= Threshold blocked/challenged events within WindowSec it
 	// is temporarily banned (deny) or strictly throttled for BanSec.
 	Penalty *PenaltySettings `json:"penalty,omitempty"`
+	// WAFCategories is the global default CRS detection-category set applied
+	// when a site does not configure its own categories (waf.categories).
+	// nil = all categories enabled (backward compat); non-nil = the listed
+	// categories form the default load set for sites without explicit
+	// per-site configuration. Valid values: sqli, xss, rce, lfi, rfi, php,
+	// generic, session, java, scanner.
+	WAFCategories []string `json:"waf_categories,omitempty"`
 }
 
 // PenaltySettings configures the attack-penalty engine: repeated
@@ -275,6 +282,16 @@ func (p *Policy) Validate() error {
 		}
 		if p.Penalty.WindowSec < 0 || p.Penalty.Threshold < 0 || p.Penalty.BanSec < 0 || p.Penalty.ThrottlePerMin < 0 {
 			return fmt.Errorf("policy: penalty values must be >= 0")
+		}
+	}
+	if p.WAFCategories != nil {
+		if len(p.WAFCategories) == 0 {
+			return fmt.Errorf("policy: waf_categories must not be empty when present")
+		}
+		for _, c := range p.WAFCategories {
+			if !ValidWAFCategory(c) {
+				return fmt.Errorf("policy: waf_categories %q is not a valid category", c)
+			}
 		}
 	}
 	return nil

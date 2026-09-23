@@ -543,6 +543,34 @@ func (s *SQLiteStore) RuleTopHits(since, until time.Time, limit int) ([]TopHit, 
 	return out, total, rows.Err()
 }
 
+// SiteAttackCounts groups the window's attack events by site, feeding the
+// per-site dashboard card. The criteria matches RuleTopHits (action != ''
+// AND rule != ''); empty site labels are excluded.
+func (s *SQLiteStore) SiteAttackCounts(since, until time.Time) ([]TopHit, error) {
+	ctx, cancel := s.readTimeoutCtx()
+	defer cancel()
+	if until.IsZero() {
+		until = time.Now()
+	}
+	rows, err := s.rdb.QueryContext(ctx,
+		`SELECT site, COUNT(*) AS c FROM events
+		 WHERE ts_ms >= ? AND ts_ms <= ? AND action != '' AND rule != '' AND site != ''
+		 GROUP BY site ORDER BY c DESC, site ASC`,
+		since.UnixMilli(), until.UnixMilli())
+	if err != nil {
+		return nil, fmt.Errorf("logstore: site attack counts: %w", err)
+	}
+	defer rows.Close()
+	out := []TopHit{}
+	for rows.Next() {
+		var h TopHit
+		if rows.Scan(&h.Key, &h.Count) == nil {
+			out = append(out, h)
+		}
+	}
+	return out, rows.Err()
+}
+
 // AttackTotal counts the attack events in the window under the same criteria
 // as TopSourceIPs (action != '' AND rule != '' AND client_ip != '') — the
 // denominator of the attack-origin view (unbounded by the IP limit).

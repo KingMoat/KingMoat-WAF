@@ -63,10 +63,15 @@ func New(cfg *config.Config, logger *slog.Logger) (*Stage, error) {
 // proxy buffer and the engine never disagree.
 func buildWAF(s *config.Site, policy *config.Policy) (coraza.WAF, error) {
 	// Build the CRS include list: always-on infrastructure files + per-site
-	// category files. When s.WAF.Categories is empty, all categories are
-	// loaded (backward compat). Otherwise only the listed category files
-	// are included, reducing both rule count and per-request evaluation cost.
-	crsIncludes := buildCRSIncludes(s.WAF)
+	// category files. When s.WAF.Categories is nil, the global default
+	// (policy.WAFCategories) applies when configured, otherwise all
+	// categories are loaded (backward compat). A non-nil site list takes
+	// precedence, reducing both rule count and per-request evaluation cost.
+	var globalCats []string
+	if policy != nil {
+		globalCats = policy.WAFCategories
+	}
+	crsIncludes := buildCRSIncludes(s.WAF, globalCats)
 
 	directives := strings.Join([]string{
 		"Include @coraza.conf-recommended",
@@ -228,12 +233,60 @@ func verdictFrom(it *types.Interruption, matched []types.MatchedRule) pipeline.V
 	if reason == "" {
 		reason = "blocked by WAF rule"
 	}
+	// Under the CRS anomaly-scoring model the interruption fires on the
+	// threshold rules (949110 inbound / 959xxx outbound), which carry no
+	// attack semantics of their own. Attribute the verdict to the first
+	// concrete matched rule outside the scoring families — the one that
+	// accumulated the score — so audit entries classify as the real attack
+	// type (e.g. 942100 → SQL注入) instead of “综合评分”. Reason keeps
+	// listing every matched rule.
+	ruleID := it.RuleID
+	if isScoringRuleID(ruleID) {
+		if primary := primaryAttackRuleID(matched); primary > 0 {
+			ruleID = primary
+		}
+	}
 	return pipeline.Verdict{
 		Action: pipeline.ActionDeny,
 		Status: status,
-		Rule:   fmt.Sprintf("coraza/rule-%d", it.RuleID),
+		Rule:   fmt.Sprintf("coraza/rule-%d", ruleID),
 		Reason: reason,
 	}
+}
+
+// isScoringRuleID reports whether the rule is a CRS anomaly-scoring
+// threshold rule: 949110 (inbound) and the 959xxx (outbound) family.
+func isScoringRuleID(id int) bool {
+	return id == 949110 || (id >= 959000 && id <= 959999)
+}
+
+// primaryAttackRuleID picks the matched rule that best represents the attack
+// behind a scoring-rule interruption. Preference order:
+//  1. the first rule tagged with a CRS "attack-*" tag — the concrete
+//     detection rule that accumulated the anomaly score (e.g. 942100 → SQLi);
+//  2. the first rule inside the CRS detection range (920xxx-959xxx) outside
+//     the scoring families (949xxx/959xxx);
+//  3. none (0) — the caller keeps the interruption's own rule id.
+//
+// Setup/init rules (900xxx-901xxx, e.g. 901340 "Enabling body inspection")
+// and protocol-plumbing rules carry no attack-* tag and are skipped.
+func primaryAttackRuleID(matched []types.MatchedRule) int {
+	fallback := 0
+	for _, mr := range matched {
+		id := mr.Rule().ID()
+		if id == 949110 || (id >= 949000 && id <= 949999) || (id >= 959000 && id <= 959999) {
+			continue
+		}
+		for _, t := range mr.Rule().Tags() {
+			if strings.HasPrefix(t, "attack-") {
+				return id
+			}
+		}
+		if fallback == 0 && id >= 920000 && id <= 959999 {
+			fallback = id
+		}
+	}
+	return fallback
 }
 
 func addrParts(addr string) (string, int) {
@@ -266,23 +319,34 @@ func siteMatches(domains []string, domain string) bool {
 }
 
 // buildCRSIncludes generates the CRS include directive list based on the
-// site's category configuration. When Categories is empty or nil, all
-// detection categories are included (backward compat). Otherwise, only
-// the listed category files and the always-on infrastructure files are
-// included — disabled categories never load, reducing both rule count and
-// per-request evaluation cost.
+// site's category configuration. When Categories is nil, the global default
+// (policy.WAFCategories) applies when set, otherwise all detection
+// categories are included (backward compat). A non-nil site list takes
+// precedence over the global default. Only the listed category files and
+// the always-on infrastructure files are included — disabled categories
+// never load, reducing both rule count and per-request evaluation cost.
 //
 // Includes are emitted in CRS file-number order to preserve the original
 // glob ordering, which matters because SecRuleUpdateTargetById in some CRS
 // files references rules defined in earlier files.
-func buildCRSIncludes(ws *config.WAFSettings) string {
+func buildCRSIncludes(ws *config.WAFSettings, globalCats []string) string {
 	// Determine which detection categories to include.
 	enabled := make(map[string]bool)
 	if ws == nil || ws.Categories == nil {
-		// Categories field absent (nil) = include everything (backward compat).
+		// Categories field absent (nil): the global default applies when
+		// configured, otherwise everything is included (backward compat).
 		// An explicitly empty list []string{} means all categories disabled.
-		for _, cat := range config.WAFDetectionCategories {
-			enabled[cat] = true
+		if globalCats != nil {
+			for _, cat := range globalCats {
+				cat = strings.TrimSpace(strings.ToLower(cat))
+				if config.ValidWAFCategory(cat) {
+					enabled[cat] = true
+				}
+			}
+		} else {
+			for _, cat := range config.WAFDetectionCategories {
+				enabled[cat] = true
+			}
 		}
 	} else {
 		for _, cat := range ws.Categories {

@@ -35,6 +35,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 			"/api/stats":                  getOp("今日统计", nil),
 			"/api/stats/geo":              getOp("攻击来源地域聚合", nil),
 			"/api/stats/rules":            getOp("规则命中 TOP 统计（策略页统计卡）", nil),
+			"/api/stats/per-site":         getOp("按站点当日请求/攻击统计（站点列表徽标）", nil),
 			"/api/certificates":           getOp("站点证书清单", nil),
 			"/api/certificates/upload":    postOp("上传证书（cert+key 或压缩包 zip/tar.gz，5 层，内容识别+公钥配对）", nil),
 			"/api/certificates/uploads":   getOp("已上传证书库", nil),

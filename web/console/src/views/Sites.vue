@@ -15,7 +15,7 @@
     </div>
 
     <!-- 图形化:左列表 + 右能力概览 -->
-    <div v-if="mode === 'form'" class="km-grid-2" style="grid-template-columns:320px 1fr;align-items:start">
+    <div v-if="mode === 'form'" class="km-grid-2" style="grid-template-columns:minmax(340px,380px) 1fr;align-items:start">
       <el-card shadow="never" class="km-site-list" style="padding:0" :body-style="{ padding: 0 }">
         <div class="km-card-head"><span class="km-card-title">站点列表（{{ form.sites.length }}）</span></div>
         <div v-for="p in pagedSites" :key="p.i" class="site-item" :class="{ sel: sel === p.i }" @click="sel = p.i">
@@ -39,6 +39,8 @@
             <span>上游 ×{{ (p.s.upstream?.nodes || []).length }}</span>
             <span v-if="wafOn(p.s)">WAF</span>
             <span v-if="sec(p.s).semantic?.enabled">语义</span>
+          </div>
+          <div class="meta">
             <span v-if="sec(p.s).captcha?.enabled">滑块</span>
             <span v-if="sec(p.s).ratelimit">CC {{ sec(p.s).ratelimit.requests }}/{{ sec(p.s).ratelimit.window_sec }}s</span>
             <span v-if="sec(p.s).geo?.enabled">GeoIP</span>
@@ -50,6 +52,7 @@
             <span v-if="p.s.acme">ACME</span>
             <span v-if="p.s.health?.enabled">健康检查</span>
           </div>
+          <div class="stat-line">⚡ 今日 {{ p.st.requests.toLocaleString() }} 请求 · <span :class="{ atk: p.st.attacks > 0 }">{{ p.st.attacks.toLocaleString() }}</span> 攻击</div>
         </div>
         <div v-if="filteredSites.length > sitePageSize" style="display:flex;justify-content:flex-end;gap:10px;align-items:center;padding:10px 12px">
           <span class="km-dim" style="font-size:12px">每页</span>
@@ -82,7 +85,26 @@
             <div class="ic" style="background:rgba(59,130,246,.14)"><el-icon color="var(--km-blue)"><Document /></el-icon></div>
             <div><div class="name">签名检测 <span class="km-muted" style="font-weight:400;font-size:11px">Coraza + CRS</span></div>
               <div class="desc">请求体全量缓冲检测 · 内嵌二进制规则，无外部文件</div></div>
-            <div class="right"><el-switch v-model="selSite.waf.enabled" @change="markDirty" /></div>
+            <div class="right">
+              <el-tooltip v-if="wafOn(selSite)" content="展开/收起 CRS 检测分类" placement="top">
+                <el-button link class="cats-toggle" :class="{ open: crsCatsOpen }" @click="toggleCatsPanel">
+                  <el-icon><ArrowDown /></el-icon>
+                </el-button>
+              </el-tooltip>
+              <el-switch v-model="selSite.waf.enabled" @change="markDirty" />
+            </div>
+          </div>
+          <div v-show="wafOn(selSite) && crsCatsOpen" class="km-crs-sub">
+            <div class="sub-head">
+              <span class="hint">未单独配置的站点跟随全局默认；关闭的类别不装载 CRS 规则文件，降低规则数与检测开销</span>
+              <el-button link type="primary" size="small" :disabled="!can('operator')" @click="resetCatsToDefault">恢复全局默认</el-button>
+            </div>
+            <div class="cat-grid">
+              <div v-for="c in CRS_CATEGORIES" :key="c.id" class="cat-item">
+                <span class="cat-label">{{ c.label }}</span>
+                <el-switch v-model="catStates[c.id]" size="small" @change="onCatToggle" />
+              </div>
+            </div>
           </div>
           <div class="km-config-row">
             <div class="ic" style="background:rgba(139,92,246,.14)"><el-icon color="var(--km-violet)"><EditPen /></el-icon></div>
@@ -369,7 +391,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api, can, post } from '../api'
@@ -458,6 +480,69 @@ const form = reactive({ listen_http: '', listen_https: '', audit_log_dir: 'logs'
 
 const selSite = computed(() => (form.sites.length ? form.sites[Math.min(sel.value, form.sites.length - 1)] : null))
 
+// ---- CRS 检测分类（签名检测子面板）----
+// 固定顺序与中英文标签，与 Policy 页全局默认卡、后端 CRS 规则类别保持一致
+const CRS_CATEGORIES = [
+  { id: 'sqli', label: 'SQL 注入' },
+  { id: 'xss', label: 'XSS 跨站' },
+  { id: 'rce', label: '远程代码执行' },
+  { id: 'lfi', label: '本地文件包含' },
+  { id: 'rfi', label: '远程文件包含' },
+  { id: 'php', label: 'PHP 攻击' },
+  { id: 'generic', label: '通用攻击' },
+  { id: 'session', label: '会话固定' },
+  { id: 'java', label: 'Java 攻击' },
+  { id: 'scanner', label: '扫描器' },
+]
+const crsCatsOpen = ref(false)
+const catStates = reactive({})
+
+// 全局默认装载集：config.policy.waf_categories，省略/nil = 全部启用
+function globalCatDefaults() {
+  const list = form.policy?.waf_categories
+  return Array.isArray(list) ? CRS_CATEGORIES.map(c => c.id).filter(id => list.includes(id)) : CRS_CATEGORIES.map(c => c.id)
+}
+
+// 进入站点/展开面板时初始化开关：站点显式 categories 优先，否则预填全局默认
+function initCatStates() {
+  const explicit = selSite.value?.waf?.categories
+  const eff = Array.isArray(explicit) ? CRS_CATEGORIES.map(c => c.id).filter(id => explicit.includes(id)) : globalCatDefaults()
+  for (const c of CRS_CATEGORIES) catStates[c.id] = eff.includes(c.id)
+}
+
+watch(selSite, s => {
+  // 防御：waf 字段缺失时补默认结构，避免签名检测行 el-switch 的 v-model 读到 undefined
+  if (s && !s.waf) s.waf = { enabled: true }
+  initCatStates()
+}, { immediate: true })
+
+function toggleCatsPanel() {
+  crsCatsOpen.value = !crsCatsOpen.value
+  if (crsCatsOpen.value) initCatStates()
+}
+
+// 切开关即写入草稿（随「发布配置」整体发布）：启用集合与全局默认一致时回到跟随语义
+function onCatToggle() {
+  const s = selSite.value
+  if (!s) return
+  if (!s.waf) s.waf = { enabled: true }
+  const enabled = CRS_CATEGORIES.map(c => c.id).filter(id => catStates[id])
+  const def = globalCatDefaults()
+  if (def.length === enabled.length && def.every(id => enabled.includes(id))) delete s.waf.categories
+  else s.waf.categories = enabled
+  markDirty()
+}
+
+// 恢复全局默认：重置开关为默认状态并移除站点级覆盖
+function resetCatsToDefault() {
+  const s = selSite.value
+  if (!s) return
+  if (!s.waf) s.waf = { enabled: true }
+  delete s.waf.categories
+  initCatStates()
+  markDirty()
+}
+
 // 站点列表分页：默认每页 10 条，可选 10/20/50/100
 const sitePage = ref(1)
 const sitePageSize = ref(10)
@@ -479,7 +564,7 @@ watch(siteFilter, () => { sitePage.value = 1 })
 const pagedSites = computed(() => {
   const list = filteredSites.value
   const start = (sitePage.value - 1) * sitePageSize.value
-  return list.slice(start, start + sitePageSize.value)
+  return list.slice(start, start + sitePageSize.value).map(p => ({ ...p, st: statOf(p.s) }))
 })
 
 // 版本历史分页：默认每页 10 行，可选 10/20/50/100
@@ -540,7 +625,27 @@ async function toggleSite(i) {
   }
 }
 
+// ---- 站点列表统计徽标（GET /api/stats/per-site：今日 0 点至今）----
+const siteStats = ref({}) // domain -> { requests, attacks }，键为站点 domains[0]
+async function loadSiteStats() {
+  try {
+    const d = await api('/api/stats/per-site')
+    const m = {}
+    for (const it of (d?.sites || [])) if (it && it.site) m[it.site] = it
+    siteStats.value = m
+  } catch (e) {
+    siteStats.value = {} // 统计失败静默降级为空，不阻塞配置加载
+  }
+}
+
+// 统计匹配键 = 站点 domains[0]（与后端 firstDomain 对齐），未命中显示 0
+function statOf(s) {
+  const st = siteStats.value[s?.domains?.[0]]
+  return { requests: st?.requests || 0, attacks: st?.attacks || 0 }
+}
+
 async function load() {
+  loadSiteStats()
   const d = await api('/api/config')
   rev.value = d.revision
   jsonText.value = JSON.stringify(d.config, null, 2)
@@ -809,7 +914,9 @@ function applySiteQuery() {
 }
 watch(() => route.query.site, applySiteQuery)
 
-onMounted(() => { applySiteQuery(); load() })
+let statsTimer = null
+onMounted(() => { applySiteQuery(); load(); statsTimer = setInterval(loadSiteStats, 30000) })
+onUnmounted(() => { if (statsTimer) { clearInterval(statsTimer); statsTimer = null } })
 </script>
 
 <style scoped>
@@ -818,5 +925,17 @@ onMounted(() => { applySiteQuery(); load() })
 .km-site-list .site-item:hover { background: var(--km-panel-2); }
 .km-site-list .site-item.sel { background: var(--km-nav-grad); }
 .km-site-list .domain { font-size: 13.5px; font-weight: 600; color: var(--km-txt); display: flex; align-items: center; gap: 8px; }
-.km-site-list .meta { font-size: 11.5px; color: var(--km-txt-3); margin-top: 4px; display: flex; gap: 8px; flex-wrap: wrap; }
+.km-site-list .meta { font-size: 11px; color: var(--km-txt-3); margin-top: 3px; display: flex; gap: 8px; flex-wrap: wrap; }
+.km-site-list .domain + .meta { margin-top: 5px; }
+.km-site-list .stat-line { margin-top: 5px; font-size: 11px; color: var(--km-txt-2); }
+.km-site-list .stat-line .atk { color: var(--km-red); font-weight: 700; }
+.km-crs-sub { padding: 10px 16px 14px 64px; background: var(--km-panel-2); border-bottom: 1px solid var(--km-line-soft); }
+.km-crs-sub .sub-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.km-crs-sub .sub-head .hint { flex: 1; font-size: 11.5px; color: var(--km-txt-3); line-height: 1.5; }
+.km-crs-sub .cat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; }
+.km-crs-sub .cat-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; border-radius: 8px; background: var(--km-panel); border: 1px solid var(--km-line); }
+.km-crs-sub .cat-item .cat-label { font-size: 12px; color: var(--km-txt-2); }
+.cats-toggle { padding: 4px; }
+.cats-toggle :deep(.el-icon) { transition: transform 0.2s; }
+.cats-toggle.open :deep(.el-icon) { transform: rotate(180deg); }
 </style>

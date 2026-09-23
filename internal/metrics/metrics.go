@@ -186,6 +186,141 @@ func StartRequestsPersist(ctx context.Context, path string, interval time.Durati
 	}
 }
 
+// Daily per-site request counters feed /api/stats/per-site ("requests
+// today" per site). Unlike RequestsTotal these reset at local midnight and
+// persist per day: the state file carries the calendar date, so a restart
+// only restores counts that belong to today.
+var (
+	DailyRequestsTotal = &counterVec{} // labels: site, outcome
+	dailyDay           atomic.Int64    // local calendar day of the live counters, encoded as YYYYMMDD
+	dailyDayMu         sync.Mutex
+	dailyBaseMu        sync.RWMutex
+	dailyBase          map[string]int64
+)
+
+// resetAll drops every live counter cell (daily rollover). Increments that
+// raced the reset may add into a discarded cell and are lost, matching the
+// accepted at-boundary drift of the other counters.
+func (c *counterVec) resetAll() {
+	c.mu.Lock()
+	c.vals = nil
+	c.mu.Unlock()
+}
+
+// localDayKey encodes a time's local calendar date as a comparable number
+// (e.g. 20260923) so the hot path compares ints instead of formatting date
+// strings per request.
+func localDayKey(t time.Time) int64 {
+	return int64(t.Year())*10000 + int64(t.Month())*100 + int64(t.Day())
+}
+
+// DailyReqInc counts one request for the per-site "today" card. The live
+// counters roll over (reset to zero) on the first request after local
+// midnight; the unchanged-day path stays lock-free.
+func DailyReqInc(site, outcome string) {
+	day := localDayKey(time.Now())
+	if dailyDay.Load() != day {
+		dailyDayMu.Lock()
+		if dailyDay.Load() != day {
+			DailyRequestsTotal.resetAll()
+			// The recovered baseline belongs to the previous day once the
+			// clock crossed midnight; drop it along with the live counters.
+			dailyBaseMu.Lock()
+			dailyBase = nil
+			dailyBaseMu.Unlock()
+			dailyDay.Store(day)
+		}
+		dailyDayMu.Unlock()
+	}
+	DailyRequestsTotal.Inc(site, outcome)
+}
+
+// dailyReqState is the persisted per-day state file shape.
+type dailyReqState struct {
+	Date   string           `json:"date"`
+	Counts map[string]int64 `json:"counts"`
+}
+
+// LoadDailyRequestsBase loads the persisted daily counters as the baseline,
+// but only when the state file belongs to today (local time); a file from a
+// previous day is discarded so "today" never mixes in stale counts.
+func LoadDailyRequestsBase(path string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var st dailyReqState
+	if json.Unmarshal(b, &st) != nil || len(st.Counts) == 0 {
+		return
+	}
+	if st.Date != time.Now().Format("2006-01-02") {
+		return
+	}
+	dailyBaseMu.Lock()
+	dailyBase = st.Counts
+	dailyBaseMu.Unlock()
+	// Arm the day key so the first request does not trigger a rollover
+	// that would immediately wipe the just-restored baseline.
+	dailyDay.Store(localDayKey(time.Now()))
+}
+
+// StartDailyRequestsPersist flushes baseline+live daily counters to the
+// state file every interval and once on shutdown, until ctx is cancelled.
+func StartDailyRequestsPersist(ctx context.Context, path string, interval time.Duration) {
+	if path == "" {
+		return
+	}
+	flush := func() {
+		st := dailyReqState{Date: time.Now().Format("2006-01-02"), Counts: map[string]int64{}}
+		dailyBaseMu.RLock()
+		for k, v := range dailyBase {
+			st.Counts[k] += v
+		}
+		dailyBaseMu.RUnlock()
+		for k, v := range DailyRequestsTotal.Snapshot() {
+			st.Counts[k] += int64(v)
+		}
+		b, err := json.Marshal(st)
+		if err != nil {
+			return
+		}
+		tmp := path + ".tmp"
+		if os.WriteFile(tmp, b, 0o600) == nil {
+			_ = os.Rename(tmp, path)
+		}
+	}
+	flush()
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			flush()
+			return
+		case <-t.C:
+			flush()
+		}
+	}
+}
+
+// SnapshotDailyRequestsBySite sums the persisted baseline and the live daily
+// counters per site label (all outcomes), for /api/stats/per-site. Empty
+// site labels (no_site rows) are kept here; the API merge step filters them.
+func SnapshotDailyRequestsBySite() map[string]int64 {
+	out := map[string]int64{}
+	for key, v := range DailyRequestsTotal.Snapshot() {
+		site := strings.SplitN(key, "\x00", 2)[0]
+		out[site] += int64(v)
+	}
+	dailyBaseMu.RLock()
+	defer dailyBaseMu.RUnlock()
+	for key, v := range dailyBase {
+		site := strings.SplitN(key, "\x00", 2)[0]
+		out[site] += v
+	}
+	return out
+}
+
 // SortedKeys returns the counter's label keys in stable order (tests/debug).
 func (c *counterVec) SortedKeys() []string {
 	c.mu.RLock()

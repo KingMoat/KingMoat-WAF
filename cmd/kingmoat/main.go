@@ -174,6 +174,10 @@ func main() {
 	// Cumulative request counters survive restarts (dashboard 累计请求).
 	metrics.LoadRequestsBase(filepath.Join(auditDirAbs, "metrics-state.json"))
 	go metrics.StartRequestsPersist(ctx, filepath.Join(auditDirAbs, "metrics-state.json"), 30*time.Second)
+	// Per-site "today" counters survive restarts within the same day
+	// (/api/stats/per-site 站点列表徽标).
+	metrics.LoadDailyRequestsBase(filepath.Join(auditDirAbs, "requests_daily.json"))
+	go metrics.StartDailyRequestsPersist(ctx, filepath.Join(auditDirAbs, "requests_daily.json"), 30*time.Second)
 	var accessSink *accesslog.Tee
 
 	// Expose the audit drop counter (previously defined but never set).

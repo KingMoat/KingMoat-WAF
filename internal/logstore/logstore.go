@@ -103,6 +103,14 @@ type RuleTopHitter interface {
 	RuleTopHits(since, until time.Time, topN int) ([]TopHit, int64, error)
 }
 
+// SiteAttackCounter is implemented by stores that can group a time window's
+// attack events by site (per-site dashboard card, /api/stats/per-site).
+// The criteria matches RuleTopHits: the event must carry both an action and
+// a rule; empty site labels are excluded.
+type SiteAttackCounter interface {
+	SiteAttackCounts(since, until time.Time) ([]TopHit, error)
+}
+
 // noop is used when auditing is disabled.
 type noopStore struct{}
 

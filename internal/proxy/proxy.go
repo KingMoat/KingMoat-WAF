@@ -422,6 +422,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		v := pipeline.Deny("router/no_site", "no site matched for this host")
 		h.audit.Write(h.newEvent(r, "", v, "blocked", 0, nil))
 		metrics.RequestsTotal.Inc(r.Host, "blocked")
+		metrics.DailyReqInc(r.Host, "blocked")
 		metrics.StageHits.Inc("router")
 		intercept.Deny(w, r, v, traceID)
 		return
@@ -435,6 +436,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		v := pipeline.Deny("site/disabled", "site is disabled")
 		h.audit.Write(h.newEvent(r, site, v, "blocked", 0, nil))
 		metrics.RequestsTotal.Inc(r.Host, "blocked")
+		metrics.DailyReqInc(r.Host, "blocked")
 		metrics.StageHits.Inc("router")
 		intercept.Deny(w, r, v, traceID)
 		return
@@ -456,6 +458,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		accessOutcome, accessRule = "redirected", "redirect/https"
 		target := httpsRedirectURL(state.cfg.ListenHTTPS, r)
 		metrics.RequestsTotal.Inc(site, "redirected")
+		metrics.DailyReqInc(site, "redirected")
 		h.logger.Debug("http to https redirect", "site", site, "target", target, "trace", traceID)
 		h.audit.Write(h.newEvent(r, site, pipeline.Allow(), "redirected", 0, nil))
 		http.Redirect(w, r, target, http.StatusPermanentRedirect)
@@ -468,6 +471,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if state.captcha.HandleVerify(w, r) {
 			accessOutcome, accessRule = "challenged", "captcha/verify"
 			metrics.RequestsTotal.Inc(site, "challenged")
+			metrics.DailyReqInc(site, "challenged")
 			return
 		}
 	}
@@ -482,6 +486,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			state.authSite.Challenge(w, r)
 			h.audit.Write(h.newEvent(r, site, v, "blocked", 0, nil))
 			metrics.RequestsTotal.Inc(site, "blocked")
+			metrics.DailyReqInc(site, "blocked")
 			metrics.StageHits.Inc("auth")
 			return
 		}
@@ -514,6 +519,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"content_length", r.ContentLength, "limit", sr.cfg.WAF.BodyLimit())
 			h.audit.Write(h.newEvent(r, site, v, "blocked", int(r.ContentLength), nil))
 			metrics.RequestsTotal.Inc(site, "blocked")
+			metrics.DailyReqInc(site, "blocked")
 			metrics.StageHits.Inc("body_limit")
 			intercept.Deny(w, r, v, traceID)
 			return
@@ -552,6 +558,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				h.audit.Write(h.newEvent(r, site, v, "blocked", bodyBytes, rc))
 			}
 			metrics.RequestsTotal.Inc(site, "blocked")
+			metrics.DailyReqInc(site, "blocked")
 			metrics.StageHits.Inc(stageOf(v.Rule))
 			intercept.Deny(w, r, v, traceID)
 			return
@@ -568,6 +575,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.audit.Write(h.newEvent(r, site, v, "monitor", bodyBytes, rc))
 		}
 		metrics.RequestsTotal.Inc(site, outcome)
+		metrics.DailyReqInc(site, outcome)
 		metrics.StageHits.Inc(stageOf(v.Rule))
 
 	case pipeline.ActionChallenge:
@@ -585,6 +593,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					h.audit.Write(h.newEvent(r, site, v, "challenged", bodyBytes, rc))
 				}
 				metrics.RequestsTotal.Inc(site, "challenged")
+				metrics.DailyReqInc(site, "challenged")
 				metrics.StageHits.Inc("captcha")
 				intercept.SliderChallenge(w, pageHTML)
 				return
@@ -598,6 +607,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				h.audit.Write(h.newEvent(r, site, v, "challenged", bodyBytes, rc))
 			}
 			metrics.RequestsTotal.Inc(site, "challenged")
+			metrics.DailyReqInc(site, "challenged")
 			metrics.StageHits.Inc("bot")
 			intercept.Challenge(w, cookieName, token)
 			return
@@ -608,6 +618,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.audit.Write(h.newEvent(r, site, v, "monitor", bodyBytes, rc))
 		}
 		metrics.RequestsTotal.Inc(site, "monitor_forwarded")
+		metrics.DailyReqInc(site, "monitor_forwarded")
 	}
 
 	// Forward upstream; response pipeline runs in ModifyResponse. The
@@ -627,6 +638,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	sr.px.ServeHTTP(w, r)
 	metrics.RequestsTotal.Inc(site, "forwarded")
+	metrics.DailyReqInc(site, "forwarded")
 }
 
 // resolvedOrPeerIP returns the real client IP when the proxy resolved one

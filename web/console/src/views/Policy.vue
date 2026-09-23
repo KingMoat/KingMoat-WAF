@@ -119,24 +119,6 @@
 
         <!-- ④ 微引擎规则防护 -->
         <template v-else-if="tab === 'matchers'">
-          <el-card shadow="never" style="margin-bottom:16px">
-            <div class="km-title" style="margin:0 0 4px">CRS 检测分类全局默认</div>
-            <div class="km-dim" style="font-size:12px;margin-bottom:12px">
-              新建站点与未单独配置分类的站点按此默认装载 CRS 检测类别；站点可在「站点管理」页单独覆盖
-            </div>
-            <div class="cat-grid">
-              <div v-for="c in CRS_CATEGORIES" :key="c.id" class="cat-item">
-                <span class="cat-label">{{ c.label }}</span>
-                <el-switch v-model="wafCats[c.id]" size="small" />
-              </div>
-            </div>
-            <div style="text-align:right;margin-top:12px">
-              <el-button type="primary" :loading="saving" :disabled="!can('operator')" @click="saveWafCategories">
-                保存并发布（热生效）
-              </el-button>
-            </div>
-          </el-card>
-
           <el-alert v-if="legacyWhitelist.length" type="warning" :closable="false" style="margin-bottom:16px">
             <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
               <span>发现 {{ legacyWhitelist.length }} 条旧版误报加白记录（exception 模式），可一键迁移为微引擎放行规则</span>
@@ -285,19 +267,48 @@
           </el-card>
         </template>
 
-        <!-- ⑧ 检测引擎启用情况(站点级聚合) -->
+        <!-- ⑧ 检测分类与引擎（CRS 全局默认 + 站点级引擎启用聚合） -->
         <template v-else-if="tab === 'engines'">
-          <el-card shadow="never">
-            <div class="km-title" style="margin-bottom:8px">检测引擎启用情况（按站点聚合）</div>
-            <div class="km-config-row" v-for="e in engineStats" :key="e.name" style="padding:8px 0">
-              <div><div class="name" style="font-size:13px">{{ e.name }}</div><div class="desc" style="font-size:11.5px">{{ e.desc }}</div></div>
-              <div class="right">
-                <span class="val">{{ e.count }} / {{ totalSites }} 站点</span>
-                <el-progress type="circle" :percentage="totalSites ? Math.round(e.count * 100 / totalSites) : 0" :width="34" :stroke-width="4" :show-text="false" />
-              </div>
-            </div>
-            <div class="km-muted" style="font-size:11.5px;margin-top:6px">各引擎在「站点防护」中按站点独立开关</div>
-          </el-card>
+          <el-row :gutter="16">
+            <el-col :span="13">
+              <el-card shadow="never" style="height:100%">
+                <div class="km-title" style="margin:0 0 4px">CRS 检测分类全局默认</div>
+                <div class="km-dim" style="font-size:12px;margin-bottom:12px">
+                  新建站点与未单独配置分类的站点按此默认装载 CRS 检测类别；站点可在「站点管理」页单独覆盖
+                </div>
+                <div class="cat-grid">
+                  <div v-for="c in CRS_CATEGORIES" :key="c.id" class="cat-item" :class="{ 'cat-off': !wafCats[c.id] }">
+                    <span class="cat-label">{{ c.label }}</span>
+                    <el-switch v-model="wafCats[c.id]" size="small" :disabled="!can('operator')" />
+                  </div>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px">
+                  <el-button link type="primary" size="small" :disabled="!can('operator')" @click="setAllWafCats(true)">全部启用</el-button>
+                  <el-button type="primary" :loading="saving" :disabled="!can('operator')" @click="saveWafCategories">
+                    保存并发布（热生效）
+                  </el-button>
+                </div>
+              </el-card>
+            </el-col>
+            <el-col :span="11">
+              <el-card shadow="never" style="height:100%">
+                <div class="km-title" style="margin:0 0 4px">检测引擎启用情况（按站点聚合）</div>
+                <div class="km-dim" style="font-size:12px;margin-bottom:12px">各引擎在「站点防护」中按站点独立开关</div>
+                <div class="eng-grid">
+                  <div v-for="e in engineStats" :key="e.name" class="eng-item" :class="{ 'eng-off': !e.count }">
+                    <div class="eng-head">
+                      <span class="eng-name">{{ e.name }}</span>
+                      <span class="eng-count" :class="{ 'eng-on': e.count }">{{ e.count }}/{{ totalSites }}</span>
+                    </div>
+                    <div class="eng-desc">{{ e.desc }}</div>
+                    <el-progress :percentage="totalSites ? Math.round(e.count * 100 / totalSites) : 0"
+                                 :stroke-width="6" :show-text="false"
+                                 :color="e.count ? '#4da3ff' : '#3a4356'" />
+                  </div>
+                </div>
+              </el-card>
+            </el-col>
+          </el-row>
         </template>
       </div>
     </div>
@@ -445,8 +456,8 @@ const tabs = [
   { id: 'matchers', name: '微引擎规则防护', icon: '🧩' },
   { id: 'penalty', name: '攻击惩罚', icon: '⛔' },
   { id: 'custom', name: '自定义规则', icon: '📜' },
+  { id: 'engines', name: '检测分类与引擎', icon: '🧭' },
   { id: 'versions', name: '引擎与规则版本', icon: 'ℹ️' },
-  { id: 'engines', name: '检测引擎启用情况', icon: '✅' },
 ]
 const tab = ref('thresholds')
 
@@ -505,6 +516,11 @@ const p = reactive({
 
 // CRS 检测分类全局默认开关状态（policy.waf_categories；nil = 全部启用）
 const wafCats = reactive({})
+
+// 一键全部启用（全关会被 policy 层「waf_categories 不得为空」拒绝，不提供）
+function setAllWafCats(on) {
+  for (const x of CRS_CATEGORIES) wafCats[x.id] = on
+}
 
 // 站点级引擎启用统计(读当前配置聚合)
 const totalSites = ref(0)
@@ -962,4 +978,14 @@ async function removeMatcher(row) {
 .cat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; }
 .cat-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 12px; border-radius: 8px; background: var(--km-panel-2); border: 1px solid var(--km-line-soft); }
 .cat-item .cat-label { font-size: 12.5px; color: var(--km-txt-2); }
+.cat-item.cat-off { opacity: .55; }
+.eng-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.eng-item { border: 1px solid var(--km-line-soft); border-radius: 8px; padding: 9px 11px; background: var(--km-panel-2); transition: border-color .15s, opacity .15s; }
+.eng-item:hover { border-color: var(--km-soft-blue); }
+.eng-item.eng-off { opacity: .55; }
+.eng-item .eng-head { display: flex; justify-content: space-between; align-items: center; }
+.eng-item .eng-name { font-size: 12.5px; font-weight: 600; color: var(--km-txt); }
+.eng-item .eng-count { font-size: 11px; color: var(--km-txt-3); }
+.eng-item .eng-count.eng-on { color: var(--km-soft-blue); font-weight: 700; }
+.eng-item .eng-desc { font-size: 11px; color: var(--km-txt-3); margin: 2px 0 7px; }
 </style>

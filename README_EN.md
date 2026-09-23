@@ -81,7 +81,13 @@ What small teams actually need is simple: **easy to install, easy to understand,
 
 ## 🚀 Quick Start (all-in-one)
 
-Grab the binary for your platform from [Releases](../../releases) (or build from source below), then:
+**Linux one-click deploy** (Debian 12+ / Ubuntu 24.04+ / openEuler 22.03+, auto-installs deps, downloads Release, registers systemd):
+
+```bash
+curl -fsSL https://gitee.com/kingmoat/KingMoat-WAF/raw/main/deploy/install.sh | bash
+```
+
+Or manual deployment (macOS / Windows / any platform):
 
 ```bash
 # 1. Start a sample upstream (any)

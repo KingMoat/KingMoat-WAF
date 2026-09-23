@@ -93,7 +93,13 @@ KingMoat 是一个开源、纯 Go 实现的 **All-in-one Web 应用防火墙**�
 
 ## 🚀 快速开始（all-in-one）
 
-从 [Releases](../../releases) 下载对应平台的二进制（或按下文自行构建），然后：
+**Linux 一键部署**（Debian 12+ / Ubuntu 24.04+ / openEuler 22.03+，自动安装依赖、下载 Release、注册 systemd）：
+
+```bash
+curl -fsSL https://gitee.com/kingmoat/KingMoat-WAF/raw/main/deploy/install.sh | bash
+```
+
+或手动部署（macOS / Windows / 任意平台）：
 
 ```bash
 # 1. 启动一个示例上游（任选）

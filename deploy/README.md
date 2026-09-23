@@ -148,6 +148,8 @@ docker run -d --name kingmoat \
 
 ## 3. 路径 B：Linux systemd（Path B: Linux systemd, non-root）
 
+> **⚡ 一键部署**：以下步骤可用一键脚本替代——`curl -fsSL https://gitee.com/kingmoat/KingMoat-WAF/raw/main/deploy/install.sh | bash`。脚本自动完成本节全部操作（含依赖安装、目录创建、systemd 注册）。如需精细控制各步骤，继续阅读手动流程。
+
 ### 3.1 安装二进制与目录
 
 ```bash
@@ -288,6 +290,8 @@ sqlite3 /var/lib/kingmoat/kingmoat.db ".backup '/backup/kingmoat-online.db'"
 ### 6.2 升级
 
 配置与版本记录都在 `kingmoat.db`（SQLite），`config.json` 只是首次种子——**升级只替换二进制**：
+
+> **⚡ 一键升级**：重新运行一键部署脚本即可——`curl -fsSL https://gitee.com/kingmoat/KingMoat-WAF/raw/main/deploy/install.sh | bash`。脚本会替换二进制但保留已有 config.json 与 kingmoat.db（升级 = 重跑 install.sh）。
 
 ```bash
 # 1. backup first (see 6.1)

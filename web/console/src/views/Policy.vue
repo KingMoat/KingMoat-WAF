@@ -315,14 +315,22 @@
           </el-radio-group>
         </el-form-item>
         <el-form-item v-if="m.action === 'disable'" label="关闭模块">
-          <el-checkbox-group v-model="m.disable_stages">
-            <el-checkbox value="coraza">CRS 签名检测</el-checkbox>
-            <el-checkbox value="semantic">语义检测</el-checkbox>
-            <el-checkbox value="botdetect">BOT 识别</el-checkbox>
-            <el-checkbox value="ratelimit">CC 限流</el-checkbox>
-            <el-checkbox value="captcha">人机验证</el-checkbox>
+          <el-checkbox-group v-model="m.disable_stages" style="width:100%">
+            <div>
+              <el-checkbox value="coraza">CRS 签名检测</el-checkbox>
+              <el-checkbox value="semantic">语义检测</el-checkbox>
+              <el-checkbox value="botdetect">BOT 识别</el-checkbox>
+              <el-checkbox value="botchallenge">BOT 挑战</el-checkbox>
+              <el-checkbox value="ratelimit">CC 限流</el-checkbox>
+              <el-checkbox value="captcha">人机验证</el-checkbox>
+              <el-button link type="primary" style="margin-left:4px" @click="catsOpen = !catsOpen">{{ catsOpen ? '收起分类' : '按分类关闭…' }}</el-button>
+            </div>
+            <div v-if="catsOpen" style="margin-top:4px;padding:6px 10px;border:1px dashed var(--km-line-soft);border-radius:6px">
+              <div class="km-dim" style="font-size:12px;margin-bottom:2px">仅关闭指定攻击分类（与上方「CRS 签名检测」互斥，需两者并存请拆成两条规则）</div>
+              <el-checkbox v-for="c in CRS_CATEGORIES" :key="c.id" :value="'coraza:' + c.id">{{ c.label }}</el-checkbox>
+            </div>
+            <div class="km-dim" style="font-size:12px;margin-top:4px">命中该规则后，作用站点的这些检测模块被关闭（重新发布配置或删除规则后恢复）；访问控制类模块不可关闭</div>
           </el-checkbox-group>
-          <div class="km-dim" style="font-size:12px;margin-top:4px">命中该规则后，作用站点的这些检测模块被关闭（重新发布配置或删除规则后恢复）；访问控制类模块不可关闭</div>
         </el-form-item>
         <el-form-item label="作用站点">
           <el-select v-model="m.sites" multiple filterable allow-create default-first-option
@@ -485,6 +493,7 @@ const mDlg = ref(false)
 const mEditIndex = ref(-1)
 const mEditName = ref('')
 const savingMatcher = ref(false)
+const catsOpen = ref(false)
 const m = reactive({ name: '', action: 'deny', logic: 'and', sites: [], enabled: true, log_enabled: false, comment: '', disable_stages: [], conditions: [{ field: 'client_ip', op: 'contains', value: '' }] })
 const p = reactive({
   inbound: 5, outbound: 4,
@@ -581,8 +590,9 @@ async function toggleMatcherLog(row) {
     }
     if (row.log_enabled) list[i].log_enabled = true
     else delete list[i].log_enabled
-    await post('/api/config/publish', { note: 'matcher log toggle: ' + row.name, config: cfg })
-    ElMessage.success(row.log_enabled ? '已开启命中日志并热生效' : '已关闭命中日志并热生效')
+    const r = await post('/api/config/publish', { note: 'matcher log toggle: ' + row.name, config: cfg })
+    applyWarn(r)
+    if (!r.apply || r.apply.status !== 'failed') ElMessage.success(row.log_enabled ? '已开启命中日志并热生效' : '已关闭命中日志并热生效')
     load()
   } catch (e) {
     ElMessage.error('发布失败：' + e.message)
@@ -713,7 +723,8 @@ async function saveGroup() {
     else if (at >= 0) cfg.ip_groups[at] = entry
     else cfg.ip_groups.push(entry)
     const r = await post('/api/config/publish', { note: 'ip group: ' + name, config: cfg })
-    ElMessage.success('IP 组已发布并热生效（版本 ' + r.revision + '）')
+    applyWarn(r)
+    if (!r.apply || r.apply.status !== 'failed') ElMessage.success('IP 组已发布并热生效（版本 ' + r.revision + '）')
     gDlg.value = false
     load()
   } catch (e) {
@@ -731,17 +742,27 @@ async function delGroup(name) {
     const d = await api('/api/config')
     const cfg = d.config
     cfg.ip_groups = (cfg.ip_groups || []).filter(x => x.name !== name)
-    await post('/api/config/publish', { note: 'ip group removed: ' + name, config: cfg })
-    ElMessage.success('已删除并热生效')
+    const r = await post('/api/config/publish', { note: 'ip group removed: ' + name, config: cfg })
+    applyWarn(r)
+    if (!r.apply || r.apply.status !== 'failed') ElMessage.success('已删除并热生效')
     load()
   } catch (e) { ElMessage.error(e.message) }
 }
 
 // ---- 按 tab 粒度的保存函数：读全量 config → 只改本块字段 → publish，
 // spread 保留其余块字段，未展示块字段不丢 ----
+// 发布响应的 apply 状态：failed = 配置已保存（修订落库）但引擎加载失败
+// （fail-static，旧配置继续生效），需醒目提示避免"显示成功实际未生效"
+function applyWarn(r) {
+  if (r.apply && r.apply.status === 'failed') {
+    ElMessage.warning('配置已保存（版本 ' + r.revision + '）但引擎加载失败，旧配置继续生效：' + (r.apply.error || '未知原因'))
+  }
+}
+
 async function publish(cfg, note) {
   const r = await post('/api/config/publish', { note, config: cfg })
-  ElMessage.success('策略已发布并热生效（版本 ' + r.revision + '）')
+  applyWarn(r)
+  if (!r.apply || r.apply.status !== 'failed') ElMessage.success('策略已发布并热生效（版本 ' + r.revision + '）')
   await load()
 }
 
@@ -850,6 +871,8 @@ function openMatcher(i) {
   } else {
     Object.assign(m, matcherDefaults())
   }
+  // 回显分类子选择：disable_stages 携带 coraza:<分类> 时展开子选项区
+  catsOpen.value = scopedCorazaCats(m.disable_stages).length > 0
   mDlg.value = true
 }
 
@@ -858,9 +881,31 @@ function matcherDefaults() {
     conditions: [{ field: 'client_ip', op: 'contains', value: '' }] }
 }
 
+// disable_stages 中的 coraza:<分类> 复合值（分类粒度关闭 CRS）
+function scopedCorazaCats(stages) {
+  return (stages || []).filter(s => typeof s === 'string' && s.startsWith('coraza:'))
+}
+
+// 与后端校验规则一致：分类必须合法；「CRS 签名检测」与分类子项不得混用（需拆成两条规则）
+function validateDisableStages() {
+  const stages = m.disable_stages || []
+  const scoped = scopedCorazaCats(stages)
+  for (const s of scoped) {
+    if (!CRS_CATEGORIES.some(c => 'coraza:' + c.id === s)) return '未知的 CRS 分类：' + s
+  }
+  if (stages.includes('coraza') && scoped.length) {
+    return '「CRS 签名检测」与其分类子项不能同时勾选：整段关闭请只勾「CRS 签名检测」，按分类关闭请勾选子项；两者并存请拆成两条规则'
+  }
+  return ''
+}
+
 async function saveMatcher() {
   if (!m.name.trim()) return ElMessage.error('请填写规则名称')
   if (!m.conditions.length) return ElMessage.error('至少一个条件')
+  if (m.action === 'disable') {
+    const dsErr = validateDisableStages()
+    if (dsErr) return ElMessage.error(dsErr)
+  }
   const d = await api('/api/config')
   const cfg = d.config
   cfg.policy = cfg.policy || {}
@@ -879,7 +924,8 @@ async function saveMatcher() {
   } else cfg.policy.matchers.push(rule)
   try {
     const r = await post('/api/config/publish', { note: 'matcher rule: ' + rule.name, config: cfg })
-    ElMessage.success('规则已发布并热生效（版本 ' + r.revision + '）')
+    applyWarn(r)
+    if (!r.apply || r.apply.status !== 'failed') ElMessage.success('规则已发布并热生效（版本 ' + r.revision + '）')
     mDlg.value = false
     load()
   } catch (e) {
@@ -896,8 +942,9 @@ async function removeMatcher(row) {
   if (i < 0) return ElMessage.error('规则 ' + row.name + ' 已被其他管理员删除，请刷新列表')
   cfg.policy.matchers.splice(i, 1)
   try {
-    await post('/api/config/publish', { note: 'matcher removed: ' + row.name, config: cfg })
-    ElMessage.success('已删除并热生效')
+    const r = await post('/api/config/publish', { note: 'matcher removed: ' + row.name, config: cfg })
+    applyWarn(r)
+    if (!r.apply || r.apply.status !== 'failed') ElMessage.success('已删除并热生效')
     load()
   } catch (e) { ElMessage.error(e.message) }
 }

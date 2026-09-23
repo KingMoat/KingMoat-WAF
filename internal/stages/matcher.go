@@ -138,6 +138,12 @@ func (m *Matcher) Inspect(ctx context.Context, rc *pipeline.RequestContext) pipe
 				"rule", cm.rule.Name, "site", rc.Site.Domain,
 				"stages", strings.Join(cm.rule.DisableStages, ","), "trace", rc.Values["trace_id"])
 			rc.Values["matcher_rule"] = cm.rule.Name
+			// Disable hits are force-audited by the proxy regardless of the
+			// rule's log_enabled toggle (a security-posture change, not a
+			// routine detection event): publish the action and the full
+			// stage list for the audit reason.
+			rc.Values["matcher_action"] = config.ActionDisable
+			rc.Values["matcher_disable_stages"] = strings.Join(cm.rule.DisableStages, ",")
 			return pipeline.Allow()
 		}
 	}

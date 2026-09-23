@@ -42,7 +42,11 @@ type planeState struct {
 	authSite   *stages.SiteAuth
 	captcha    *stages.Captcha
 	penalty    *penalty.Manager
-	closers    []io.Closer
+	// disableState is the matcher-stage disable registry for THIS config
+	// build (fresh per publish); exposed read-only for the
+	// /api/policy/disable-state endpoint.
+	disableState *stages.StageDisableRegistry
+	closers      []io.Closer
 }
 
 func (s *planeState) close() {
@@ -74,6 +78,12 @@ func (h *Handler) SetAccessSink(sink accesslog.Sink) {
 		return
 	}
 	h.access.Store(&sink)
+}
+
+// DisableState exposes the CURRENT config build's matcher disable registry
+// (fresh per publish) for the read-only /api/policy/disable-state endpoint.
+func (h *Handler) DisableState() *stages.StageDisableRegistry {
+	return h.state.Load().disableState
 }
 
 // ensureGroups returns the IP-group provider for cfg, reusing the existing
@@ -178,10 +188,15 @@ func buildState(cfg *config.Config, groups ipgroups.Provider, observer apiasset.
 	if err != nil {
 		return nil, err
 	}
+	// The disable registry is shared by the matcher stage (writes site/module
+	// state on disable-rule hits) and the coraza stage (reads scoped
+	// coraza:<category> state to switch to variant engines).
+	registry := stages.NewStageDisableRegistry()
 	waf, err := coraza.New(cfg, logger)
 	if err != nil {
 		return nil, err
 	}
+	waf.SetDisableGate(registry)
 	respFilter, err := stages.NewRespFilter(cfg, logger)
 	if err != nil {
 		return nil, err
@@ -198,7 +213,6 @@ func buildState(cfg *config.Config, groups ipgroups.Provider, observer apiasset.
 	// good bots can bypass the JS challenge and bad bots can be denied early.
 	var stageList []pipeline.Stage
 	stageList = append(stageList, acl, stages.NewPenalty(pen, logger), geo, stages.NewExceptions(cfg))
-	registry := stages.NewStageDisableRegistry()
 	matcher, merr := stages.NewMatcher(cfg, registry, logger)
 	if merr != nil {
 		state.close()
@@ -233,6 +247,7 @@ func buildState(cfg *config.Config, groups ipgroups.Provider, observer apiasset.
 
 	state.pipe = pipeline.New(stageList...)
 	state.pipe.SetGate(registry)
+	state.disableState = registry
 	state.penalty = pen
 	state.respFilter = respFilter
 	state.authSite = authSite
@@ -625,10 +640,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// matched rule opts in to logging (log_enabled), write one monitor-action
 	// event carrying the "matcher/<name>" identifier so the console can
 	// drill down per rule. Deny verdicts are handled in the case above.
+	// Disable hits are ALWAYS audited regardless of log_enabled: switching
+	// off detection modules is a security-posture change, not false-positive
+	// noise, and must stay visible when a request attribute triggers it.
 	if v.Action == pipeline.ActionAllow {
-		if name, ok := rc.Values["matcher_rule"].(string); ok && name != "" && matcherLogEnabled(state.cfg, name) {
-			ev := pipeline.Verdict{Action: pipeline.ActionAllow, Rule: "matcher/" + name, Reason: "matched custom rule: " + name}
-			h.audit.Write(h.newEvent(r, site, ev, "monitor", bodyBytes, rc))
+		if name, ok := rc.Values["matcher_rule"].(string); ok && name != "" {
+			if action, _ := rc.Values["matcher_action"].(string); action == config.ActionDisable {
+				stagesOff, _ := rc.Values["matcher_disable_stages"].(string)
+				ev := pipeline.Verdict{Action: pipeline.ActionAllow, Rule: "matcher/" + name,
+					Reason: "disable rule hit: switched off " + stagesOff + " for site (applies to subsequent requests until republish)"}
+				h.audit.Write(h.newEvent(r, site, ev, "monitor", bodyBytes, rc))
+			} else if matcherLogEnabled(state.cfg, name) {
+				ev := pipeline.Verdict{Action: pipeline.ActionAllow, Rule: "matcher/" + name, Reason: "matched custom rule: " + name}
+				h.audit.Write(h.newEvent(r, site, ev, "monitor", bodyBytes, rc))
+			}
 		}
 	}
 

@@ -43,6 +43,7 @@ import (
 	"github.com/kingmoat/kingmoat/internal/hoststats"
 	"github.com/kingmoat/kingmoat/internal/metrics"
 	"github.com/kingmoat/kingmoat/internal/passhash"
+	"github.com/kingmoat/kingmoat/internal/stages"
 	"github.com/kingmoat/kingmoat/internal/store"
 )
 
@@ -285,6 +286,10 @@ type Options struct {
 	// probe from the listener manager). Returning an error rejects the
 	// revision with 400 so "port already in use" reaches the user.
 	ValidatePublish func(*config.Config) error
+	// DisableStateFn returns the CURRENT data-plane build's matcher disable
+	// registry for GET /api/policy/disable-state (nil = endpoint reports an
+	// empty state, e.g. static assemblies without a reloadable plane).
+	DisableStateFn func() *stages.StageDisableRegistry
 }
 
 // Server is the control-plane HTTP server.
@@ -367,6 +372,7 @@ func New(opts Options) *Server {
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	mux.HandleFunc("POST /api/config/publish", s.handlePublish)
+	mux.HandleFunc("GET /api/policy/disable-state", s.handleDisableState)
 	mux.HandleFunc("POST /api/config/site/publish", s.handleSitePublish)
 	mux.HandleFunc("GET /api/revisions", s.handleRevisions)
 	mux.HandleFunc("POST /api/revisions/{id}/rollback", s.handleRollback)
@@ -870,7 +876,14 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"revision": rev})
+	// Wait briefly for the data plane to report the reload outcome so the
+	// console can surface "saved but engine load failed" (fail-static kept
+	// the previous engine). pending = no in-plane consumer or slow reload.
+	apply := s.opts.Center.WaitForApply(rev, 5*time.Second)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"revision": rev,
+		"apply": map[string]any{"revision": apply.Revision, "status": apply.Status, "error": apply.Error},
+	})
 }
 
 // sitePublishRequest carries one site definition targeted by one of its

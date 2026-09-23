@@ -904,6 +904,14 @@ func (c *Config) Validate() error {
 	if err := c.Policy.Validate(); err != nil {
 		return err
 	}
+	// Variant-engine caps: a config exceeding them would pass validation,
+	// get stored, and only fail at data-plane reload (console shows success
+	// while the engine keeps the old state; cold starts would exit). Reject
+	// the publish up front instead — the coraza stage re-checks with the
+	// same caps and wording.
+	if err := c.validateScopedDisableLimits(); err != nil {
+		return err
+	}
 	if err := c.BlockPage.Validate(); err != nil {
 		return err
 	}
@@ -921,12 +929,37 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// validateScopedDisableLimits enforces the pre-compiled coraza variant
+// engine caps across all WAF-enabled sites: the per-site scoped-rule cap
+// (MaxScopedCorazaRulesPerSite, via ScopedCorazaExclusionSets) and the
+// global variant budget (MaxTotalCorazaVariants).
+func (c *Config) validateScopedDisableLimits() error {
+	if c.Policy == nil {
+		return nil
+	}
+	total := 0
+	for i := range c.Sites {
+		s := &c.Sites[i]
+		if !s.WAF.IsEnabled() {
+			continue
+		}
+		sets, err := ScopedCorazaExclusionSets(c.Policy, s.Domains)
+		if err != nil {
+			return fmt.Errorf("config: sites[%d] (%s): %w", i, strings.Join(s.Domains, ","), err)
+		}
+		total += len(sets)
+	}
+	if total > MaxTotalCorazaVariants {
+		return fmt.Errorf("config: %d coraza variant engines would be pre-compiled across all sites (max %d): reduce coraza:<category> disable rules or merge them per site", total, MaxTotalCorazaVariants)
+	}
+	return nil
+}
+
 // validDomainEntry validates one site domain entry: letters, digits, dot,
 // hyphen, wildcard star and IPv6 colon are allowed. Anything else — commas
 // (the "a.com,b.com" paste accident), whitespace, full-width characters — is
 // rejected so a typo can never silently become a literal routed hostname.
-func validDomainEntry(s string) bool {
-	if strings.TrimSpace(s) == "" {
+func validDomainEntry(s string) bool {	if strings.TrimSpace(s) == "" {
 		return false
 	}
 	for _, r := range s {

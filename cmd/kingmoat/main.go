@@ -42,6 +42,7 @@ import (
 	"github.com/kingmoat/kingmoat/internal/logstore"
 	"github.com/kingmoat/kingmoat/internal/metrics"
 	"github.com/kingmoat/kingmoat/internal/proxy"
+	"github.com/kingmoat/kingmoat/internal/stages"
 	"github.com/kingmoat/kingmoat/internal/redact"
 	"github.com/kingmoat/kingmoat/internal/telemetry"
 	"github.com/kingmoat/kingmoat/internal/webui"
@@ -371,8 +372,10 @@ func main() {
 					return
 				case rev := <-ch:
 					_, cfg := center.Current()
-					if err := handler.Reload(cfg); err != nil {
-						logger.Error("hot reload failed, keeping previous config", "revision", rev, "err", err)
+					applyErr := handler.Reload(cfg)
+					center.SetApplyStatus(rev, applyErr) // surface reload outcome to publish callers
+					if applyErr != nil {
+						logger.Error("hot reload failed, keeping previous config", "revision", rev, "err", applyErr)
 					} else {
 						logger.Info("hot reload applied", "revision", rev)
 					}
@@ -534,6 +537,7 @@ func main() {
 			AssetsRef: assetsRef,
 			PProf:   os.Getenv("KINGMOAT_PPROF") != "", // /debug/pprof behind console auth
 			GroupsFn: func() *ipgroups.Manager { return handler.Groups() },
+			DisableStateFn: func() *stages.StageDisableRegistry { return handler.DisableState() },
 		GeoDBFn:  geoDBPath(center),
 		})
 		mux.Handle("/", apiSrv.Handler())

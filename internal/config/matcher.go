@@ -45,11 +45,29 @@ const (
 	ActionDisable = "disable" // switch detection modules off for the matched sites
 )
 
+// StageCoraza is the signature-detection stage name. The scoped form
+// "coraza:<category>" (e.g. "coraza:sqli") disables a single CRS detection
+// category instead of the whole stage.
+const StageCoraza = "coraza"
+
+// MaxScopedCorazaRulesPerSite caps the per-site number of enabled matcher
+// disable rules carrying coraza:<category> scopes: each rule's category set
+// (plus their union) is pre-compiled into a variant engine at publish time,
+// so the cap bounds the per-site engine pool. Enforced at config validation
+// (publish is rejected up front) and re-checked defensively by the coraza
+// stage build with the same wording.
+const MaxScopedCorazaRulesPerSite = 4
+
+// MaxTotalCorazaVariants caps the global sum of pre-compiled variant engines
+// across all sites (union variants included). Also enforced at config
+// validation and re-checked by the coraza stage build.
+const MaxTotalCorazaVariants = 64
+
 // DisableableStages lists the detection modules a "disable" rule may switch
 // off for a site. Access-control stages (acl/exceptions/matcher/penalty) are
 // deliberately NOT disableable - they guard the policy itself.
 var DisableableStages = []string{
-	"botdetect", "botchallenge", "captcha", "ratelimit", "semantic", "coraza",
+	"botdetect", "botchallenge", "captcha", "ratelimit", "semantic", StageCoraza,
 }
 
 func isDisableableStage(name string) bool {
@@ -98,10 +116,27 @@ func (m *MatcherRule) Validate() error {
 		if len(m.DisableStages) == 0 {
 			return fmt.Errorf("matcher %q: disable action requires at least one module in disable_stages", m.Name)
 		}
-		for _, st := range m.DisableStages {
-			if !isDisableableStage(st) {
-				return fmt.Errorf("matcher %q: stage %q is not disableable (allowed: botdetect, botchallenge, captcha, ratelimit, semantic, coraza)", m.Name, st)
+		hasCoraza, hasScoped := false, false
+		for i, st := range m.DisableStages {
+			if cat, ok := strings.CutPrefix(st, StageCoraza+":"); ok {
+				cat = strings.ToLower(strings.TrimSpace(cat))
+				if !ValidWAFCategory(cat) {
+					return fmt.Errorf("matcher %q: stage %q is not a valid coraza category scope (valid categories: %s)", m.Name, st, strings.Join(WAFDetectionCategories, ", "))
+				}
+				m.DisableStages[i] = StageCoraza + ":" + cat
+				hasScoped = true
+				continue
 			}
+			if st == StageCoraza {
+				hasCoraza = true
+				continue
+			}
+			if !isDisableableStage(st) {
+				return fmt.Errorf("matcher %q: stage %q is not disableable (allowed: botdetect, botchallenge, captcha, ratelimit, semantic, coraza, coraza:<category>)", m.Name, st)
+			}
+		}
+		if hasCoraza && hasScoped {
+			return fmt.Errorf("matcher %q: disable_stages cannot mix %q with %q forms; split into two rules (one disabling the whole coraza stage, one per category scope)", m.Name, StageCoraza, StageCoraza+":<category>")
 		}
 	default:
 		return fmt.Errorf("matcher %q: action must be deny, allow, monitor or disable", m.Name)
@@ -169,3 +204,91 @@ func CompileRegex(v string) (func(string) bool, error) {
 func isCIDRValue(s string) bool { return strings.Contains(s, "/") }
 
 func isIPValue(s string) bool { return net.ParseIP(strings.TrimSpace(s)) != nil }
+
+// ScopedCorazaExclusionSets collects the de-duplicated CRS exclusion sets a
+// site needs variant engines for: the category set of every enabled
+// coraza:<category> disable rule that applies to the site's domains, plus
+// the union of all sets (so simultaneous multi-rule hits always find a
+// pre-compiled variant). Shared by config validation (publish-time caps) and
+// the coraza stage build so both sides derive identical variant sets. An
+// error means the per-site scoped-rule cap is exceeded.
+func ScopedCorazaExclusionSets(p *Policy, domains []string) ([]map[string]bool, error) {
+	if p == nil {
+		return nil, nil
+	}
+	var sets []map[string]bool
+	union := map[string]bool{}
+	for i := range p.Matchers {
+		r := &p.Matchers[i]
+		if !r.Enabled || r.Action != ActionDisable {
+			continue
+		}
+		if !ruleAppliesToSite(r.Sites, domains) {
+			continue
+		}
+		set := map[string]bool{}
+		for _, st := range r.DisableStages {
+			if cat, ok := strings.CutPrefix(st, StageCoraza+":"); ok {
+				set[cat] = true
+			}
+		}
+		if len(set) == 0 {
+			continue
+		}
+		sets = append(sets, set)
+		for cat := range set {
+			union[cat] = true
+		}
+		if len(sets) > MaxScopedCorazaRulesPerSite {
+			return nil, fmt.Errorf("too many coraza:<category> disable rules apply to this site (max %d, got %d): split or merge rules",
+				MaxScopedCorazaRulesPerSite, len(sets))
+		}
+	}
+	if len(sets) == 0 {
+		return nil, nil
+	}
+	sets = append(sets, union)
+	seen := make(map[string]bool, len(sets))
+	out := make([]map[string]bool, 0, len(sets))
+	for _, set := range sets {
+		k := ScopedCorazaSetKey(set)
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, set)
+	}
+	return out, nil
+}
+
+// ScopedCorazaSetKey canonicalizes an exclusion set to the variant map key:
+// categories in detection-category order, comma-joined.
+func ScopedCorazaSetKey(excluded map[string]bool) string {
+	var sb strings.Builder
+	for _, cat := range WAFDetectionCategories {
+		if excluded[cat] {
+			if sb.Len() > 0 {
+				sb.WriteByte(',')
+			}
+			sb.WriteString(cat)
+		}
+	}
+	return sb.String()
+}
+
+// ruleAppliesToSite mirrors the matcher stage's site scoping: empty Sites =
+// all sites, otherwise case-insensitive match against any of the site's
+// domains.
+func ruleAppliesToSite(sites, domains []string) bool {
+	if len(sites) == 0 {
+		return true
+	}
+	for _, s := range sites {
+		for _, d := range domains {
+			if strings.EqualFold(s, d) {
+				return true
+			}
+		}
+	}
+	return false
+}

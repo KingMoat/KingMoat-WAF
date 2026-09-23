@@ -24,22 +24,57 @@ import (
 	"github.com/kingmoat/kingmoat/internal/pipeline"
 )
 
+// DisableGate lets the coraza stage observe the per-site module disable
+// state (matcher "disable" rules) without importing the stages package: the
+// proxy wires the live disable registry in via SetDisableGate. Only the
+// scoped "coraza:<category>" keys are read here; disabling the plain
+// "coraza" stage is handled by the pipeline gate, which skips the stage.
+type DisableGate interface {
+	Disabled(site, stage string) bool
+}
+
 // Stage implements pipeline.Stage with per-site Coraza WAF instances.
 type Stage struct {
 	byDomain map[string]*siteWAF
+	gate     DisableGate
 	logger   *slog.Logger
 }
 
 type siteWAF struct {
 	waf coraza.WAF
+	// variants pre-compiles category-trimmed engines, keyed by the excluded
+	// category set in detection-category order ("sqli,xss"). Nil/empty when
+	// the site has no coraza:<category> disable rules: the main engine
+	// handles everything.
+	variants map[string]*siteWAF
 }
+
+// SetDisableGate attaches the disable-state source used to switch to
+// category-trimmed variant engines at request time. Optional: without a
+// gate the stage always uses the main engine.
+func (st *Stage) SetDisableGate(g DisableGate) { st.gate = g }
+
+// buildVariantWAFFn is a package-level indirection so tests can simulate a
+// variant-compile failure (cold-start degradation path).
+var buildVariantWAFFn = buildVariantWAF
 
 // New builds the multi-site Coraza stage. Sites with waf.enabled=false are
 // skipped; every enabled site gets its own WAF instance compiled from the
-// embedded CRS plus optional custom SecLang rules.
+// embedded CRS plus optional custom SecLang rules. Sites referenced by
+// coraza:<category> disable rules additionally get variant engines
+// pre-compiled for every rule's category set plus the union of all sets.
+// A MAIN engine compile failure aborts the whole build (fail-static reload,
+// cold start exit); a VARIANT compile failure only degrades that scope — the
+// variant is skipped with an error log, requests for it fall back to the
+// main engine and the process keeps running. Variant sets identical to the
+// site's effective category set alias the main engine (no extra compile).
 func New(cfg *config.Config, logger *slog.Logger) (*Stage, error) {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	var globalCats []string
+	if cfg.Policy != nil {
+		globalCats = cfg.Policy.WAFCategories
 	}
 	byDomain := make(map[string]*siteWAF)
 	for i := range cfg.Sites {
@@ -52,6 +87,33 @@ func New(cfg *config.Config, logger *slog.Logger) (*Stage, error) {
 			return nil, fmt.Errorf("coraza: site %d (%s): %w", i, strings.Join(s.Domains, ","), err)
 		}
 		sw := &siteWAF{waf: waf}
+		exclusionSets, err := siteCategoryExclusions(cfg.Policy, s.Domains)
+		if err != nil {
+			return nil, fmt.Errorf("coraza: site %d (%s): %w", i, strings.Join(s.Domains, ","), err)
+		}
+		if len(exclusionSets) > 0 {
+			variants := make(map[string]*siteWAF, len(exclusionSets))
+			base := enabledCategorySet(s.WAF, globalCats)
+			for _, ex := range exclusionSets {
+				key := config.ScopedCorazaSetKey(ex)
+				if cats := variantCategories(s, cfg.Policy, ex); len(cats) == len(base) {
+					// The disabled categories were never in the effective
+					// set: the main engine already IS this variant. Alias it
+					// so runtime lookups hit the exact key without a
+					// misleading fallback warning.
+					variants[key] = sw
+					continue
+				}
+				vw, err := buildVariantWAFFn(s, cfg.Policy, ex)
+				if err != nil {
+					logger.Error("coraza: variant engine build failed, scope falls back to the main engine",
+						"site", strings.Join(s.Domains, ","), "excluded", key, "err", err)
+					continue
+				}
+				variants[key] = &siteWAF{waf: vw}
+			}
+			sw.variants = variants
+		}
 		for _, d := range s.Domains {
 			byDomain[strings.ToLower(strings.TrimSpace(d))] = sw
 		}
@@ -153,7 +215,44 @@ func (st *Stage) Inspect(ctx context.Context, rc *pipeline.RequestContext) pipel
 	if sw == nil {
 		return pipeline.Allow()
 	}
+	if v, why := sw.pickVariant(rc, st.gate); v != nil {
+		sw = v
+	} else if why != "" {
+		// Disabled categories without a pre-compiled variant: a publish-time
+		// set (or a degraded build) does not match the live disable state.
+		st.logger.Warn("coraza: no pre-compiled variant for the disabled category set, using main engine",
+			"site", rc.Site.Domain, "excluded", why)
+	}
 	return sw.inspect(rc, st.logger)
+}
+
+// pickVariant selects the variant engine matching the site's currently
+// disabled CRS categories (set by matcher coraza:<category> rules via the
+// disable registry). The disable state lives in a registry shared with the
+// matcher stage, which runs earlier in the pipeline: a rule hit on the SAME
+// request switches this request to the variant immediately, and the state
+// persists site-wide until republish. The exclusion-set key must have been
+// pre-compiled at publish time; unknown combinations fall back to the main
+// engine (defensive). Returns nil (main engine) when there is no gate, no
+// variants or no disabled category; the second return carries the unmatched
+// exclusion set ("" when no fallback warning is warranted).
+func (w *siteWAF) pickVariant(rc *pipeline.RequestContext, gate DisableGate) (*siteWAF, string) {
+	if len(w.variants) == 0 || gate == nil {
+		return nil, ""
+	}
+	var excluded []string
+	for _, cat := range config.WAFDetectionCategories {
+		if gate.Disabled(rc.Site.Domain, config.StageCoraza+":"+cat) {
+			excluded = append(excluded, cat)
+		}
+	}
+	if len(excluded) == 0 {
+		return nil, ""
+	}
+	if v, ok := w.variants[strings.Join(excluded, ",")]; ok {
+		return v, ""
+	}
+	return nil, strings.Join(excluded, ",")
 }
 
 func (w *siteWAF) inspect(rc *pipeline.RequestContext, logger *slog.Logger) pipeline.Verdict {
@@ -486,4 +585,46 @@ func buildCRSIncludes(ws *config.WAFSettings, globalCats []string) string {
 		sb.WriteString("\n")
 	}
 	return sb.String()
+}
+
+// siteCategoryExclusions delegates to the shared config-layer collector so
+// publish-time validation and the runtime build derive identical variant
+// sets (including the per-site scoped-rule cap error).
+func siteCategoryExclusions(policy *config.Policy, domains []string) ([]map[string]bool, error) {
+	return config.ScopedCorazaExclusionSets(policy, domains)
+}
+
+// buildVariantWAF compiles one variant engine: the site's effective category
+// set minus the excluded categories, run through the regular buildWAF path
+// (site waf.categories vs global default stacking and the REQUEST-999
+// dangling-update filtering apply unchanged — disable scoping can only
+// narrow the loaded set).
+func buildVariantWAF(s *config.Site, policy *config.Policy, exclude map[string]bool) (coraza.WAF, error) {
+	clone := *s
+	ws := config.WAFSettings{}
+	if s.WAF != nil {
+		ws = *s.WAF
+	}
+	ws.Categories = variantCategories(s, policy, exclude)
+	clone.WAF = &ws
+	return buildWAF(&clone, policy)
+}
+
+// variantCategories computes the variant's effective detection categories:
+// the site's enabled set (site waf.categories, else the global default, else
+// all categories) minus the disabled categories. Disable scoping can only
+// narrow the loaded set, never widen it.
+func variantCategories(s *config.Site, policy *config.Policy, exclude map[string]bool) []string {
+	var globalCats []string
+	if policy != nil {
+		globalCats = policy.WAFCategories
+	}
+	base := enabledCategorySet(s.WAF, globalCats)
+	cats := make([]string, 0, len(base))
+	for _, cat := range config.WAFDetectionCategories {
+		if base[cat] && !exclude[cat] {
+			cats = append(cats, cat)
+		}
+	}
+	return cats
 }

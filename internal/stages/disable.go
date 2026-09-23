@@ -5,6 +5,7 @@
 package stages
 
 import (
+	"sort"
 	"strings"
 	"sync"
 )
@@ -42,4 +43,24 @@ func (r *StageDisableRegistry) Disabled(site, stage string) bool {
 	set := r.m[strings.ToLower(site)]
 	_, ok := set[stage]
 	return ok
+}
+
+// Snapshot returns a read-only copy of the current per-site disable state
+// (site domain → sorted disabled stage/category names), for the
+// /api/policy/disable-state visibility endpoint. The fresh registry per
+// config build means a snapshot always describes the live process state
+// since the last publish.
+func (r *StageDisableRegistry) Snapshot() map[string][]string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[string][]string, len(r.m))
+	for site, set := range r.m {
+		list := make([]string, 0, len(set))
+		for st := range set {
+			list = append(list, st)
+		}
+		sort.Strings(list)
+		out[site] = list
+	}
+	return out
 }

@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/kingmoat/kingmoat/internal/config"
 	"github.com/kingmoat/kingmoat/internal/store"
@@ -28,6 +30,10 @@ type Center struct {
 	rev  int64
 	cfg  *config.Config
 	subs map[chan int64]struct{}
+
+	// lastApply carries the data-plane outcome of the most recent revision
+	// (written by the hot-reload consumer via SetApplyStatus).
+	lastApply atomic.Value
 }
 
 // DBPath returns the SQLite database file path (for sibling data dirs).
@@ -227,6 +233,54 @@ func (c *Center) Rollback(id int64, author string) (int64, error) {
 		return 0, fmt.Errorf("configcenter: decode revision %d: %w", id, err)
 	}
 	return c.publishInternal(&cfg, author, fmt.Sprintf("rollback to revision %d", id), true)
+}
+
+// ApplyStatus reports the data-plane outcome of one published revision.
+type ApplyStatus struct {
+	Revision int64  `json:"revision"`
+	Status   string `json:"status"` // "applied" | "failed" | "pending"
+	Error    string `json:"error,omitempty"`
+}
+
+// SetApplyStatus records the data-plane apply outcome for a revision; called
+// by the hot-reload consumer right after the plane rebuild returns.
+func (c *Center) SetApplyStatus(rev int64, applyErr error) {
+	st := ApplyStatus{Revision: rev, Status: "applied"}
+	if applyErr != nil {
+		st.Status = "failed"
+		st.Error = applyErr.Error()
+	}
+	c.lastApply.Store(st)
+}
+
+// ApplyStatus returns the most recent data-plane apply outcome (zero value =
+// no consumer reported yet).
+func (c *Center) ApplyStatus() ApplyStatus {
+	if v, ok := c.lastApply.Load().(ApplyStatus); ok {
+		return v
+	}
+	return ApplyStatus{}
+}
+
+// WaitForApply blocks until a consumer reports the apply outcome for rev, or
+// the timeout elapses ("pending"). Returns immediately when there are no
+// in-process subscribers (remote mode, API-level tests). A newer revision's
+// outcome already stored is treated as a completed apply of this one.
+func (c *Center) WaitForApply(rev int64, timeout time.Duration) ApplyStatus {
+	c.mu.RLock()
+	n := len(c.subs)
+	c.mu.RUnlock()
+	if n == 0 {
+		return ApplyStatus{Revision: rev, Status: "pending"}
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if st := c.ApplyStatus(); st.Revision >= rev {
+			return st
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return ApplyStatus{Revision: rev, Status: "pending"}
 }
 
 // Store exposes the underlying store (read-only usage by the API layer).

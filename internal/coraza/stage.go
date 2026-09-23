@@ -7,6 +7,7 @@ package coraza
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -123,6 +124,11 @@ func buildWAF(s *config.Site, policy *config.Policy) (coraza.WAF, error) {
 			directives += "\nSecRuleRemoveById " + e.RuleID
 		}
 	}
+	// CRS's always-on REQUEST-999 file carries SecRuleUpdateTargetById
+	// directives referencing detection rules; excluding a category removes
+	// those rules, so dangling update directives must be dropped or the
+	// engine compile fails (hot reload would fail-static).
+	directives = materializeCRSIncludes(directives, s.WAF, globalCats)
 	limit := int(s.WAF.BodyLimit())
 	conf := coraza.NewWAFConfig().
 		WithRootFS(slashFS{inner: coreruleset.FS}).
@@ -318,24 +324,12 @@ func siteMatches(domains []string, domain string) bool {
 	return false
 }
 
-// buildCRSIncludes generates the CRS include directive list based on the
-// site's category configuration. When Categories is nil, the global default
-// (policy.WAFCategories) applies when set, otherwise all detection
-// categories are included (backward compat). A non-nil site list takes
-// precedence over the global default. Only the listed category files and
-// the always-on infrastructure files are included — disabled categories
-// never load, reducing both rule count and per-request evaluation cost.
-//
-// Includes are emitted in CRS file-number order to preserve the original
-// glob ordering, which matters because SecRuleUpdateTargetById in some CRS
-// files references rules defined in earlier files.
-func buildCRSIncludes(ws *config.WAFSettings, globalCats []string) string {
-	// Determine which detection categories to include.
+// enabledCategorySet resolves the effective enabled detection categories:
+// a non-nil site list wins, otherwise the global default (policy) applies
+// when set, otherwise all categories are enabled (backward compat).
+func enabledCategorySet(ws *config.WAFSettings, globalCats []string) map[string]bool {
 	enabled := make(map[string]bool)
 	if ws == nil || ws.Categories == nil {
-		// Categories field absent (nil): the global default applies when
-		// configured, otherwise everything is included (backward compat).
-		// An explicitly empty list []string{} means all categories disabled.
 		if globalCats != nil {
 			for _, cat := range globalCats {
 				cat = strings.TrimSpace(strings.ToLower(cat))
@@ -356,6 +350,115 @@ func buildCRSIncludes(ws *config.WAFSettings, globalCats []string) string {
 			}
 		}
 	}
+	return enabled
+}
+
+// crsFileNumber extracts the 3-digit CRS number from an include file name
+// (e.g. REQUEST-932-APPLICATION-ATTACK-RCE.conf → 932).
+func crsFileNumber(name string) int {
+	i := strings.Index(name, "-")
+	if i < 0 {
+		return 0
+	}
+	rest := name[i+1:]
+	j := strings.Index(rest, "-")
+	if j < 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(rest[:j])
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// filterUpdateTargetById drops SecRuleUpdateTargetById directives whose
+// target rule lives in an excluded category file. CRS's always-on
+// REQUEST-999 "after" file carries updates referencing rules inside the
+// detection files (930/932/941/942…); excluding a category removes those
+// rules and coraza fails to compile the dangling update ("rule … not
+// found"), so such directives must be dropped for the filtered set.
+func excludedCategoryPrefixes(ws *config.WAFSettings, globalCats []string) map[int]bool {
+	enabled := enabledCategorySet(ws, globalCats)
+	excluded := map[int]bool{}
+	for cat, f := range config.WAFCategoryFiles() {
+		if enabled[cat] {
+			continue
+		}
+		if num := crsFileNumber(f); num > 0 {
+			excluded[num] = true
+		}
+	}
+	return excluded
+}
+
+// dropUpdateTargetLines filters one directives file body, dropping
+// SecRuleUpdateTargetById lines whose target rule belongs to an excluded
+// category file (3-digit CRS number prefix match).
+func dropUpdateTargetLines(content string, excluded map[int]bool) string {
+	if len(excluded) == 0 {
+		return content
+	}
+	lines := strings.Split(content, "\n")
+	out := make([]string, 0, len(lines))
+	for _, ln := range lines {
+		t := strings.TrimSpace(ln)
+		if strings.HasPrefix(strings.ToLower(t), "secruleupdatetargetbyid") {
+			if fields := strings.Fields(t); len(fields) >= 2 {
+				if id, err := strconv.Atoi(fields[1]); err == nil && excluded[id/1000] {
+					continue
+				}
+			}
+		}
+		out = append(out, ln)
+	}
+	return strings.Join(out, "\n")
+}
+
+// materializeCRSIncludes resolves the dangling SecRuleUpdateTargetById
+// problem for filtered category sets. The update directives live INSIDE the
+// included CRS files (the always-on REQUEST-999 "after" file references
+// detection rules), so filtering the directive string alone is not enough:
+// any included file whose body carries update directives targeting excluded
+// categories is read from the embedded ruleset, filtered and INLINED in
+// place of its Include directive; the directives string itself is filtered
+// too (covers user custom rules referencing excluded rules).
+func materializeCRSIncludes(directives string, ws *config.WAFSettings, globalCats []string) string {
+	excluded := excludedCategoryPrefixes(ws, globalCats)
+	if len(excluded) == 0 {
+		return directives
+	}
+	lines := strings.Split(directives, "\n")
+	out := make([]string, 0, len(lines)+64)
+	for _, ln := range lines {
+		t := strings.TrimSpace(ln)
+		if name, ok := strings.CutPrefix(t, "Include @owasp_crs/"); ok && !strings.Contains(name, "*") {
+			if b, err := fs.ReadFile(coreruleset.FS, "@owasp_crs/"+name); err == nil {
+				body := string(b)
+				if strings.Contains(strings.ToLower(body), "secruleupdatetargetbyid") {
+					out = append(out, dropUpdateTargetLines(body, excluded))
+					continue
+				}
+			}
+		}
+		out = append(out, ln)
+	}
+	return dropUpdateTargetLines(strings.Join(out, "\n"), excluded)
+}
+
+// buildCRSIncludes generates the CRS include directive list based on the
+// site's category configuration. When Categories is nil, the global default
+// (policy.WAFCategories) applies when set, otherwise all detection
+// categories are included (backward compat). A non-nil site list takes
+// precedence over the global default. Only the listed category files and
+// the always-on infrastructure files are included — disabled categories
+// never load, reducing both rule count and per-request evaluation cost.
+//
+// Includes are emitted in CRS file-number order to preserve the original
+// glob ordering, which matters because SecRuleUpdateTargetById in some CRS
+// files references rules defined in earlier files.
+func buildCRSIncludes(ws *config.WAFSettings, globalCats []string) string {
+	enabled := enabledCategorySet(ws, globalCats)
 
 	// Build the ordered include list: all CRS files sorted by number, with
 	// disabled category files skipped. Always-on files are never skipped.

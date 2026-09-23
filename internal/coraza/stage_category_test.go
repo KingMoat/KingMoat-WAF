@@ -159,3 +159,83 @@ func TestBuildCRSIncludesGlobalInvalidEntriesIgnored(t *testing.T) {
 		}
 	}
 }
+
+
+// TestDropUpdateTargetLines verifies that SecRuleUpdateTargetById
+// directives targeting rules of excluded category files are dropped while
+// always-on targets (e.g. 920xxx) and enabled-category targets survive.
+func TestDropUpdateTargetLines(t *testing.T) {
+	in := strings.Join([]string{
+		`SecRuleRemoveById 942100`,
+		`SecRuleUpdateTargetById 932240 "ARGS:foo"`,
+		`SecRuleUpdateTargetById 942100 "ARGS:id"`,
+		`SecRuleUpdateTargetById 941100 "ARGS:q"`,
+		`SecRuleUpdateTargetById 920300 "REQUEST_URI"`,
+		`SecRule ARGS_GET "@rx x" "id:1000001,phase:2,deny"`,
+	}, "\n")
+
+	excluded := map[int]bool{942: true, 932: true}
+	out := dropUpdateTargetLines(in, excluded)
+	if strings.Contains(out, "932240") {
+		t.Fatalf("excluded rce target 932240 must be dropped:\n%s", out)
+	}
+	for _, want := range []string{
+		`SecRuleRemoveById 942100`, // remove directives are tolerant, keep
+		`SecRuleUpdateTargetById 941100 "ARGS:q"`,
+		`SecRuleUpdateTargetById 920300 "REQUEST_URI"`,
+		`SecRule ARGS_GET "@rx x" "id:1000001,phase:2,deny"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected directive kept:\n%s", want)
+		}
+	}
+	if strings.Contains(out, `SecRuleUpdateTargetById 942100`) {
+		t.Fatalf("excluded sqli target 942100 must be dropped:\n%s", out)
+	}
+
+	// empty exclusion set = untouched.
+	if got := dropUpdateTargetLines(in, map[int]bool{}); got != in {
+		t.Fatalf("empty exclusions must keep all directives:\n%s", got)
+	}
+}
+
+// TestMaterializeCRSIncludesInline999 verifies that the always-on REQUEST-999
+// file (the one carrying cross-file update directives) is inlined with the
+// dangling updates removed, while files without updates keep their Include.
+func TestMaterializeCRSIncludesInline999(t *testing.T) {
+	dirs := "Include @owasp_crs/REQUEST-999-COMMON-EXCEPTIONS-AFTER.conf\nInclude @owasp_crs/REQUEST-920-PROTOCOL-ENFORCEMENT.conf"
+	out := materializeCRSIncludes(dirs, &config.WAFSettings{Categories: []string{"xss"}}, nil)
+	if strings.Contains(out, "Include @owasp_crs/REQUEST-999-COMMON-EXCEPTIONS-AFTER.conf") {
+		t.Fatalf("999 file must be inlined (it carries update directives):\n%s", out[:200])
+	}
+	if !strings.Contains(out, "Include @owasp_crs/REQUEST-920-PROTOCOL-ENFORCEMENT.conf") {
+		t.Fatalf("file without update directives must keep its Include:\n%s", out[:200])
+	}
+	if strings.Contains(out, "SecRuleUpdateTargetById 932240") {
+		t.Fatalf("dangling update to excluded rce rule 932240 must be dropped")
+	}
+	if !strings.Contains(out, "SecRuleUpdateTargetById 941100") {
+		t.Fatalf("update to enabled xss rule 941100 must survive")
+	}
+}
+
+// TestBuildWAFCompilesWithExcludedCategories is the compile-level guard for
+// category filtering: CRS's always-on REQUEST-999 file references rules in
+// detection files, so the filtered directive set must still compile.
+func TestBuildWAFCompilesWithExcludedCategories(t *testing.T) {
+	s := &config.Site{
+		Domains: []string{"cats-test.local"},
+		WAF:     &config.WAFSettings{Categories: []string{"xss"}},
+	}
+	if _, err := buildWAF(s, &config.Policy{}); err != nil {
+		t.Fatalf("buildWAF with excluded categories must compile: %v", err)
+	}
+	s.WAF = &config.WAFSettings{Categories: []string{}}
+	if _, err := buildWAF(s, &config.Policy{}); err != nil {
+		t.Fatalf("buildWAF with all categories disabled must compile: %v", err)
+	}
+	s.WAF = nil
+	if _, err := buildWAF(s, &config.Policy{}); err != nil {
+		t.Fatalf("buildWAF default (all categories) must compile: %v", err)
+	}
+}

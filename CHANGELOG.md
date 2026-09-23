@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.7.3-beta (2026-09-24)
 
 ### 新增
 

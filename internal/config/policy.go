@@ -276,6 +276,17 @@ func (p *Policy) Validate() error {
 			return fmt.Errorf("policy: matchers[%d]: %w", i, err)
 		}
 	}
+	// Matcher rules must be uniquely named: the console locates rules by name
+	// for toggle/save/delete, and the audit trail tags hits as matcher/<name> —
+	// duplicates would make those operations ambiguous.
+	seenMatcherNames := make(map[string]bool, len(p.Matchers))
+	for i := range p.Matchers {
+		name := strings.TrimSpace(p.Matchers[i].Name)
+		if seenMatcherNames[name] {
+			return fmt.Errorf("policy: matchers[%d]: duplicate rule name %q (rule names must be unique)", i, name)
+		}
+		seenMatcherNames[name] = true
+	}
 	if p.Penalty != nil {
 		if p.Penalty.Action != "" && p.Penalty.Action != "deny" && p.Penalty.Action != "throttle" {
 			return fmt.Errorf("policy: penalty.action must be deny or throttle")

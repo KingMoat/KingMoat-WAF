@@ -239,3 +239,28 @@ func TestBuildWAFCompilesWithExcludedCategories(t *testing.T) {
 		t.Fatalf("buildWAF default (all categories) must compile: %v", err)
 	}
 }
+
+
+// TestBuildWAFEachCategoryExcludedCompiles is the parameterized compile guard
+// for category filtering: excluding ANY single detection category (one at a
+// time) must still produce a compiling WAF. This pins the dangling
+// SecRuleUpdateTargetById fix across every category, not just the ["xss"]
+// combination covered by TestBuildWAFCompilesWithExcludedCategories.
+func TestBuildWAFEachCategoryExcludedCompiles(t *testing.T) {
+	all := config.WAFDetectionCategories
+	for _, excluded := range all {
+		var cats []string
+		for _, c := range all {
+			if c != excluded {
+				cats = append(cats, c)
+			}
+		}
+		s := &config.Site{
+			Domains: []string{"each-cat-test.local"},
+			WAF:     &config.WAFSettings{Categories: cats},
+		}
+		if _, err := buildWAF(s, &config.Policy{}); err != nil {
+			t.Fatalf("buildWAF with category %q excluded must compile: %v", excluded, err)
+		}
+	}
+}

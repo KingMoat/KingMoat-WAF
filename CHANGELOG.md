@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### 变更
+
+- **微引擎规则名称唯一性校验**：配置校验层拒绝重名的微引擎规则（`policy: matchers[N]: duplicate rule name "..."`）——控制台按名称定位规则（开关/编辑/删除）、审计日志按 `matcher/<名称>` 标记命中，重名会使这些操作有歧义；历史重名配置在下次发布时需先改名
+
+### 测试
+
+- **分类过滤编译级守卫参数化**：10 个检测类别逐一排除、各自单独编译验证（TestBuildWAFEachCategoryExcludedCompiles），覆盖 REQUEST-999 悬空指令修复的全部类别组合
+
 ## v0.7.2-rc3 (2026-09-24)
 
 ### 修复

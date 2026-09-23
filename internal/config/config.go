@@ -72,6 +72,12 @@ type WAFSettings struct {
 	// header-phase detection only) or "stream" (deep-inspect the first
 	// body_limit_bytes, forward the remainder untouched).
 	BodyOverLimit string `json:"body_over_limit,omitempty"`
+	// Categories filters which CRS attack-detection categories are loaded for
+	// this site. Empty or omitted = all categories enabled (backward compat).
+	// Valid values: sqli, xss, rce, lfi, rfi, php, generic, session, java,
+	// scanner. Infrastructure rules (protocol enforcement, multipart,
+	// blocking evaluation) are always loaded and cannot be disabled.
+	Categories []string `json:"categories,omitempty"`
 }
 
 // IsEnabled reports whether the WAF stage should be attached to the site.
@@ -96,6 +102,84 @@ func (w *WAFSettings) RejectOverLimit() bool {
 // (first body_limit_bytes) and then forwarded untouched.
 func (w *WAFSettings) StreamOverLimit() bool {
 	return w != nil && w.BodyOverLimit == "stream"
+}
+
+// WAFDetectionCategories lists all user-toggleable CRS detection categories.
+// Infrastructure rules (901-init, 905-exceptions, 911-method, 920-protocol,
+// 921-protocol-attack, 922-multipart, 949-blocking-eval, 999-after) are
+// always loaded and cannot be disabled.
+var WAFDetectionCategories = []string{
+	"sqli", "xss", "rce", "lfi", "rfi",
+	"php", "generic", "session", "java", "scanner",
+}
+
+// wafCategoryFiles maps each category to its CRS include file name.
+var wafCategoryFiles = map[string]string{
+	"sqli":    "REQUEST-942-APPLICATION-ATTACK-SQLI.conf",
+	"xss":     "REQUEST-941-APPLICATION-ATTACK-XSS.conf",
+	"rce":     "REQUEST-932-APPLICATION-ATTACK-RCE.conf",
+	"lfi":     "REQUEST-930-APPLICATION-ATTACK-LFI.conf",
+	"rfi":     "REQUEST-931-APPLICATION-ATTACK-RFI.conf",
+	"php":     "REQUEST-933-APPLICATION-ATTACK-PHP.conf",
+	"generic": "REQUEST-934-APPLICATION-ATTACK-GENERIC.conf",
+	"session": "REQUEST-943-APPLICATION-ATTACK-SESSION-FIXATION.conf",
+	"java":    "REQUEST-944-APPLICATION-ATTACK-JAVA.conf",
+	"scanner": "REQUEST-913-SCANNER-DETECTION.conf",
+}
+
+// wafAlwaysOnFiles are CRS files that are always loaded regardless of
+// category settings.
+var wafAlwaysOnFiles = []string{
+	"REQUEST-901-INITIALIZATION.conf",
+	"REQUEST-905-COMMON-EXCEPTIONS.conf",
+	"REQUEST-911-METHOD-ENFORCEMENT.conf",
+	"REQUEST-920-PROTOCOL-ENFORCEMENT.conf",
+	"REQUEST-921-PROTOCOL-ATTACK.conf",
+	"REQUEST-922-MULTIPART-ATTACK.conf",
+	"REQUEST-949-BLOCKING-EVALUATION.conf",
+	"REQUEST-999-COMMON-EXCEPTIONS-AFTER.conf",
+	"RESPONSE-950-DATA-LEAKAGES.conf",
+	"RESPONSE-951-DATA-LEAKAGES-SQL.conf",
+	"RESPONSE-952-DATA-LEAKAGES-JAVA.conf",
+	"RESPONSE-953-DATA-LEAKAGES-PHP.conf",
+	"RESPONSE-954-DATA-LEAKAGES-IIS.conf",
+	"RESPONSE-955-WEB-SHELLS.conf",
+	"RESPONSE-956-DATA-LEAKAGES-RUBY.conf",
+	"RESPONSE-980-CORRELATION.conf",
+}
+
+// ValidWAFCategory reports whether the given category name is valid.
+func ValidWAFCategory(c string) bool {
+	_, ok := wafCategoryFiles[c]
+	return ok
+}
+
+// ValidWAFCategories returns all valid category names.
+func ValidWAFCategories() []string {
+	out := make([]string, len(WAFDetectionCategories))
+	copy(out, WAFDetectionCategories)
+	return out
+}
+
+// WAFAlwaysOnFiles returns the CRS include file names that are always
+// loaded regardless of category settings.
+func WAFAlwaysOnFiles() []string {
+	return wafAlwaysOnFiles
+}
+
+// WAFCategoryFile returns the CRS include file name for a category.
+func WAFCategoryFile(cat string) (string, bool) {
+	f, ok := wafCategoryFiles[cat]
+	return f, ok
+}
+
+// WAFCategoryFiles returns the full category-to-CRS-file mapping.
+func WAFCategoryFiles() map[string]string {
+	out := make(map[string]string, len(wafCategoryFiles))
+	for k, v := range wafCategoryFiles {
+		out[k] = v
+	}
+	return out
 }
 
 // Site maps one or more domains to an upstream pool.

@@ -4,12 +4,9 @@
 
 ### 新增
 
-- **一键部署脚本**（`deploy/install.sh`）：支持 Debian 12+ / Ubuntu 24.04+ / openEuler 22.03+，自动安装依赖、从 Gitee（备用 GitHub）下载最新 Release、交互式选安装/数据目录、生成 systemd 守护并自启动；支持 `--version` 锁版本、`--data-dir` 非交互、`--uninstall` 卸载；deploy/README.md 同步新增一键部署入口与 install.sh 文件说明，Releases 链接从 GitHub 修正为 Gitee
+- **检测引擎分类过滤（CRS Categories per Site）**：WAF 检测引擎按攻击类型拆分为可独立启停的模块（SQLi / XSS / RCE / LFI / RFI / PHP / 通用注入 / 会话固定 / Java 反序列化 / 扫描器检测），每个站点可通过 `waf.categories` 配置启用的检测类别。缺省不设置 = 全部启用（向后兼容）。关闭的类别规则**不加载**（零性能损耗）。基础设施规则（协议校验/阻塞评分/响应分析）始终加载。控制台暂无 UI 开关（后续版本加），可通过 API 配置
+- **一键部署脚本**（`deploy/install.sh`）：支持 Debian 12+ / Ubuntu 24.04+ / openEuler 22.03+，自动安装依赖、从 Gitee（备用 GitHub）下载最新 Release、交互式选安装/数据目录、生成 systemd 守护并自启动；支持 `--version` 锁版本、`--data-dir` 非交互、`--uninstall` 卸载；deploy/README.md 同步新增一键部署入口，Releases 链接从 GitHub 修正为 Gitee
 - **匿名安装统计（默认关闭，可一键关闭）**：内置可选的安装量统计——默认关闭，在「系统设置 → 通用设置 → 匿名安装统计」显式开启后生效。仅上报随机安装 ID、软件版本、操作系统架构、CPU 核数与安装方式；不采集主机名、用户名、内网 IP 或任何业务数据；支持行业标准 `DO_NOT_TRACK` 环境变量一键关闭（优先级最高，零请求零落盘）；连续 3 次无法连接统计服务自动永久停止上报（设置开关 关→开 可重新尝试）；配置键 `telemetry.enabled`；关于页新增发布者/技术支持联系方式；README 新增遥测声明与设置说明
-
-
-### 新增
-
 - **upstream `sni_host`（固定回源 SNI）**：HTTPS 上游可配置固定回源 SNI——回源 TLS 握手的 ServerName 使用该域名（连接级，连接复用安全），与 `sni_forward` 互斥；配置校验拒绝非法主机名与两者同设
 
 ### 修复

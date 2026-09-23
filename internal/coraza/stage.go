@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -61,6 +62,12 @@ func New(cfg *config.Config, logger *slog.Logger) (*Stage, error) {
 // The site body limit is mirrored into Coraza's request body limits so the
 // proxy buffer and the engine never disagree.
 func buildWAF(s *config.Site, policy *config.Policy) (coraza.WAF, error) {
+	// Build the CRS include list: always-on infrastructure files + per-site
+	// category files. When s.WAF.Categories is empty, all categories are
+	// loaded (backward compat). Otherwise only the listed category files
+	// are included, reducing both rule count and per-request evaluation cost.
+	crsIncludes := buildCRSIncludes(s.WAF)
+
 	directives := strings.Join([]string{
 		"Include @coraza.conf-recommended",
 		"",
@@ -76,7 +83,7 @@ func buildWAF(s *config.Site, policy *config.Policy) (coraza.WAF, error) {
 		`SecAction "id:900008,phase:1,pass,t:none,nolog,setvar:tx.restricted_headers=/proxy-connection/ /content-length/ /transfer-encoding/"`,
 		`SecAction "id:900009,phase:1,pass,t:none,nolog,tag:'OWASP_CRS',ver:'OWASP_CRS/4.25.0',setvar:tx.crs_setup_version=4250"`,
 		"",
-		"Include @owasp_crs/*.conf",
+		crsIncludes,
 		"# KingMoat: the recommended conf ships DetectionOnly; enforce blocking.",
 		"SecRuleEngine On",
 		"",
@@ -256,4 +263,60 @@ func siteMatches(domains []string, domain string) bool {
 		}
 	}
 	return false
+}
+
+// buildCRSIncludes generates the CRS include directive list based on the
+// site's category configuration. When Categories is empty or nil, all
+// detection categories are included (backward compat). Otherwise, only
+// the listed category files and the always-on infrastructure files are
+// included — disabled categories never load, reducing both rule count and
+// per-request evaluation cost.
+//
+// Includes are emitted in CRS file-number order to preserve the original
+// glob ordering, which matters because SecRuleUpdateTargetById in some CRS
+// files references rules defined in earlier files.
+func buildCRSIncludes(ws *config.WAFSettings) string {
+	// Determine which detection categories to include.
+	enabled := make(map[string]bool)
+	if ws == nil || ws.Categories == nil {
+		// Categories field absent (nil) = include everything (backward compat).
+		// An explicitly empty list []string{} means all categories disabled.
+		for _, cat := range config.WAFDetectionCategories {
+			enabled[cat] = true
+		}
+	} else {
+		for _, cat := range ws.Categories {
+			cat = strings.TrimSpace(strings.ToLower(cat))
+			if config.ValidWAFCategory(cat) {
+				enabled[cat] = true
+			}
+		}
+	}
+
+	// Build the ordered include list: all CRS files sorted by number, with
+	// disabled category files skipped. Always-on files are never skipped.
+	type crsFile struct {
+		name     string
+		category string // "" = always-on, cannot be disabled
+	}
+
+	var allFiles []crsFile
+	for _, f := range config.WAFAlwaysOnFiles() {
+		allFiles = append(allFiles, crsFile{name: f, category: ""})
+	}
+	for cat, f := range config.WAFCategoryFiles() {
+		allFiles = append(allFiles, crsFile{name: f, category: cat})
+	}
+	sort.Slice(allFiles, func(i, j int) bool { return allFiles[i].name < allFiles[j].name })
+
+	var sb strings.Builder
+	for _, f := range allFiles {
+		if f.category != "" && !enabled[f.category] {
+			continue
+		}
+		sb.WriteString("Include @owasp_crs/")
+		sb.WriteString(f.name)
+		sb.WriteString("\n")
+	}
+	return sb.String()
 }

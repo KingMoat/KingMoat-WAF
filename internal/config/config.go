@@ -959,7 +959,8 @@ func (c *Config) validateScopedDisableLimits() error {
 // hyphen, wildcard star and IPv6 colon are allowed. Anything else — commas
 // (the "a.com,b.com" paste accident), whitespace, full-width characters — is
 // rejected so a typo can never silently become a literal routed hostname.
-func validDomainEntry(s string) bool {	if strings.TrimSpace(s) == "" {
+func validDomainEntry(s string) bool {
+	if strings.TrimSpace(s) == "" {
 		return false
 	}
 	for _, r := range s {

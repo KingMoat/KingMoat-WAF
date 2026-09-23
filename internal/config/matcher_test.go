@@ -170,8 +170,9 @@ func TestValidateScopedDisableLimitsPerSite(t *testing.T) {
 
 // TestValidateScopedDisableLimitsGlobal: the global variant budget (all
 // sites' pre-compiled variants summed) is enforced at config validation.
+// 4 scoped rules/site enumerate 2^4-1 = 15 subset-union variants.
 func TestValidateScopedDisableLimitsGlobal(t *testing.T) {
-	base := []string{"sqli", "xss", "rce", "lfi"} // 4 rules/site -> 5 variants/site
+	base := []string{"sqli", "xss", "rce", "lfi"} // 4 rules/site -> 15 subset-union variants/site
 	build := func(nSites int) *Config {
 		var sites []Site
 		var rules []MatcherRule
@@ -186,14 +187,90 @@ func TestValidateScopedDisableLimitsGlobal(t *testing.T) {
 		return &Config{ListenHTTP: ":0", Sites: sites, Policy: &Policy{Matchers: rules}}
 	}
 
-	if err := build(12).Validate(); err != nil {
-		t.Fatalf("12 sites x 5 variants = 60 must pass the global cap: %v", err)
+	if err := build(4).Validate(); err != nil {
+		t.Fatalf("4 sites x 15 variants = 60 must pass the global cap: %v", err)
 	}
-	err := build(13).Validate() // 65 > 64
+	err := build(5).Validate() // 75 > 64
 	if err == nil {
 		t.Fatal("global variant budget must be rejected at config validation")
 	}
 	if !strings.Contains(err.Error(), "max 64") {
 		t.Fatalf("error must state the cap: %v", err)
+	}
+}
+
+// TestScopedCorazaExclusionSetsEnumeratesSubsets is the S-2 regression: the
+// disable registry reports exact unions of currently-hit rules, so every
+// non-empty subset combination must resolve to a pre-compiled variant.
+// Enumerating only per-rule sets plus the full union leaves partial multi-rule
+// hits (e.g. B+C hit while A does not) without an exact variant, silently
+// falling back to the main engine.
+func TestScopedCorazaExclusionSetsEnumeratesSubsets(t *testing.T) {
+	p := &Policy{Matchers: []MatcherRule{
+		*scopedRule("a", nil, "sqli"),
+		*scopedRule("b", nil, "xss"),
+		*scopedRule("c", nil, "rce"),
+	}}
+	sets, err := ScopedCorazaExclusionSets(p, []string{"a.local"})
+	if err != nil {
+		t.Fatalf("collect must pass: %v", err)
+	}
+	if len(sets) != 7 { // 2^3-1 distinct non-empty subset unions
+		t.Fatalf("3 rules must enumerate 7 subset unions, got %d: %v", len(sets), sets)
+	}
+	keys := map[string]bool{}
+	for _, s := range sets {
+		keys[ScopedCorazaSetKey(s)] = true
+	}
+	for _, want := range []string{"sqli", "xss", "rce", "sqli,xss", "sqli,rce", "xss,rce", "sqli,xss,rce"} {
+		if !keys[want] {
+			t.Fatalf("subset union %q missing, got %v", want, keys)
+		}
+	}
+
+	// Overlapping sets deduplicate to the distinct unions only.
+	p = &Policy{Matchers: []MatcherRule{
+		*scopedRule("a", nil, "sqli"),
+		*scopedRule("b", nil, "sqli"),
+	}}
+	sets, err = ScopedCorazaExclusionSets(p, []string{"a.local"})
+	if err != nil {
+		t.Fatalf("collect must pass: %v", err)
+	}
+	if len(sets) != 1 || ScopedCorazaSetKey(sets[0]) != "sqli" {
+		t.Fatalf("identical rule sets must collapse to one variant, got %v", sets)
+	}
+
+	// The per-rule cap still bounds the enumeration input (4 rules max).
+	var rules []MatcherRule
+	cats := WAFDetectionCategories
+	for i := 0; i <= MaxScopedCorazaRulesPerSite; i++ {
+		rules = append(rules, *scopedRule("r"+string(rune('a'+i)), nil, cats[i]))
+	}
+	if _, err := ScopedCorazaExclusionSets(&Policy{Matchers: rules}, []string{"a.local"}); err == nil || !strings.Contains(err.Error(), "max 4") {
+		t.Fatalf("per-site rule cap must still apply, got %v", err)
+	}
+}
+
+// TestRuleAppliesToSiteFirstDomain is the S-3 regression: the matcher stage
+// records hits against the site's FIRST domain only, so variant collection
+// must scope rules the same way — a rule scoped to a non-first domain would
+// otherwise reserve a variant engine the runtime can never select.
+func TestRuleAppliesToSiteFirstDomain(t *testing.T) {
+	domains := []string{"a.local", "b.local"}
+	if !ruleAppliesToSite(nil, domains) {
+		t.Fatal("empty Sites must match all sites")
+	}
+	if !ruleAppliesToSite([]string{"a.local"}, domains) {
+		t.Fatal("first-domain rule must apply")
+	}
+	if !ruleAppliesToSite([]string{"A.LOCAL"}, domains) {
+		t.Fatal("first-domain match must be case-insensitive")
+	}
+	if ruleAppliesToSite([]string{"b.local"}, domains) {
+		t.Fatal("non-first-domain rule must NOT apply: the runtime matcher never fires it")
+	}
+	if ruleAppliesToSite([]string{"x.local"}, nil) {
+		t.Fatal("no domains must not match a site-scoped rule")
 	}
 }

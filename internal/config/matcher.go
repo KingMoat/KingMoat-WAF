@@ -51,16 +51,18 @@ const (
 const StageCoraza = "coraza"
 
 // MaxScopedCorazaRulesPerSite caps the per-site number of enabled matcher
-// disable rules carrying coraza:<category> scopes: each rule's category set
-// (plus their union) is pre-compiled into a variant engine at publish time,
-// so the cap bounds the per-site engine pool. Enforced at config validation
-// (publish is rejected up front) and re-checked defensively by the coraza
-// stage build with the same wording.
+// disable rules carrying coraza:<category> scopes: every non-empty subset
+// union of their category sets (≤ 2^n-1 distinct sets, n ≤ cap) is
+// pre-compiled into a variant engine at publish time, so any combination of
+// simultaneously-hit rules resolves to an exact variant. Enforced at config
+// validation (publish is rejected up front); the coraza stage build shares
+// the same collector, so it can only observe a violation if validation was
+// bypassed.
 const MaxScopedCorazaRulesPerSite = 4
 
 // MaxTotalCorazaVariants caps the global sum of pre-compiled variant engines
-// across all sites (union variants included). Also enforced at config
-// validation and re-checked by the coraza stage build.
+// across all sites (subset-union variants included). Enforced at config
+// validation only (publish is rejected up front).
 const MaxTotalCorazaVariants = 64
 
 // DisableableStages lists the detection modules a "disable" rule may switch
@@ -206,18 +208,20 @@ func isCIDRValue(s string) bool { return strings.Contains(s, "/") }
 func isIPValue(s string) bool { return net.ParseIP(strings.TrimSpace(s)) != nil }
 
 // ScopedCorazaExclusionSets collects the de-duplicated CRS exclusion sets a
-// site needs variant engines for: the category set of every enabled
-// coraza:<category> disable rule that applies to the site's domains, plus
-// the union of all sets (so simultaneous multi-rule hits always find a
-// pre-compiled variant). Shared by config validation (publish-time caps) and
-// the coraza stage build so both sides derive identical variant sets. An
-// error means the per-site scoped-rule cap is exceeded.
+// site needs variant engines for: the union of every non-empty subset of the
+// enabled coraza:<category> disable rules' category sets that apply to the
+// site's FIRST domain. The disable registry reports exact unions of
+// currently-hit rules, so each subset combination must resolve to a
+// pre-compiled variant — enumerating only per-rule sets plus the full union
+// would silently fall back to the main engine for partial multi-rule hits.
+// Shared by config validation (publish-time caps) and the coraza stage build
+// so both sides derive identical variant sets. An error means the per-site
+// scoped-rule cap is exceeded.
 func ScopedCorazaExclusionSets(p *Policy, domains []string) ([]map[string]bool, error) {
 	if p == nil {
 		return nil, nil
 	}
-	var sets []map[string]bool
-	union := map[string]bool{}
+	var ruleSets []map[string]bool
 	for i := range p.Matchers {
 		r := &p.Matchers[i]
 		if !r.Enabled || r.Action != ActionDisable {
@@ -235,28 +239,36 @@ func ScopedCorazaExclusionSets(p *Policy, domains []string) ([]map[string]bool, 
 		if len(set) == 0 {
 			continue
 		}
-		sets = append(sets, set)
-		for cat := range set {
-			union[cat] = true
-		}
-		if len(sets) > MaxScopedCorazaRulesPerSite {
+		ruleSets = append(ruleSets, set)
+		if len(ruleSets) > MaxScopedCorazaRulesPerSite {
 			return nil, fmt.Errorf("too many coraza:<category> disable rules apply to this site (max %d, got %d): split or merge rules",
-				MaxScopedCorazaRulesPerSite, len(sets))
+				MaxScopedCorazaRulesPerSite, len(ruleSets))
 		}
 	}
-	if len(sets) == 0 {
+	if len(ruleSets) == 0 {
 		return nil, nil
 	}
-	sets = append(sets, union)
-	seen := make(map[string]bool, len(sets))
-	out := make([]map[string]bool, 0, len(sets))
-	for _, set := range sets {
-		k := ScopedCorazaSetKey(set)
+	// Enumerate the union of every non-empty subset of rule sets. The disable
+	// registry only ever reports exact unions of currently-hit rules, so each
+	// subset combination must resolve to a pre-compiled variant.
+	seen := make(map[string]bool)
+	var out []map[string]bool
+	for mask := 1; mask < 1<<len(ruleSets); mask++ {
+		union := map[string]bool{}
+		for bit := 0; bit < len(ruleSets); bit++ {
+			if mask&(1<<bit) == 0 {
+				continue
+			}
+			for cat := range ruleSets[bit] {
+				union[cat] = true
+			}
+		}
+		k := ScopedCorazaSetKey(union)
 		if seen[k] {
 			continue
 		}
 		seen[k] = true
-		out = append(out, set)
+		out = append(out, union)
 	}
 	return out, nil
 }
@@ -276,18 +288,21 @@ func ScopedCorazaSetKey(excluded map[string]bool) string {
 	return sb.String()
 }
 
-// ruleAppliesToSite mirrors the matcher stage's site scoping: empty Sites =
-// all sites, otherwise case-insensitive match against any of the site's
-// domains.
+// ruleAppliesToSite mirrors the matcher stage's site scoping: the runtime
+// records hits against the site's FIRST domain only (rc.Site.Domain is
+// firstDomain(cfg)), so scoped rules only ever fire for sites whose first
+// domain matches — counting any other domain would reserve variant engines
+// the runtime can never select. Empty Sites = all sites.
 func ruleAppliesToSite(sites, domains []string) bool {
 	if len(sites) == 0 {
 		return true
 	}
+	if len(domains) == 0 {
+		return false
+	}
 	for _, s := range sites {
-		for _, d := range domains {
-			if strings.EqualFold(s, d) {
-				return true
-			}
+		if strings.EqualFold(s, domains[0]) {
+			return true
 		}
 	}
 	return false

@@ -525,12 +525,14 @@ function toggleCats() {
   catsOpen.value = !catsOpen.value
 }
 
-// 互斥联动：勾选整模块时自动清掉已勾的分类（两类并存保存会被拒绝，提前联动消除冲突态）
+// 互斥联动：勾选整模块时自动清掉已勾的分类（两类并存保存会被拒绝，提前联动消除冲突态），
+// 同时收起分类面板（避免面板卡在展开态、切换条反复弹误导提示）
 function onStagesChange() {
   if (!m.disable_stages.includes('coraza')) return
   if (scopedCorazaCats(m.disable_stages).length) {
     m.disable_stages = m.disable_stages.filter(s => s.indexOf('coraza:') !== 0)
-    ElMessage.info('「CRS 签名检测」已包含全部分类，已自动取消分类勾选；如需按分类关闭请改用下方「按分类关闭 CRS」')
+    catsOpen.value = false
+    ElMessage.info('「CRS 签名检测」已包含全部分类，已自动取消分类勾选；如需按分类关闭请先取消整模块勾选')
   }
 }
 const m = reactive({ name: '', action: 'deny', logic: 'and', sites: [], enabled: true, log_enabled: false, comment: '', disable_stages: [], conditions: [{ field: 'client_ip', op: 'contains', value: '' }] })
@@ -635,8 +637,7 @@ async function toggleMatcherLog(row) {
     if (row.log_enabled) list[i].log_enabled = true
     else delete list[i].log_enabled
     const r = await post('/api/config/publish', { note: 'matcher log toggle: ' + row.name, config: cfg })
-    applyWarn(r)
-    if (!r.apply || r.apply.status !== 'failed') ElMessage.success(row.log_enabled ? '已开启命中日志并热生效' : '已关闭命中日志并热生效')
+    applyNotice(r, row.log_enabled ? '已开启命中日志并热生效' : '已关闭命中日志并热生效')
     load()
   } catch (e) {
     ElMessage.error('发布失败：' + e.message)
@@ -767,8 +768,7 @@ async function saveGroup() {
     else if (at >= 0) cfg.ip_groups[at] = entry
     else cfg.ip_groups.push(entry)
     const r = await post('/api/config/publish', { note: 'ip group: ' + name, config: cfg })
-    applyWarn(r)
-    if (!r.apply || r.apply.status !== 'failed') ElMessage.success('IP 组已发布并热生效（版本 ' + r.revision + '）')
+    applyNotice(r, 'IP 组已发布并热生效（版本 ' + r.revision + '）')
     gDlg.value = false
     load()
   } catch (e) {
@@ -787,26 +787,34 @@ async function delGroup(name) {
     const cfg = d.config
     cfg.ip_groups = (cfg.ip_groups || []).filter(x => x.name !== name)
     const r = await post('/api/config/publish', { note: 'ip group removed: ' + name, config: cfg })
-    applyWarn(r)
-    if (!r.apply || r.apply.status !== 'failed') ElMessage.success('已删除并热生效')
+    applyNotice(r, '已删除并热生效')
     load()
   } catch (e) { ElMessage.error(e.message) }
 }
 
 // ---- 按 tab 粒度的保存函数：读全量 config → 只改本块字段 → publish，
 // spread 保留其余块字段，未展示块字段不丢 ----
-// 发布响应的 apply 状态：failed = 配置已保存（修订落库）但引擎加载失败
-// （fail-static，旧配置继续生效），需醒目提示避免"显示成功实际未生效"
-function applyWarn(r) {
-  if (r.apply && r.apply.status === 'failed') {
+// 发布响应的 apply 状态三态：applied = 引擎已加载；failed = 配置已保存
+// （修订落库）但引擎加载失败（fail-static，旧配置继续生效），需醒目提示
+// 避免"显示成功实际未生效"；pending = 引擎应用结果待确认（无订阅者或等待
+// 超时），不能宣称"已热生效"。返回是否可按成功处理。
+function applyNotice(r, okMsg) {
+  const st = r.apply && r.apply.status
+  if (st === 'failed') {
     ElMessage.warning('配置已保存（版本 ' + r.revision + '）但引擎加载失败，旧配置继续生效：' + (r.apply.error || '未知原因'))
+    return false
   }
+  if (st === 'pending') {
+    ElMessage.info('配置已保存（版本 ' + r.revision + '），引擎应用结果待确认，可在发布记录中核对')
+    return false
+  }
+  ElMessage.success(okMsg)
+  return true
 }
 
 async function publish(cfg, note) {
   const r = await post('/api/config/publish', { note, config: cfg })
-  applyWarn(r)
-  if (!r.apply || r.apply.status !== 'failed') ElMessage.success('策略已发布并热生效（版本 ' + r.revision + '）')
+  applyNotice(r, '策略已发布并热生效（版本 ' + r.revision + '）')
   await load()
 }
 
@@ -930,9 +938,10 @@ function scopedCorazaCats(stages) {
   return (stages || []).filter(s => typeof s === 'string' && s.startsWith('coraza:'))
 }
 
-// 与后端校验规则一致：分类必须合法；「CRS 签名检测」与分类子项不得混用（需拆成两条规则）
+// 与后端校验规则一致：disable 至少勾一项；分类必须合法；「CRS 签名检测」与分类子项不得混用（需拆成两条规则）
 function validateDisableStages() {
   const stages = m.disable_stages || []
+  if (!stages.length) return '至少勾选一个检测模块或 CRS 分类'
   const scoped = scopedCorazaCats(stages)
   for (const s of scoped) {
     if (!CRS_CATEGORIES.some(c => 'coraza:' + c.id === s)) return '未知的 CRS 分类：' + s
@@ -968,8 +977,7 @@ async function saveMatcher() {
   } else cfg.policy.matchers.push(rule)
   try {
     const r = await post('/api/config/publish', { note: 'matcher rule: ' + rule.name, config: cfg })
-    applyWarn(r)
-    if (!r.apply || r.apply.status !== 'failed') ElMessage.success('规则已发布并热生效（版本 ' + r.revision + '）')
+    applyNotice(r, '规则已发布并热生效（版本 ' + r.revision + '）')
     mDlg.value = false
     load()
   } catch (e) {
@@ -987,8 +995,7 @@ async function removeMatcher(row) {
   cfg.policy.matchers.splice(i, 1)
   try {
     const r = await post('/api/config/publish', { note: 'matcher removed: ' + row.name, config: cfg })
-    applyWarn(r)
-    if (!r.apply || r.apply.status !== 'failed') ElMessage.success('已删除并热生效')
+    applyNotice(r, '已删除并热生效')
     load()
   } catch (e) { ElMessage.error(e.message) }
 }

@@ -25,20 +25,20 @@
     <div class="km-cards" style="margin-bottom:16px">
       <div class="km-stat">
         <div class="num">{{ reqTotal }}</div>
-        <div class="lbl">累计请求</div>
-        <div class="km-delta km-muted">今日攻击事件 {{ eventTotal.toLocaleString() }}</div>
+        <div class="lbl">{{ rangeLabel }}请求</div>
+        <div class="km-delta km-muted">攻击事件 {{ eventTotal.toLocaleString() }}</div>
       </div>
       <div class="km-stat danger">
         <div class="num">{{ st.blocked_today ?? '-' }}</div>
         <div class="lbl">{{ rangeLabel }}拦截 <el-tag size="small" effect="plain" type="danger" class="km-tag">intercept</el-tag></div>
-        <div class="km-delta" :class="deltaCls">{{ deltaLabel }}</div>
+        <div class="km-delta" :class="deltaCls">{{ deltaLabel }}<span class="km-muted" style="font-size:10px;margin-left:6px">走势·近48h</span></div>
         <svg class="km-spark" width="120" height="26" v-if="sparkPoints">
           <polyline :points="sparkPoints" fill="none" stroke="var(--km-soft-red)" stroke-width="1.6" />
         </svg>
       </div>
       <div class="km-stat green">
         <div class="num">{{ blockRate }}</div>
-        <div class="lbl">累计拦截率</div>
+        <div class="lbl">拦截率</div>
         <div class="km-delta km-muted">挑战 {{ st.challenged_today ?? 0 }} · 观察 {{ st.monitor_today ?? 0 }}</div>
       </div>
       <div class="km-stat cyan">
@@ -62,7 +62,7 @@
 
       <el-card shadow="never">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
-          <div class="km-title" style="margin:0">攻击类型分布 · 今日</div>
+          <div class="km-title" style="margin:0">攻击类型分布</div>
           <div class="extra km-muted" style="margin-left:auto;font-size:12px">按命中规则归类</div>
         </div>
         <div ref="donut" style="height:280px"></div>
@@ -158,6 +158,7 @@ const rangeLabel = computed(() => (statsDays.value === 1 ? '今日' : `近 ${sta
 function setDays(n) {
   statsDays.value = n
   load()
+  loadGeo()
 }
 const recent = ref([])
 const nodeCount = ref(0)
@@ -313,7 +314,7 @@ async function load() {
 
 async function loadGeo() {
   try {
-    const d = await api('/api/stats/geo?limit=10&hours=' + (trendHours.value || 24))
+    const d = await api('/api/stats/geo?limit=10&days=' + (statsDays.value || 1))
     geoItems.value = d.items || []
     topIps.value = d.top_ips || []
     geoAvailable.value = !!d.geo_available
@@ -332,7 +333,6 @@ async function loadTrend() {
 function setTrend(v) {
   trendHours.value = v
   renderChart()
-  loadGeo()
 }
 
 function renderChart() {

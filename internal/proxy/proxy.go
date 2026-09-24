@@ -437,7 +437,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		v := pipeline.Deny("router/no_site", "no site matched for this host")
 		h.audit.Write(h.newEvent(r, "", v, "blocked", 0, nil))
 		metrics.RequestsTotal.Inc(r.Host, "blocked")
-		metrics.DailyReqInc(r.Host, "blocked")
+		// Fixed empty label: the request Host is attacker-controlled and must
+		// not become an unbounded per-day counter label (filtered by the API).
+		metrics.DailyReqInc("", "blocked")
 		metrics.StageHits.Inc("router")
 		intercept.Deny(w, r, v, traceID)
 		return
@@ -451,7 +453,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		v := pipeline.Deny("site/disabled", "site is disabled")
 		h.audit.Write(h.newEvent(r, site, v, "blocked", 0, nil))
 		metrics.RequestsTotal.Inc(r.Host, "blocked")
-		metrics.DailyReqInc(r.Host, "blocked")
+		// Same fixed empty label as the no_site path above.
+		metrics.DailyReqInc("", "blocked")
 		metrics.StageHits.Inc("router")
 		intercept.Deny(w, r, v, traceID)
 		return

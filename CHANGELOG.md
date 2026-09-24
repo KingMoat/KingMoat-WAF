@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.7.4-beta (2026-09-24)
 
 ### 修复
 

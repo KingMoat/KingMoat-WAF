@@ -318,7 +318,7 @@
       <el-form label-width="90px" label-position="left">
         <el-form-item label="规则名称"><el-input v-model="m.name" placeholder="如 封禁扫描器 UA" /></el-form-item>
         <el-form-item label="匹配动作">
-          <el-radio-group v-model="m.action">
+          <el-radio-group v-model="m.action" @change="onMatcherActionChange">
             <el-radio-button value="deny">拦截</el-radio-button>
             <el-radio-button value="allow">放行（信任）</el-radio-button>
             <el-radio-button value="monitor">仅观察</el-radio-button>
@@ -399,7 +399,7 @@
         <el-form-item label="记录日志">
           <div>
             <el-switch v-model="m.log_enabled" />
-            <div class="km-dim" style="font-size:12px;margin-top:4px">开启后，命中该规则的请求写入攻击日志（含站点/来源/路径），可在规则列表点击「日志」查看命中详情；关闭时仅计数不记日志，动作照常执行</div>
+            <div class="km-dim" style="font-size:12px;margin-top:4px">开启后，命中该规则的请求写入攻击日志（含站点/来源/路径），可在规则列表点击「日志」查看命中详情；关闭时仅计数不记日志，动作照常执行。切换动作时自动按默认值联动：关闭检测类默认开启，其余默认关闭，可手动调整</div>
           </div>
         </el-form-item>
         <el-form-item label="启用"><el-switch v-model="m.enabled" /></el-form-item>
@@ -931,6 +931,11 @@ function openMatcher(i) {
 function matcherDefaults() {
   return { name: '', action: 'deny', logic: 'and', sites: [], enabled: true, log_enabled: false, comment: '', disable_stages: [],
     conditions: [{ field: 'client_ip', op: 'contains', value: '' }] }
+}
+
+// 切换动作时按默认值联动「记录日志」：关闭检测类默认开，其余默认关（用户可再手动调整）
+function onMatcherActionChange(a) {
+  m.log_enabled = a === 'disable'
 }
 
 // disable_stages 中的 coraza:<分类> 复合值（分类粒度关闭 CRS）

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/kingmoat/kingmoat/internal/config"
@@ -103,4 +104,64 @@ func TestMatcherRuntimeAllowTrusted(t *testing.T) {
 	// NOTE: untrusted IP case is verified at stage level in stages tests;
 	// httptest always uses the same RemoteAddr so per-IP CIDR testing
 	// through the full handler is not feasible here.
+}
+
+// TestMatcherDisableHitFollowsLogToggle pins the disable-hit audit contract:
+// a disable hit follows the rule's log_enabled toggle like every other
+// matcher action — toggle off records nothing, toggle on records exactly one
+// monitor event carrying the matcher/<name> identity and the disable reason.
+func TestMatcherDisableHitFollowsLogToggle(t *testing.T) {
+	up := v3up(t, "ok")
+	defer up.Close()
+
+	for _, tc := range []struct {
+		name       string
+		logEnabled bool
+		wantEvents int
+	}{
+		{"toggle-off", false, 0},
+		{"toggle-on", true, 1},
+	} {
+		store := &captureStore{}
+		cfg := &config.Config{
+			ListenHTTP: ":0",
+			Sites: []config.Site{{
+				Domains:  []string{"t.local"},
+				Upstream: config.Upstream{Nodes: []config.UpstreamNode{{Address: trimScheme(up.URL)}}},
+				WAF:      wafOff(),
+			}},
+			Policy: &config.Policy{
+				Matchers: []config.MatcherRule{{
+					Name: "disable-botdetect", Enabled: true, Action: config.ActionDisable, Logic: "and",
+					DisableStages: []string{"botdetect"},
+					Conditions:    []config.MatcherCondition{{Field: "path", Op: "prefix", Value: "/x"}},
+					LogEnabled:    tc.logEnabled,
+				}},
+			},
+		}
+		h, err := NewReloadable(cfg, store, testLogger())
+		if err != nil {
+			t.Fatalf("%s: NewReloadable: %v", tc.name, err)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", "http://t.local/x", nil))
+		if rec.Code != 200 {
+			t.Fatalf("%s: disable hit must forward, got status %d", tc.name, rec.Code)
+		}
+		events := store.snapshot()
+		if len(events) != tc.wantEvents {
+			t.Fatalf("%s: audit events = %d, want %d (got %+v)", tc.name, len(events), tc.wantEvents, events)
+		}
+		if tc.wantEvents == 1 {
+			if events[0].Rule != "matcher/disable-botdetect" {
+				t.Fatalf("%s: event rule = %q, want matcher/disable-botdetect", tc.name, events[0].Rule)
+			}
+			if events[0].Action != "monitor" {
+				t.Fatalf("%s: event action = %q, want monitor", tc.name, events[0].Action)
+			}
+			if !strings.Contains(events[0].Reason, "switched off") {
+				t.Fatalf("%s: event reason must carry the disabled scope, got %q", tc.name, events[0].Reason)
+			}
+		}
+	}
 }

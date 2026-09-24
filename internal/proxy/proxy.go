@@ -642,21 +642,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Micro-engine rule hit audit (allow/monitor/disable actions): when the
 	// matched rule opts in to logging (log_enabled), write one monitor-action
 	// event carrying the "matcher/<name>" identifier so the console can
-	// drill down per rule. Deny verdicts are handled in the case above.
-	// Disable hits are ALWAYS audited regardless of log_enabled: switching
-	// off detection modules is a security-posture change, not false-positive
-	// noise, and must stay visible when a request attribute triggers it.
+	// drill down per rule. Disable hits follow the same toggle (the console
+	// defaults it to on for disable rules); deny verdicts are handled in the
+	// case above.
 	if v.Action == pipeline.ActionAllow {
-		if name, ok := rc.Values["matcher_rule"].(string); ok && name != "" {
+		if name, ok := rc.Values["matcher_rule"].(string); ok && name != "" && matcherLogEnabled(state.cfg, name) {
+			ev := pipeline.Verdict{Action: pipeline.ActionAllow, Rule: "matcher/" + name}
 			if action, _ := rc.Values["matcher_action"].(string); action == config.ActionDisable {
 				stagesOff, _ := rc.Values["matcher_disable_stages"].(string)
-				ev := pipeline.Verdict{Action: pipeline.ActionAllow, Rule: "matcher/" + name,
-					Reason: "disable rule hit: switched off " + stagesOff + " for site (applies to subsequent requests until republish)"}
-				h.audit.Write(h.newEvent(r, site, ev, "monitor", bodyBytes, rc))
-			} else if matcherLogEnabled(state.cfg, name) {
-				ev := pipeline.Verdict{Action: pipeline.ActionAllow, Rule: "matcher/" + name, Reason: "matched custom rule: " + name}
-				h.audit.Write(h.newEvent(r, site, ev, "monitor", bodyBytes, rc))
+				ev.Reason = "disable rule hit: switched off " + stagesOff + " for site (applies to subsequent requests until republish)"
+			} else {
+				ev.Reason = "matched custom rule: " + name
 			}
+			h.audit.Write(h.newEvent(r, site, ev, "monitor", bodyBytes, rc))
 		}
 	}
 

@@ -1,9 +1,11 @@
 package coraza
 
 import (
+	"io/fs"
 	"strings"
 	"testing"
 
+	coreruleset "github.com/corazawaf/coraza-coreruleset/v4"
 	"github.com/kingmoat/kingmoat/internal/config"
 )
 
@@ -160,7 +162,6 @@ func TestBuildCRSIncludesGlobalInvalidEntriesIgnored(t *testing.T) {
 	}
 }
 
-
 // TestDropUpdateTargetLines verifies that SecRuleUpdateTargetById
 // directives targeting rules of excluded category files are dropped while
 // always-on targets (e.g. 920xxx) and enabled-category targets survive.
@@ -240,7 +241,6 @@ func TestBuildWAFCompilesWithExcludedCategories(t *testing.T) {
 	}
 }
 
-
 // TestBuildWAFEachCategoryExcludedCompiles is the parameterized compile guard
 // for category filtering: excluding ANY single detection category (one at a
 // time) must still produce a compiling WAF. This pins the dangling
@@ -262,5 +262,41 @@ func TestBuildWAFEachCategoryExcludedCompiles(t *testing.T) {
 		if _, err := buildWAF(s, &config.Policy{}); err != nil {
 			t.Fatalf("buildWAF with category %q excluded must compile: %v", excluded, err)
 		}
+	}
+}
+
+// TestAllCRSFilesAccountedFor guards against silently dropping CRS files:
+// every .conf shipped in the embedded coreruleset must be referenced by
+// either the always-on list or a detection category. A file missing from
+// both lists is silently excluded from category-filtered builds even under
+// the default (all-enabled) configuration, which regressed the outbound
+// blocking evaluation (RESPONSE-959) found in release review.
+func TestAllCRSFilesAccountedFor(t *testing.T) {
+	entries, err := fs.ReadDir(coreruleset.FS, "@owasp_crs")
+	if err != nil {
+		t.Fatalf("read embedded coreruleset dir: %v", err)
+	}
+	accounted := map[string]bool{}
+	for _, f := range config.WAFAlwaysOnFiles() {
+		accounted[f] = true
+	}
+	for cat, f := range config.WAFCategoryFiles() {
+		if accounted[f] {
+			t.Errorf("category %s file %s is also in the always-on list", cat, f)
+		}
+		accounted[f] = true
+	}
+	confCount := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".conf") {
+			continue
+		}
+		confCount++
+		if !accounted[e.Name()] {
+			t.Errorf("CRS file %s is in neither the always-on nor the category list: it is silently dropped from category-filtered builds", e.Name())
+		}
+	}
+	if confCount < len(accounted) {
+		t.Errorf("embedded coreruleset has fewer .conf files (%d) than the lists account for (%d): a listed file no longer exists", confCount, len(accounted))
 	}
 }

@@ -7,6 +7,7 @@ package metrics
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"os"
 	"sort"
@@ -272,14 +273,21 @@ func LoadDailyRequestsBase(path string) {
 
 // StartDailyRequestsPersist flushes baseline+live daily counters to the
 // state file every interval and once on shutdown, until ctx is cancelled.
-func StartDailyRequestsPersist(ctx context.Context, path string, interval time.Duration) {
-	if path == "" {
+// When historyPath is non-empty the same flush also folds the counters into
+// the per-day request history (dashboard time-range cards).
+func StartDailyRequestsPersist(ctx context.Context, dailyPath, historyPath string, interval time.Duration) {
+	if dailyPath == "" {
 		return
 	}
 	flush := func() {
-		// Roll the counters over before snapshotting: a flush on the first
-		// tick after local midnight must not stamp yesterday's counts with
-		// today's date (they would be restored as "today" after a restart).
+		// Fold the live counters into the per-day history BEFORE rolling:
+		// right after local midnight the pending counts belong to the
+		// previous day and must land on that date, not today's.
+		histKey := time.Now().Format("2006-01-02")
+		if cur := dailyDay.Load(); cur != 0 && cur != localDayKey(time.Now()) {
+			histKey = dayKeyString(cur)
+		}
+		recordDailyHistory(histKey)
 		rollDailyDay()
 		st := dailyReqState{Date: time.Now().Format("2006-01-02"), Counts: map[string]int64{}}
 		dailyBaseMu.RLock()
@@ -294,9 +302,17 @@ func StartDailyRequestsPersist(ctx context.Context, path string, interval time.D
 		if err != nil {
 			return
 		}
-		tmp := path + ".tmp"
+		tmp := dailyPath + ".tmp"
 		if os.WriteFile(tmp, b, 0o600) == nil {
-			_ = os.Rename(tmp, path)
+			_ = os.Rename(tmp, dailyPath)
+		}
+		if historyPath != "" {
+			if hb, err := json.Marshal(SnapshotRequestsHistory()); err == nil {
+				htmp := historyPath + ".tmp"
+				if os.WriteFile(htmp, hb, 0o600) == nil {
+					_ = os.Rename(htmp, historyPath)
+				}
+			}
 		}
 	}
 	flush()
@@ -311,6 +327,79 @@ func StartDailyRequestsPersist(ctx context.Context, path string, interval time.D
 			flush()
 		}
 	}
+}
+
+// dailyHistoryRetention caps the per-day request history (days kept);
+// 35 covers the widest dashboard range (30) plus headroom.
+const dailyHistoryRetention = 35
+
+var (
+	dailyHistoryMu sync.RWMutex
+	dailyHistory   = map[string]map[string]int64{} // date → outcome → count
+)
+
+// dayKeyString renders the YYYYMMDD day encoding as a date string.
+func dayKeyString(cur int64) string {
+	return fmt.Sprintf("%04d-%02d-%02d", cur/10000, (cur/100)%100, cur%100)
+}
+
+// recordDailyHistory folds the current daily counters (baseline+live,
+// keyed site\x00outcome) into history[dayKey] by outcome and prunes days
+// older than the retention window.
+func recordDailyHistory(dayKey string) {
+	sums := map[string]int64{}
+	dailyBaseMu.RLock()
+	for k, v := range dailyBase {
+		if parts := strings.SplitN(k, "\x00", 2); len(parts) == 2 {
+			sums[parts[1]] += v
+		}
+	}
+	dailyBaseMu.RUnlock()
+	for k, v := range DailyRequestsTotal.Snapshot() {
+		if parts := strings.SplitN(k, "\x00", 2); len(parts) == 2 {
+			sums[parts[1]] += int64(v)
+		}
+	}
+	dailyHistoryMu.Lock()
+	dailyHistory[dayKey] = sums
+	cutoff := time.Now().AddDate(0, 0, -dailyHistoryRetention).Format("2006-01-02")
+	for d := range dailyHistory {
+		if d < cutoff {
+			delete(dailyHistory, d)
+		}
+	}
+	dailyHistoryMu.Unlock()
+}
+
+// LoadRequestsHistory loads persisted per-day request totals (JSON map of
+// date → outcome → count).
+func LoadRequestsHistory(path string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var hist map[string]map[string]int64
+	if json.Unmarshal(b, &hist) != nil || len(hist) == 0 {
+		return
+	}
+	dailyHistoryMu.Lock()
+	dailyHistory = hist
+	dailyHistoryMu.Unlock()
+}
+
+// SnapshotRequestsHistory returns a copy of the per-day request history.
+func SnapshotRequestsHistory() map[string]map[string]int64 {
+	dailyHistoryMu.RLock()
+	defer dailyHistoryMu.RUnlock()
+	out := make(map[string]map[string]int64, len(dailyHistory))
+	for d, m := range dailyHistory {
+		cp := make(map[string]int64, len(m))
+		for k, v := range m {
+			cp[k] = v
+		}
+		out[d] = cp
+	}
+	return out
 }
 
 // SnapshotDailyRequestsBySite sums the persisted baseline and the live daily
@@ -331,15 +420,19 @@ func SnapshotDailyRequestsBySite() map[string]int64 {
 	return out
 }
 
-// ResetDailyForTest clears the shared daily-counter state (live counters
-// and the persisted-day baseline). Test hook for consumer packages that
-// share these process-global counters; pair with t.Cleanup.
+// ResetDailyForTest clears the shared daily-counter state (live counters,
+// persisted-day baseline and the per-day request history). Test hook for
+// consumer packages that share these process-global counters; pair with
+// t.Cleanup.
 func ResetDailyForTest() {
 	DailyRequestsTotal.resetAll()
 	dailyBaseMu.Lock()
 	dailyBase = nil
 	dailyBaseMu.Unlock()
 	dailyDay.Store(0)
+	dailyHistoryMu.Lock()
+	dailyHistory = map[string]map[string]int64{}
+	dailyHistoryMu.Unlock()
 }
 
 // SortedKeys returns the counter's label keys in stable order (tests/debug).

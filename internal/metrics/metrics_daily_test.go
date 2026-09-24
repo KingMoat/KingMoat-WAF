@@ -99,7 +99,7 @@ func TestDailyRequestsPersist(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		StartDailyRequestsPersist(ctx, path, 50*time.Millisecond)
+		StartDailyRequestsPersist(ctx, path, "", 50*time.Millisecond)
 		close(done)
 	}()
 	time.Sleep(200 * time.Millisecond)

@@ -178,7 +178,7 @@ func main() {
 	// Per-site "today" counters survive restarts within the same day
 	// (/api/stats/per-site 站点列表徽标).
 	metrics.LoadDailyRequestsBase(filepath.Join(auditDirAbs, "requests_daily.json"))
-	go metrics.StartDailyRequestsPersist(ctx, filepath.Join(auditDirAbs, "requests_daily.json"), 30*time.Second)
+	go metrics.StartDailyRequestsPersist(ctx, filepath.Join(auditDirAbs, "requests_daily.json"), filepath.Join(auditDirAbs, "requests_history.json"), 30*time.Second)
 	var accessSink *accesslog.Tee
 
 	// Expose the audit drop counter (previously defined but never set).

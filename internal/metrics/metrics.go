@@ -331,6 +331,17 @@ func SnapshotDailyRequestsBySite() map[string]int64 {
 	return out
 }
 
+// ResetDailyForTest clears the shared daily-counter state (live counters
+// and the persisted-day baseline). Test hook for consumer packages that
+// share these process-global counters; pair with t.Cleanup.
+func ResetDailyForTest() {
+	DailyRequestsTotal.resetAll()
+	dailyBaseMu.Lock()
+	dailyBase = nil
+	dailyBaseMu.Unlock()
+	dailyDay.Store(0)
+}
+
 // SortedKeys returns the counter's label keys in stable order (tests/debug).
 func (c *counterVec) SortedKeys() []string {
 	c.mu.RLock()

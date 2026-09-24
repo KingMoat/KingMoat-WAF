@@ -13,15 +13,8 @@ import (
 // counts into each other (and registers a cleanup doing the same).
 func resetDaily(t *testing.T) {
 	t.Helper()
-	clear := func() {
-		DailyRequestsTotal.resetAll()
-		dailyBaseMu.Lock()
-		dailyBase = nil
-		dailyBaseMu.Unlock()
-		dailyDay.Store(0)
-	}
-	clear()
-	t.Cleanup(clear)
+	ResetDailyForTest()
+	t.Cleanup(ResetDailyForTest)
 }
 
 // TestDailyReqIncRollover verifies the local-midnight rollover: when the

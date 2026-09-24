@@ -55,6 +55,8 @@ func newPerSiteServer(t *testing.T) (*Server, *logstore.SQLiteStore) {
 // counts both land in the payload, configured sites are zero-filled, no_site
 // rows are skipped and rows sort by requests desc then site asc.
 func TestStatsPerSiteMergesAuditAndMetrics(t *testing.T) {
+	metrics.ResetDailyForTest()
+	t.Cleanup(metrics.ResetDailyForTest)
 	s, st := newPerSiteServer(t)
 	now := time.Now()
 	// Events must land inside the handler's "today" window (local midnight to

@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -178,5 +180,74 @@ func TestStatsPerSiteNoStore(t *testing.T) {
 	}
 	if len(out.Sites) != 0 {
 		t.Fatalf("no-store payload = %+v, want empty sites", out)
+	}
+}
+
+// TestStatsWindowRequestsLocalHistory verifies the /api/stats range cards
+// read the per-day request history (loaded from the local history file)
+// summed over the selected window (calendar-aligned): yesterday's counts
+// stay out of days=1 and land in wider ranges, days beyond retention are
+// ignored, and an empty history yields an empty requests map.
+func TestStatsWindowRequestsLocalHistory(t *testing.T) {
+	metrics.ResetDailyForTest()
+	t.Cleanup(metrics.ResetDailyForTest)
+
+	writeHist := func(hist map[string]map[string]int64) string {
+		t.Helper()
+		b, err := json.Marshal(hist)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "requests_history.json")
+		if err := os.WriteFile(path, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	metrics.LoadRequestsHistory(writeHist(map[string]map[string]int64{
+		time.Now().Format("2006-01-02"):                    {"forwarded": 7, "blocked": 3},
+		time.Now().AddDate(0, 0, -1).Format("2006-01-02"):  {"forwarded": 100},
+		time.Now().AddDate(0, 0, -40).Format("2006-01-02"): {"forwarded": 500},
+	}))
+
+	s, _ := newPerSiteServer(t)
+
+	read := func(days int) map[string]int64 {
+		rec := httptest.NewRecorder()
+		s.handleStats(rec, httptest.NewRequest("GET", "/api/stats?days="+strconv.Itoa(days), nil))
+		if rec.Code != 200 {
+			t.Fatalf("status = %d", rec.Code)
+		}
+		var out struct {
+			Requests map[string]int64 `json:"requests"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out.Requests
+	}
+
+	today := read(1)
+	if today["forwarded"] != 7 || today["blocked"] != 3 {
+		t.Fatalf("days=1 requests wrong: %+v (want forwarded=7 blocked=3)", today)
+	}
+	week := read(7)
+	if week["forwarded"] != 107 {
+		t.Fatalf("days=7 requests wrong: %+v (want forwarded=107)", week)
+	}
+	if week["blocked"] != 3 {
+		t.Fatalf("days=7 blocked wrong: %+v (want blocked=3)", week)
+	}
+
+	// Empty history: an empty history file leaves no entries, so the range
+	// cards report an empty requests map (not an error, not cumulative).
+	metrics.ResetDailyForTest()
+	empty := filepath.Join(t.TempDir(), "empty.json")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	metrics.LoadRequestsHistory(empty)
+	if got := read(1); len(got) != 0 {
+		t.Fatalf("empty history days=1 requests = %+v, want empty map", got)
 	}
 }

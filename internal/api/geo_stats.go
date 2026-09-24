@@ -17,7 +17,8 @@ import (
 // handleGeoStats aggregates the origin countries of recent attack events.
 // Requires a GeoIP mmdb (any site's geo.db_path, or the caller-provided
 // GeoDBFn); without it the endpoint reports geo_available=false. The window
-// is 24h by default, overridable with ?hours=N (1..720).
+// is 24h by default, overridable with ?days=N (calendar-aligned, matching
+// /api/stats: days=1 is today since local midnight) or ?hours=N (1..720).
 func (s *Server) handleGeoStats(w http.ResponseWriter, r *http.Request) {
 	limit := 10
 	if v := r.URL.Query().Get("limit"); v != "" {
@@ -25,14 +26,19 @@ func (s *Server) handleGeoStats(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	hours := 24
-	if v := r.URL.Query().Get("hours"); v != "" {
+	now := time.Now()
+	since := now.Add(-24 * time.Hour)
+	if v := r.URL.Query().Get("days"); v != "" {
+		if n := atoiSafe2(v); n > 0 && n <= 31 {
+			dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+			since = dayStart.AddDate(0, 0, -(n - 1))
+		}
+	} else if v := r.URL.Query().Get("hours"); v != "" {
 		if n := atoiSafe2(v); n > 0 && n <= 720 {
-			hours = n
+			since = now.Add(-time.Duration(n) * time.Hour)
 		}
 	}
-	until := time.Now()
-	since := until.Add(-time.Duration(hours) * time.Hour)
+	until := now
 
 	dbPath := ""
 	if s.opts.GeoDBFn != nil {

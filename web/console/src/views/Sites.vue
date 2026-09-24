@@ -102,7 +102,7 @@
             <div class="cat-grid">
               <div v-for="c in CRS_CATEGORIES" :key="c.id" class="cat-item">
                 <span class="cat-label">{{ c.label }}</span>
-                <el-switch v-model="catStates[c.id]" size="small" @change="onCatToggle" />
+                <el-switch v-model="catStates[c.id]" size="small" :disabled="!can('operator')" @change="onCatToggle" />
               </div>
             </div>
           </div>
@@ -276,7 +276,12 @@
           </el-form-item>
           <el-form-item label="SNI 转发">
             <el-switch v-model="edit.sniForward" />
-            <span class="km-dim" style="margin-left:10px;font-size:12px">上游为 HTTPS 时，把客户端原始 SNI 转发给后端（后端证书需匹配该域名）</span>
+            <span class="km-dim" style="margin-left:10px;font-size:12px">上游为 HTTPS 时，把客户端原始 SNI 转发给后端（后端证书需匹配该域名）；与固定回源 SNI 互斥</span>
+          </el-form-item>
+          <el-form-item v-if="upstreamHasHTTPS" label="固定回源 SNI">
+            <el-input v-model="edit.sniHost" placeholder="backend.example.com" style="width:320px" clearable />
+            <div class="km-dim" style="font-size:12px;margin-top:4px;width:100%">回源 TLS 握手固定使用该域名作 SNI（连接复用场景安全）；与 SNI 转发互斥，二者同设保存会被拒绝</div>
+            <div v-if="edit.sniHost && edit.sniForward" style="font-size:12px;margin-top:4px;width:100%;color:#e6a23c">已同时开启 SNI 转发：请关闭其一，否则无法保存</div>
           </el-form-item>
 
           <div class="km-title" style="margin-top:18px">TLS / 证书</div>
@@ -698,6 +703,8 @@ const edit = reactive({})
 function onTlsSource(v) {
   if (v === 'none') edit.redirect_to_https = false
 }
+// 固定回源 SNI 仅对 HTTPS 上游有意义：任一上游行选了 https 协议才显示
+const upstreamHasHTTPS = computed(() => (edit.upstreamRows || []).some(u => u.proto === 'https'))
 // 协议切换：HTTP 时清空 TLS 相关选择；HTTPS 且无证书来源时默认 ACME 自动
 function onProtoChange(v) {
   if (v === 'http') {
@@ -726,6 +733,7 @@ function openEdit(i) {
   if (!edit.upstreamRows.length) edit.upstreamRows.push({ proto: 'http', ip: '', port: 80, weight: 1 })
   edit.algorithm = s.upstream?.algorithm || 'wrr'
   edit.sniForward = !!s.upstream?.sni_forward
+  edit.sniHost = s.upstream?.sni_host || ''
   edit.verifyTls = !!s.upstream?.verify_tls
   edit.mode = s.mode || 'intercept'
   edit.redirect_to_https = i >= 0 ? !!s.redirect_to_https : true
@@ -796,6 +804,12 @@ function applyEdit() {
   }
   if (edit.sniForward) s.upstream.sni_forward = true
   if (edit.verifyTls) s.upstream.verify_tls = true
+  const sniHost = (edit.sniHost || '').trim()
+  if (sniHost && edit.sniForward) {
+    ElMessage.error('固定回源 SNI 与 SNI 转发互斥，请关闭其一')
+    return null
+  }
+  if (sniHost) s.upstream.sni_host = sniHost
   if ((edit.comment || '').trim()) s.comment = edit.comment.trim()
   if (edit.protocol === 'https') {
     if (edit.redirect_to_https) s.redirect_to_https = true
@@ -821,6 +835,10 @@ function applyEdit() {
     }
   }
   s.waf = { enabled: !!edit.wafEnabled }
+  // 分类覆盖不经编辑抽屉管理：编辑已有站点时回带原 waf.categories，
+  // 避免保存抽屉把站点级分类覆盖静默重置回「跟随全局默认」
+  const prevSite = editIndex.value >= 0 ? form.sites[editIndex.value] : null
+  if (prevSite && Array.isArray(prevSite.waf?.categories)) s.waf.categories = [...prevSite.waf.categories]
   const sec0 = {}
   if (edit.semanticEnabled) sec0.semantic = { enabled: true }
   if (edit.captchaEnabled) {

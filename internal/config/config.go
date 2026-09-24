@@ -73,7 +73,9 @@ type WAFSettings struct {
 	// body_limit_bytes, forward the remainder untouched).
 	BodyOverLimit string `json:"body_over_limit,omitempty"`
 	// Categories filters which CRS attack-detection categories are loaded for
-	// this site. Empty or omitted = all categories enabled (backward compat).
+	// this site. Omitted/nil = follow the global default (all categories when
+	// the default is unset); an explicit empty list disables every detection
+	// category for this site.
 	// Valid values: sqli, xss, rce, lfi, rfi, php, generic, session, java,
 	// scanner. Infrastructure rules (protocol enforcement, multipart,
 	// blocking evaluation) are always loaded and cannot be disabled.

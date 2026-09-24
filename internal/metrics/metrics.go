@@ -214,24 +214,30 @@ func localDayKey(t time.Time) int64 {
 	return int64(t.Year())*10000 + int64(t.Month())*100 + int64(t.Day())
 }
 
-// DailyReqInc counts one request for the per-site "today" card. The live
-// counters roll over (reset to zero) on the first request after local
-// midnight; the unchanged-day path stays lock-free.
-func DailyReqInc(site, outcome string) {
+// rollDailyDay resets the live daily counters when the local calendar day
+// has changed (first request or first persistence flush after local
+// midnight). The unchanged-day path stays lock-free.
+func rollDailyDay() {
 	day := localDayKey(time.Now())
-	if dailyDay.Load() != day {
-		dailyDayMu.Lock()
-		if dailyDay.Load() != day {
-			DailyRequestsTotal.resetAll()
-			// The recovered baseline belongs to the previous day once the
-			// clock crossed midnight; drop it along with the live counters.
-			dailyBaseMu.Lock()
-			dailyBase = nil
-			dailyBaseMu.Unlock()
-			dailyDay.Store(day)
-		}
-		dailyDayMu.Unlock()
+	if dailyDay.Load() == day {
+		return
 	}
+	dailyDayMu.Lock()
+	if dailyDay.Load() != day {
+		DailyRequestsTotal.resetAll()
+		// The recovered baseline belongs to the previous day once the
+		// clock crossed midnight; drop it along with the live counters.
+		dailyBaseMu.Lock()
+		dailyBase = nil
+		dailyBaseMu.Unlock()
+		dailyDay.Store(day)
+	}
+	dailyDayMu.Unlock()
+}
+
+// DailyReqInc counts one request for the per-site "today" card.
+func DailyReqInc(site, outcome string) {
+	rollDailyDay()
 	DailyRequestsTotal.Inc(site, outcome)
 }
 
@@ -271,6 +277,10 @@ func StartDailyRequestsPersist(ctx context.Context, path string, interval time.D
 		return
 	}
 	flush := func() {
+		// Roll the counters over before snapshotting: a flush on the first
+		// tick after local midnight must not stamp yesterday's counts with
+		// today's date (they would be restored as "today" after a restart).
+		rollDailyDay()
 		st := dailyReqState{Date: time.Now().Format("2006-01-02"), Counts: map[string]int64{}}
 		dailyBaseMu.RLock()
 		for k, v := range dailyBase {

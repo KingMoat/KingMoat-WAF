@@ -57,7 +57,12 @@ func newPerSiteServer(t *testing.T) (*Server, *logstore.SQLiteStore) {
 func TestStatsPerSiteMergesAuditAndMetrics(t *testing.T) {
 	s, st := newPerSiteServer(t)
 	now := time.Now()
-	ts := now.Add(-time.Hour).Format(time.RFC3339Nano)
+	// Events must land inside the handler's "today" window (local midnight to
+	// now): use the midpoint of the elapsed day — now-1h belongs to yesterday
+	// right after local midnight, which made this test fail between 00:00 and
+	// 01:00 (midnight-flaky).
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	ts := dayStart.Add(now.Sub(dayStart) / 2).Format(time.RFC3339Nano)
 	events := []logstore.Event{
 		{TS: ts, Site: "a.local", Action: "blocked", Rule: "crs/942100"},
 		{TS: ts, Site: "a.local", Action: "challenged", Rule: "bot/bad"},
@@ -116,7 +121,6 @@ func TestStatsPerSiteMergesAuditAndMetrics(t *testing.T) {
 		t.Fatalf("ordering wrong: %+v", out.Sites)
 	}
 	// Window: local midnight to now.
-	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	if ws, err := time.Parse(time.RFC3339, out.WindowStart); err != nil || !ws.Equal(dayStart) {
 		t.Fatalf("window_start = %q, want local midnight %s", out.WindowStart, dayStart.Format(time.RFC3339))
 	}

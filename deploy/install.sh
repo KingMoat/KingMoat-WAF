@@ -21,13 +21,30 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
+# Re-exec guard: when piped in (curl | bash), stdin is the script itself and
+# the interactive "read" prompts below would swallow script lines. Re-run
+# from a temp copy so stdin is the terminal again.
+# ---------------------------------------------------------------------------
+if [[ ! -t 0 ]]; then
+    _reexec="$(mktemp /tmp/kingmoat-install.XXXXXX.sh)"
+    cat > "$_reexec"
+    if [[ ! -s "$_reexec" ]]; then
+        rm -f "$_reexec"
+        err "stdin is not a terminal and no script was piped in. Run: bash $0"
+    fi
+    exec bash "$_reexec" "$@"
+fi
+
+# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 readonly GITEE_API="https://gitee.com/api/v5/repos/kingmoat/KingMoat-WAF"
 readonly GITEE_DL="https://gitee.com/kingmoat/KingMoat-WAF/releases/download"
 readonly GITHUB_DL="https://github.com/kingmoat/KingMoat-WAF/releases/download"
 readonly GITHUB_API="https://api.github.com/repos/kingmoat/KingMoat-WAF"
-readonly CONSOLE_PORT_DEFAULT="28443"
+# CONSOLE_PORT_DEFAULT is deliberately NOT readonly: the interactive prompt
+# below may replace it (assigning a readonly var aborts under set -e).
+CONSOLE_PORT_DEFAULT="28443"
 readonly DATA_PORT_DEFAULT="18080"
 
 # ---------------------------------------------------------------------------
@@ -53,8 +70,8 @@ NONINTERACTIVE=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --version)      PINNED_VERSION="$2"; shift 2 ;;
-        --data-dir)     DATA_DIR="$2"; shift 2 ;;
+        --version)      [[ $# -ge 2 ]] || err "--version requires a value"; PINNED_VERSION="$2"; shift 2 ;;
+        --data-dir)     [[ $# -ge 2 ]] || err "--data-dir requires a value"; DATA_DIR="$2"; shift 2 ;;
         --uninstall)    UNINSTALL=true; shift ;;
         -y|--yes)       NONINTERACTIVE=true; shift ;;
         *)              err "unknown option: $1" ;;
@@ -66,13 +83,20 @@ done
 # ---------------------------------------------------------------------------
 if $UNINSTALL; then
     need_root
+    # Prefer the install metadata written by a previous run of this script
+    # (custom install dirs); fall back to the default location.
+    INSTALL_DIR=/opt/kingmoat
+    if [[ -f /etc/kingmoat-install.conf ]]; then
+        # shellcheck source=/dev/null
+        . /etc/kingmoat-install.conf
+    fi
     log "stopping and disabling kingmoat.service ..."
     systemctl disable --now kingmoat.service 2>/dev/null || true
-    rm -f /etc/systemd/system/kingmoat.service
+    rm -f /etc/systemd/system/kingmoat.service /etc/kingmoat-install.conf
     systemctl daemon-reload
-    rm -rf /opt/kingmoat
+    rm -rf "$INSTALL_DIR"
     warn "data dir NOT removed. Remove manually if desired:"
-    warn "  rm -rf <your-data-dir>   (default: /var/lib/kingmoat)"
+    warn "  rm -rf ${DATA_DIR:-/var/lib/kingmoat}"
     log "uninstall done."
     exit 0
 fi
@@ -178,18 +202,20 @@ download_release() {
 }
 download_release
 
-# Verify checksum if available
+# Verify checksum (fail-closed: refuse to install unverified binaries)
 log "verifying checksum ..."
-if curl -fSL --max-time 30 -o "$TMPDIR_INSTALL/checksums.txt" "${GITEE_DL}/${RELEASE_TAG}/checksums.txt" 2>/dev/null; then
-    EXPECTED=$(grep "$ASSET_FILE" "$TMPDIR_INSTALL/checksums.txt" | awk '{print $1}')
-    ACTUAL=$(sha256sum "$TMPDIR_INSTALL/$ASSET_FILE" | awk '{print $1}')
-    if [[ "$EXPECTED" != "$ACTUAL" ]]; then
-        err "checksum mismatch! expected=$EXPECTED actual=$ACTUAL"
-    fi
-    log "checksum verified ✓"
-else
-    warn "checksums.txt not available, skipping verification"
+if ! curl -fSL --max-time 30 -o "$TMPDIR_INSTALL/checksums.txt" "${GITEE_DL}/${RELEASE_TAG}/checksums.txt" 2>/dev/null; then
+    err "checksums.txt not available for $RELEASE_TAG - refusing to install unverified binaries"
 fi
+EXPECTED=$(grep -E "(^|[[:space:]])${ASSET_FILE}([[:space:]]|$)" "$TMPDIR_INSTALL/checksums.txt" | awk '{print $1}' | head -1)
+ACTUAL=$(sha256sum "$TMPDIR_INSTALL/$ASSET_FILE" | awk '{print $1}')
+if [[ -z "$EXPECTED" ]]; then
+    err "$ASSET_FILE not listed in checksums.txt"
+fi
+if [[ "$EXPECTED" != "$ACTUAL" ]]; then
+    err "checksum mismatch! expected=$EXPECTED actual=$ACTUAL"
+fi
+log "checksum verified ✓"
 
 # Extract
 log "extracting ..."
@@ -229,15 +255,37 @@ if [[ $NONINTERACTIVE == false ]]; then
     [[ -n "$INPUT_PORT" ]] && CONSOLE_PORT_DEFAULT="$INPUT_PORT"
 fi
 
-# Validate data dir is on a local filesystem
+# Validate data dir is on a local filesystem (create it first so df can
+# resolve the mount instead of silently failing on a missing path)
 DATA_DIR="${DATA_DIR:-/var/lib/kingmoat}"
+mkdir -p "$DATA_DIR" 2>/dev/null || true
 if df "$DATA_DIR" 2>/dev/null | tail -1 | grep -qE 'nfs|cifs|smbfs|fuse'; then
-    err "data dir is on a network filesystem — SQLite requires a local disk"
+    err "data dir is on a network filesystem - SQLite requires a local disk"
+fi
+
+# Path sanity for the systemd sandbox: ProtectHome=true hides /home and
+# /root entirely, and spaces cannot be carried through ExecStart safely.
+for _p in "$INSTALL_DIR" "$DATA_DIR"; do
+    case "$_p" in
+        *' '*) err "path contains spaces (unsupported): $_p" ;;
+        /home|/home/*|/root|/root/*) err "path under /home or /root is hidden by systemd ProtectHome=true: $_p" ;;
+    esac
+done
+
+# Console port sanity before it lands in ExecStart
+if ! [[ "$CONSOLE_PORT_DEFAULT" =~ ^[0-9]+$ ]] || (( CONSOLE_PORT_DEFAULT < 1 || CONSOLE_PORT_DEFAULT > 65535 )); then
+    err "invalid console port: $CONSOLE_PORT_DEFAULT (need 1-65535)"
 fi
 
 # ---------------------------------------------------------------------------
 # Install files
 # ---------------------------------------------------------------------------
+# Upgrades: stop the service before replacing the running binary (an in-place
+# cp over a live executable fails with ETXTBSY and set -e aborts midway).
+if systemctl cat kingmoat.service &>/dev/null && systemctl is-active --quiet kingmoat.service; then
+    log "stopping existing kingmoat.service for upgrade ..."
+    systemctl stop kingmoat.service
+fi
 log "installing to $INSTALL_DIR ..."
 mkdir -p "$INSTALL_DIR" "$DATA_DIR/logs" "$DATA_DIR/archive"
 cp "$TMPDIR_INSTALL/kingmoat"      "$INSTALL_DIR/kingmoat"
@@ -293,8 +341,9 @@ ProtectSystem=strict
 ProtectHome=true
 StateDirectory=kingmoat
 ConfigurationDirectory=kingmoat
+ReadWritePaths=${DATA_DIR} ${INSTALL_DIR}
 WorkingDirectory=${DATA_DIR}
-ExecStart=${INSTALL_DIR}/kingmoat -config ${CONFIG_FILE} -console-addr 0.0.0.0:${CONSOLE_PORT_DEFAULT} -console-db ${DATA_DIR}/kingmoat.db
+ExecStart="${INSTALL_DIR}/kingmoat" -config "${CONFIG_FILE}" -console-addr 0.0.0.0:${CONSOLE_PORT_DEFAULT} -console-db "${DATA_DIR}/kingmoat.db"
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=65536
@@ -346,3 +395,10 @@ echo "    systemctl status kingmoat"
 echo "    systemctl restart kingmoat"
 echo "    ${INSTALL_DIR}/kingmoat-cli hash-password -password '...'"
 echo ""
+
+# Persist install locations for uninstall / future upgrades
+cat > /etc/kingmoat-install.conf <<META
+INSTALL_DIR="$INSTALL_DIR"
+DATA_DIR="$DATA_DIR"
+META
+chmod 600 /etc/kingmoat-install.conf

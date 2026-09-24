@@ -153,3 +153,54 @@ func TestValidateHeadersRejectsProtected(t *testing.T) {
 		t.Fatal("headers rewriting Host must be rejected")
 	}
 }
+
+func baseSNIHostSite() Site {
+	return Site{
+		Domains:  []string{"a.local"},
+		Upstream: Upstream{Nodes: []UpstreamNode{{Address: "https://127.0.0.1:9000"}}},
+	}
+}
+
+func TestValidateUpstreamSNIHostOK(t *testing.T) {
+	s := baseSNIHostSite()
+	s.Upstream.SNIHost = "backend.example.com"
+	c := &Config{ListenHTTP: ":80", Sites: []Site{s}}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("sni_host-only config rejected: %v", err)
+	}
+}
+
+func TestValidateUpstreamSNIForwardSNIHostExclusive(t *testing.T) {
+	s := baseSNIHostSite()
+	s.Upstream.SNIForward = true
+	s.Upstream.SNIHost = "backend.example.com"
+	c := &Config{ListenHTTP: ":80", Sites: []Site{s}}
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("sni_forward + sni_host must be rejected")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("error must name the exclusivity rule: %v", err)
+	}
+}
+
+func TestValidateUpstreamSNIHostRejectsInvalidHostname(t *testing.T) {
+	for _, bad := range []string{
+		"https://backend.example.com", // scheme
+		"backend.example.com:443",     // port
+		"backend.example.com/path",    // path
+		"backend example.com",         // whitespace
+		"backend.example.com：8443",    // full-width colon
+	} {
+		s := baseSNIHostSite()
+		s.Upstream.SNIHost = bad
+		c := &Config{ListenHTTP: ":80", Sites: []Site{s}}
+		err := c.Validate()
+		if err == nil {
+			t.Fatalf("sni_host %q must be rejected", bad)
+		}
+		if !strings.Contains(err.Error(), "not a valid hostname") {
+			t.Fatalf("sni_host %q: unexpected error: %v", bad, err)
+		}
+	}
+}

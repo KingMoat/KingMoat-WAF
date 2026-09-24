@@ -955,6 +955,11 @@ function validateDisableStages() {
 async function saveMatcher() {
   if (!m.name.trim()) return ElMessage.error('请填写规则名称')
   if (!m.conditions.length) return ElMessage.error('至少一个条件')
+  // 规则名必须唯一：重名会让按名回写/命中计数混淆（findIndex 只命中首个）；
+  // 以下标排除正在编辑的规则本身，改名冲突与存量重名都会被拦下
+  const newName = m.name.trim()
+  const dupIdx = (matchers.value || []).findIndex((x, idx) => x.name === newName && !(mEditIndex.value >= 0 && idx === mEditIndex.value))
+  if (dupIdx >= 0) return ElMessage.error('规则名「' + newName + '」已存在，请换一个名称')
   if (m.action === 'disable') {
     const dsErr = validateDisableStages()
     if (dsErr) return ElMessage.error(dsErr)

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### 修复
+
+- **RESPONSE-959 出站阻断评估从未加载（与主仓同源缺陷）**：内嵌 coreruleset 的 `RESPONSE-959-BLOCKING-EVALUATION.conf`（响应体敏感数据/WebShell 阻断打分）不在 always-on 清单也不属于任何检测分类，构建 WAF 时永不加载——分类过滤与默认全开形态下均缺失。修复：补入 always-on 清单（与主仓 Pro 同位置同序）；同步主仓新增的文件覆盖守卫测试 `TestAllCRSFilesAccountedFor`（内嵌每个 .conf 必须被 always-on 或分类清单引用，防静默丢弃再犯）
+
 ## v0.7.3-beta (2026-09-24)
 
 ### 新增

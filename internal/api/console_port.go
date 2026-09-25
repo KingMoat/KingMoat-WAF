@@ -76,16 +76,26 @@ func defaultRestart() error {
 	return nil
 }
 
-// submitRestart starts cmd fire-and-forget: only a failed exec is an error,
-// the child runs (and is torn down with the cgroup) on its own - no Wait, no
-// zombie care (the cgroup teardown reaps it). Test seam for the
-// must-not-block guarantee.
+// submitRestart starts cmd fire-and-forget: only a failed exec is an error.
+// The child is reaped by a background Wait so a failed submission (polkit
+// denial, missing unit, dbus error) does not leak a zombie; on success this
+// process is torn down with the unit cgroup moments later and the child is
+// reaped by init - the goroutine simply never completes in that case. Test
+// seam for the must-not-block guarantee.
 func submitRestart(cmd *exec.Cmd) error {
-	return cmd.Start()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() {
+		if err := cmd.Wait(); err != nil {
+			slog.Warn("console port restart client exited with error", "err", err)
+		}
+	}()
+	return nil
 }
 
 // consolePortChangeable reports whether the online port-change flow can
-// actually work in the current deployment, and (when false) why. All three
+// actually work in the current deployment, and (when false) why. All four
 // conditions must hold:
 //
 //  1. the EnvironmentFile path was wired at boot (systemd all-in-one model);
@@ -97,8 +107,15 @@ func submitRestart(cmd *exec.Cmd) error {
 //     INVOCATION_ID set, a hand-launched binary (development, Windows,
 //     manual runs) does not - scheduling `systemctl restart` from it would
 //     either fail (polkit denies non-root users managing system units) or
-//     restart nothing meaningful.
-func consolePortChangeable(envPath string) (bool, string) {
+//     restart nothing meaningful;
+//  4. the process runs as root: the stock static template (User=kingmoat)
+//     and any non-root unit get their `systemctl restart` rejected by the
+//     default polkit policy (auth_admin_keep), which would silently fail
+//     after the env write (the card must not offer a change that cannot
+//     land). Deliberately conservative: an operator who explicitly grants
+//     polkit allowances for a non-root unit loses the card (acceptable;
+//     documented in deploy/README.md).
+func consolePortChangeable(envPath string, euid func() int) (bool, string) {
 	if envPath == "" {
 		return false, "未接入 systemd 部署（启动参数未提供 EnvironmentFile 路径）"
 	}
@@ -108,6 +125,9 @@ func consolePortChangeable(envPath string) (bool, string) {
 	if os.Getenv("INVOCATION_ID") == "" {
 		return false, "非 systemd 启动（手工运行或开发模式），不支持在线重启服务"
 	}
+	if euid() != 0 {
+		return false, "服务以非 root 用户运行（polkit 默认拒绝其管理 unit），不支持在线重启服务"
+	}
 	return true, ""
 }
 
@@ -115,7 +135,7 @@ func consolePortChangeable(envPath string) (bool, string) {
 // and whether the port-change flow is available (changeable is a real
 // deployment probe, not the wired flag; reason explains a false).
 func (s *Server) handleConsolePortGet(w http.ResponseWriter, r *http.Request) {
-	changeable, reason := consolePortChangeable(s.opts.ConsoleEnvPath)
+	changeable, reason := consolePortChangeable(s.opts.ConsoleEnvPath, s.opts.euidProbe())
 	out := map[string]any{
 		"port":       s.opts.ConsolePort,
 		"changeable": changeable,
@@ -134,7 +154,7 @@ func (s *Server) handleConsolePortSet(w http.ResponseWriter, r *http.Request) {
 	if !s.requireRole(w, r, store.RoleAdmin) {
 		return
 	}
-	if changeable, reason := consolePortChangeable(s.opts.ConsoleEnvPath); !changeable {
+	if changeable, reason := consolePortChangeable(s.opts.ConsoleEnvPath, s.opts.euidProbe()); !changeable {
 		writeErr(w, http.StatusNotImplemented, simpleError("当前运行模式不支持在线修改管理端口（"+reason+"）"))
 		return
 	}

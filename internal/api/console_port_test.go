@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,6 +38,7 @@ func portServer(t *testing.T, probe func(int) error) (*httptest.Server, string, 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { center.Close() })
+	t.Setenv("INVOCATION_ID", "test-invocation")
 	envPath := filepath.Join(t.TempDir(), "console.env")
 	var restarted []int
 	srv := New(Options{
@@ -45,6 +47,7 @@ func portServer(t *testing.T, probe func(int) error) (*httptest.Server, string, 
 		ConsolePort:    9443,
 		ConsoleEnvPath: envPath,
 		PortProbe:      probe,
+		EuidProbe:      func() int { return 0 },
 		RestartDelay:   time.Millisecond,
 		Restart: func() error {
 			restarted = append(restarted, 1)
@@ -263,29 +266,38 @@ func TestConsolePortChangeable(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Run("env not wired", func(t *testing.T) {
-		ok, reason := consolePortChangeable("")
+		ok, reason := consolePortChangeable("", func() int { return 0 })
 		if ok || reason == "" {
 			t.Fatalf("empty path: ok=%v reason=%q, want false with reason", ok, reason)
 		}
 	})
 	t.Run("env file missing", func(t *testing.T) {
-		ok, reason := consolePortChangeable(filepath.Join(t.TempDir(), "absent.env"))
+		ok, reason := consolePortChangeable(filepath.Join(t.TempDir(), "absent.env"), func() int { return 0 })
 		if ok || reason == "" {
 			t.Fatalf("missing file: ok=%v reason=%q, want false with reason", ok, reason)
 		}
 	})
 	t.Run("not systemd", func(t *testing.T) {
 		t.Setenv("INVOCATION_ID", "")
-		ok, reason := consolePortChangeable(envPath)
+		ok, reason := consolePortChangeable(envPath, func() int { return 0 })
 		if ok || reason == "" {
 			t.Fatalf("non-systemd: ok=%v reason=%q, want false with reason", ok, reason)
 		}
 	})
 	t.Run("systemd deployment", func(t *testing.T) {
 		t.Setenv("INVOCATION_ID", "test-invocation")
-		ok, reason := consolePortChangeable(envPath)
+		ok, reason := consolePortChangeable(envPath, func() int { return 0 })
 		if !ok || reason != "" {
-			t.Fatalf("wired systemd deployment: ok=%v reason=%q, want true", ok, reason)
+			t.Fatalf("root systemd deployment: ok=%v reason=%q, want true", ok, reason)
+		}
+	})
+	t.Run("non-root systemd unit", func(t *testing.T) {
+		// Stock static template (User=kingmoat): polkit denies the restart,
+		// so the card must not offer the change.
+		t.Setenv("INVOCATION_ID", "test-invocation")
+		ok, reason := consolePortChangeable(envPath, func() int { return 1000 })
+		if ok || !strings.Contains(reason, "非 root") {
+			t.Fatalf("non-root systemd: ok=%v reason=%q, want false with non-root reason", ok, reason)
 		}
 	})
 }
@@ -295,6 +307,9 @@ func TestConsolePortChangeable(t *testing.T) {
 // otherwise it carries a reason and POST is rejected 501 before any side
 // effect (no env write, no restart).
 func TestConsolePortChangeableHTTP(t *testing.T) {
+	// portServer injects INVOCATION_ID + a root EuidProbe, so the fully
+	// wired case is changeable on every platform (incl. Windows, where the
+	// non-injected os.Geteuid path would read -1).
 	cases := []struct {
 		name       string
 		invocation bool
@@ -307,12 +322,15 @@ func TestConsolePortChangeableHTTP(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			ts, envPath, restarts := portServer(t, nil)
+			// Override AFTER portServer: the helper pins a systemd environment,
+			// the "not systemd" case must run with INVOCATION_ID cleared.
 			if tc.invocation {
 				t.Setenv("INVOCATION_ID", "test-invocation")
 			} else {
 				t.Setenv("INVOCATION_ID", "")
 			}
-			ts, envPath, restarts := portServer(t, nil)
+			wantOK := tc.wantOK
 			if tc.writeEnv {
 				if err := os.WriteFile(envPath, []byte("CONSOLE_PORT=9443\n"), 0o600); err != nil {
 					t.Fatal(err)
@@ -324,14 +342,14 @@ func TestConsolePortChangeableHTTP(t *testing.T) {
 			}
 			var out map[string]any
 			decodeInto(t, resp, &out)
-			if out["changeable"] != tc.wantOK {
-				t.Fatalf("changeable = %v, want %v", out["changeable"], tc.wantOK)
+			if out["changeable"] != wantOK {
+				t.Fatalf("changeable = %v, want %v", out["changeable"], wantOK)
 			}
 			reason, hasReason := out["reason"]
-			if tc.wantOK && hasReason {
+			if wantOK && hasReason {
 				t.Fatalf("changeable=true must not carry a reason: %v", out)
 			}
-			if tc.wantOK {
+			if wantOK {
 				return
 			}
 			if r, _ := reason.(string); r == "" {

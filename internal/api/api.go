@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/url"
 	"net/http/pprof"
+	"os"
 	"runtime"
 	"runtime/debug"
 	"strconv"
@@ -313,6 +314,20 @@ type Options struct {
 	// RestartDelay defers the restart so the change response reaches the
 	// client first (0 = 2s). Test hook.
 	RestartDelay time.Duration
+	// EuidProbe reports the effective uid of the running process (nil =
+	// os.Geteuid). The online port-change flow requires root: non-root units
+	// get their systemctl restart rejected by the default polkit policy.
+	// Test hook.
+	EuidProbe func() int
+}
+
+// euidProbe returns the configured effective-uid probe, defaulting to
+// os.Geteuid (the non-test path).
+func (o Options) euidProbe() func() int {
+	if o.EuidProbe != nil {
+		return o.EuidProbe
+	}
+	return os.Geteuid
 }
 
 // Server is the control-plane HTTP server.

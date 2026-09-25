@@ -216,7 +216,6 @@ detect_distro() {
         # shellcheck source=/dev/null
         . /etc/os-release
         DISTRO_ID="${ID:-unknown}"
-        DISTRO_VER="${VERSION_ID:-0}"
     else
         err "cannot detect distro (/etc/os-release missing)"
     fi

@@ -83,9 +83,14 @@ foreach ($p in $platforms) {
     New-Item -ItemType Directory -Force $pkgDir | Out-Null
 
     Write-Host "==> building $pkgName"
-    go build -trimpath -ldflags $ldflags -o (Join-Path $pkgDir "kingmoat$ext") ./cmd/kingmoat
+    # no_fs_access: coraza skips its /tmp writability probe at WAF build time.
+    # Required for hardened systemd units (ProtectSystem=strict without /tmp in
+    # ReadWritePaths) where the probe fails and cold start exits. All coraza
+    # inputs are embedded (@include of the bundled CRS), so local FS access is
+    # never needed. See deploy/install.sh for the unit layout.
+    go build -trimpath -tags no_fs_access -ldflags $ldflags -o (Join-Path $pkgDir "kingmoat$ext") ./cmd/kingmoat
     if ($LASTEXITCODE -ne 0) { Pop-Location; throw "build kingmoat failed for $($p.os)/$($p.arch)" }
-    go build -trimpath -ldflags $ldflags -o (Join-Path $pkgDir "kingmoat-cli$ext") ./cmd/kingmoat-cli
+    go build -trimpath -tags no_fs_access -ldflags $ldflags -o (Join-Path $pkgDir "kingmoat-cli$ext") ./cmd/kingmoat-cli
     if ($LASTEXITCODE -ne 0) { Pop-Location; throw "build kingmoat-cli failed for $($p.os)/$($p.arch)" }
 
     Copy-Item (Join-Path $root "LICENSE"), (Join-Path $root "NOTICE"), (Join-Path $root "README.md"), (Join-Path $root "config.example.json") $pkgDir

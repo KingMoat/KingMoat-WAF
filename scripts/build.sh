@@ -26,8 +26,11 @@ build_pkg() {
     mkdir -p "$pkgDir"
 
     echo "==> building $pkgName"
-    GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "$LDFLAGS" -o "$pkgDir/kingmoat$ext" ./cmd/kingmoat
-    GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "$LDFLAGS" -o "$pkgDir/kingmoat-cli$ext" ./cmd/kingmoat-cli
+    # no_fs_access: coraza skips its /tmp writability probe at WAF build time
+    # (hardened systemd units keep /tmp read-only). All coraza inputs are
+    # embedded, so local FS access is never needed.
+    GOOS="$os" GOARCH="$arch" go build -trimpath -tags no_fs_access -ldflags "$LDFLAGS" -o "$pkgDir/kingmoat$ext" ./cmd/kingmoat
+    GOOS="$os" GOARCH="$arch" go build -trimpath -tags no_fs_access -ldflags "$LDFLAGS" -o "$pkgDir/kingmoat-cli$ext" ./cmd/kingmoat-cli
 
     cp LICENSE NOTICE README.md config.example.json "$pkgDir/"
     cp "$OUTROOT/THIRD-PARTY-LICENSES" "$pkgDir/"

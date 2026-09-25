@@ -4,6 +4,7 @@
 
 ### 修复
 
+- **一键安装在 systemd 严格沙箱下启动失败**：openEuler 等发行版的 systemd 单元（ProtectSystem=strict 且 /tmp 不在读写白名单）下，coraza 引擎构建时的 /tmp 可写性探测失败导致服务冷启动退出（`filesystem access check: ... read-only file system`）。修复：构建改用 coraza 的 `no_fs_access` 构建标签——部署形态全部检测资源内嵌，本就不需要引擎侧本地文件访问，探测直接跳过；同时收窄了引擎的文件系统攻击面
 - **一键部署脚本在真实 Linux 上提取失败**：`curl | bash` 安装在解压阶段连续报 `mv: ... are the same file` 并以 `kingmoat binary not found in archive` 终止——临时目录名（kingmoat-install.*）被包裹目录查找模式 `kingmoat*` 误匹配，归位步骤把目录内容移到自身（无效操作）；查找现限定解压根下一层且不会匹配临时目录自身。已在同构包裹/平铺两种包布局下回归验证。
 - **一键部署脚本非交互调用不再被误拦**：`bash install.sh -y < /dev/null`、CI 或远端 ssh 等无终端场景此前会被管道安装守卫拦截报错，现在参数解析前移、守卫仅对需要交互的管道安装生效；重执行时完整透传原始参数（如 `--version`/`--data-dir`）
 - **一键部署输入校验加固**：安装/数据目录含双引号、`$`、反引号直接拒绝；控制台端口校验修复前导零（如 `08`）绕过问题并限制长度；数据目录文件系统检测改用 findmnt 精确识别（无 findmnt 时回退 df -T），不再依赖 df 输出字符串巧合

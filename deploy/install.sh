@@ -45,6 +45,37 @@ need_root() {
     fi
 }
 
+# Set to true after an upgrade has stopped a running service and back to
+# false once the service is confirmed running again; cleanup() reads it to
+# best-effort restart the service on any aborted exit path (no rollback).
+SERVICE_STOPPED=false
+
+# ---------------------------------------------------------------------------
+# Cleanup: the single EXIT hook shared by every exit path (normal, error,
+# signal). TERM/INT are converted to exit 143 so the same hook runs. Every
+# step is fault-tolerant: a failing rm must not abort the remaining cleanup,
+# and the trap must never mask the script's own exit status.
+# ---------------------------------------------------------------------------
+cleanup() {
+    trap - EXIT
+    if [[ "${SERVICE_STOPPED:-false}" == true ]]; then
+        # Upgrade aborted between "systemctl stop" and a verified running
+        # service: best-effort restart, no version rollback. A new binary
+        # that cannot start is left failed on purpose - the original error
+        # must stay visible.
+        warn "attempting to restart kingmoat.service after aborted run ..."
+        systemctl start kingmoat.service 2>/dev/null || true
+    fi
+    if [[ -n "${TMPDIR_INSTALL:-}" ]]; then
+        rm -rf "$TMPDIR_INSTALL" 2>/dev/null || true
+    fi
+    if [[ -n "${KINGMOAT_REEXEC:-}" ]]; then
+        rm -f "$KINGMOAT_REEXEC" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT
+trap 'exit 143' TERM INT
+
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
@@ -98,6 +129,14 @@ if [[ ! -t 0 && -z "$KINGMOAT_REEXEC" && $NONINTERACTIVE == false && $UNINSTALL 
         printf '\033[1;31m[error]\033[0m or:  bash install.sh [options]\n' >&2
         exit 1
     fi
+    # A truncated pipe (download interrupted mid-stream) would otherwise run
+    # as a partial installer. bash -n is best-effort: a cut landing exactly
+    # on a top-level command boundary can still slip through, but the second
+    # pass then fails on its own early steps.
+    if ! bash -n "$_reexec" 2>/dev/null; then
+        rm -f "$_reexec"
+        err "piped script is truncated (download interrupted?) - re-run the install command"
+    fi
     # Best effort: hand the second pass a terminal on stdin so the
     # interactive prompts can read real input when the pipe came from an
     # interactive session. Without a tty (CI, nested automation) this is
@@ -106,9 +145,6 @@ if [[ ! -t 0 && -z "$KINGMOAT_REEXEC" && $NONINTERACTIVE == false && $UNINSTALL 
     { exec 0</dev/tty; } 2>/dev/null || true
     KINGMOAT_REEXEC="$_reexec" exec bash "$_reexec" "${_ORIG_ARGS[@]}"
 fi
-if [[ -n "$KINGMOAT_REEXEC" ]]; then
-    trap 'rm -f "$KINGMOAT_REEXEC" 2>/dev/null; :' EXIT
-fi
 
 # ---------------------------------------------------------------------------
 # Uninstall path
@@ -116,11 +152,35 @@ fi
 if $UNINSTALL; then
     need_root
     # Prefer the install metadata written by a previous run of this script
-    # (custom install dirs); fall back to the default location.
-    INSTALL_DIR=/opt/kingmoat
+    # (custom install dirs); fall back to the default location. The conf is
+    # parsed with a strict two-key whitelist instead of being sourced - it
+    # must never execute as root. Illegal values are skipped with a warning
+    # and the default applies: uninstall must not be blocked by a corrupted
+    # conf, and a missed (warned-about) dir beats a wrongly deleted one.
+    INSTALL_DIR="/opt/kingmoat"
     if [[ -f /etc/kingmoat-install.conf ]]; then
-        # shellcheck source=/dev/null
-        . /etc/kingmoat-install.conf
+        while IFS= read -r _conf_line; do
+            _conf_key="${_conf_line%%=*}"
+            _conf_val="${_conf_line#*=}"
+            case "$_conf_key" in
+                INSTALL_DIR|DATA_DIR) ;;
+                *) continue ;;
+            esac
+            # Expect the exact quoted form the installer writes: KEY="value"
+            _conf_val="${_conf_val%\"}"
+            _conf_val="${_conf_val#\"}"
+            case "$_conf_val" in
+                /*) ;;
+                *) warn "ignoring illegal value in /etc/kingmoat-install.conf for $_conf_key (not an absolute path)"; continue ;;
+            esac
+            case "$_conf_val" in
+                *'"'*|*'$'*|*'`'*|*' '*) warn "ignoring illegal value in /etc/kingmoat-install.conf for $_conf_key (unsupported characters)"; continue ;;
+            esac
+            case "$_conf_key" in
+                INSTALL_DIR) INSTALL_DIR="$_conf_val" ;;
+                DATA_DIR)    [[ -z "$DATA_DIR" ]] && DATA_DIR="$_conf_val" ;;
+            esac
+        done < /etc/kingmoat-install.conf
     fi
     log "stopping and disabling kingmoat.service ..."
     systemctl disable --now kingmoat.service 2>/dev/null || true
@@ -211,9 +271,6 @@ resolve_version
 # Download
 # ---------------------------------------------------------------------------
 TMPDIR_INSTALL=$(mktemp -d /tmp/kingmoat-install.XXXXXX)
-# Also remove the re-exec copy of this script (path in KINGMOAT_REEXEC); the
-# trailing ":" keeps a failed rm from overriding the script's exit status.
-trap 'rm -rf "$TMPDIR_INSTALL"; if [[ -n "${KINGMOAT_REEXEC:-}" ]]; then rm -f "$KINGMOAT_REEXEC" 2>/dev/null; fi; :' EXIT
 
 PKG_NAME="kingmoat_${RELEASE_TAG}_linux_${PKG_ARCH}"
 # Gitee asset naming convention (no dot in tag): tar.gz
@@ -221,25 +278,38 @@ ASSET_FILE="${PKG_NAME}.tar.gz"
 DL_URL_GITEE="${GITEE_DL}/${RELEASE_TAG}/${ASSET_FILE}"
 DL_URL_GITHUB="${GITHUB_DL}/${RELEASE_TAG}/${ASSET_FILE}"
 
+DL_SOURCE=""
 download_release() {
     log "downloading $ASSET_FILE ..."
     if curl -fSL --max-time 300 --retry 2 -o "$TMPDIR_INSTALL/$ASSET_FILE" "$DL_URL_GITEE" 2>/dev/null; then
         log "downloaded from Gitee ✓"
+        DL_SOURCE="gitee"
         return 0
     fi
     log "Gitee download failed, trying GitHub ..."
     if curl -fSL --max-time 300 --retry 2 -o "$TMPDIR_INSTALL/$ASSET_FILE" "$DL_URL_GITHUB" 2>/dev/null; then
         log "downloaded from GitHub ✓"
+        DL_SOURCE="github"
         return 0
     fi
     err "download failed from both mirrors. Check network or use --version to pin a valid tag."
 }
 download_release
 
-# Verify checksum (fail-closed: refuse to install unverified binaries)
+# Verify checksum (fail-closed: refuse to install unverified binaries).
+# Fetch checksums.txt from the mirror that served the binary first, then
+# fall back to the other one - a single unreachable mirror must not break
+# an otherwise complete download.
 log "verifying checksum ..."
-if ! curl -fSL --max-time 30 -o "$TMPDIR_INSTALL/checksums.txt" "${GITEE_DL}/${RELEASE_TAG}/checksums.txt" 2>/dev/null; then
-    err "checksums.txt not available for $RELEASE_TAG - refusing to install unverified binaries"
+case "$DL_SOURCE" in
+    github) _cs_urls=("${GITHUB_DL}/${RELEASE_TAG}/checksums.txt" "${GITEE_DL}/${RELEASE_TAG}/checksums.txt") ;;
+    *)      _cs_urls=("${GITEE_DL}/${RELEASE_TAG}/checksums.txt" "${GITHUB_DL}/${RELEASE_TAG}/checksums.txt") ;;
+esac
+if ! curl -fSL --max-time 30 -o "$TMPDIR_INSTALL/checksums.txt" "${_cs_urls[0]}" 2>/dev/null; then
+    log "checksums.txt unavailable from the primary mirror, trying the other one ..."
+    if ! curl -fSL --max-time 30 -o "$TMPDIR_INSTALL/checksums.txt" "${_cs_urls[1]}" 2>/dev/null; then
+        err "checksums.txt not available for $RELEASE_TAG - refusing to install unverified binaries"
+    fi
 fi
 EXPECTED=$(grep -E "(^|[[:space:]])${ASSET_FILE}([[:space:]]|$)" "$TMPDIR_INSTALL/checksums.txt" | awk '{print $1}' | head -1)
 ACTUAL=$(sha256sum "$TMPDIR_INSTALL/$ASSET_FILE" | awk '{print $1}')
@@ -339,6 +409,9 @@ fi
 if systemctl cat kingmoat.service &>/dev/null && systemctl is-active --quiet kingmoat.service; then
     log "stopping existing kingmoat.service for upgrade ..."
     systemctl stop kingmoat.service
+    # From here until the service is confirmed running again, any exit path
+    # (error, signal) must try to bring it back - see cleanup().
+    SERVICE_STOPPED=true
 fi
 log "installing to $INSTALL_DIR ..."
 mkdir -p "$INSTALL_DIR" "$DATA_DIR/logs" "$DATA_DIR/archive"
@@ -416,6 +489,9 @@ sleep 2
 
 if systemctl is-active --quiet kingmoat.service; then
     log "service is running ✓"
+    # The upgrade's stop/start window is closed; from here on a failure no
+    # longer needs service recovery in cleanup().
+    SERVICE_STOPPED=false
 else
     err "service failed to start. Check: journalctl -u kingmoat -n 30"
 fi

@@ -93,6 +93,13 @@ DATA_DIR=""
 UNINSTALL=false
 NONINTERACTIVE=false
 
+# Explicit --*-port markers: the upgrade path below seeds the port defaults
+# from the old config.json/systemd unit; an explicitly passed port must win
+# over those seeds instead of being silently overwritten by them.
+DATA_PORT_SET=false
+DATA_HTTPS_PORT_SET=false
+CONSOLE_PORT_SET=false
+
 # Parsing consumes "$@" via shift; keep the original list so the piped
 # re-exec guard below can hand the exact same options to the second pass
 # (parsing is idempotent and side-effect free).
@@ -102,9 +109,9 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --version)      [[ $# -ge 2 ]] || err "--version requires a value"; PINNED_VERSION="$2"; shift 2 ;;
         --data-dir)     [[ $# -ge 2 ]] || err "--data-dir requires a value"; DATA_DIR="$2"; shift 2 ;;
-        --http-port)    [[ $# -ge 2 ]] || err "--http-port requires a value"; DATA_PORT_DEFAULT="$2"; shift 2 ;;
-        --https-port)   [[ $# -ge 2 ]] || err "--https-port requires a value"; DATA_HTTPS_PORT_DEFAULT="$2"; shift 2 ;;
-        --console-port) [[ $# -ge 2 ]] || err "--console-port requires a value"; CONSOLE_PORT_DEFAULT="$2"; shift 2 ;;
+        --http-port)    [[ $# -ge 2 ]] || err "--http-port requires a value"; DATA_PORT_DEFAULT="$2"; DATA_PORT_SET=true; shift 2 ;;
+        --https-port)   [[ $# -ge 2 ]] || err "--https-port requires a value"; DATA_HTTPS_PORT_DEFAULT="$2"; DATA_HTTPS_PORT_SET=true; shift 2 ;;
+        --console-port) [[ $# -ge 2 ]] || err "--console-port requires a value"; CONSOLE_PORT_DEFAULT="$2"; CONSOLE_PORT_SET=true; shift 2 ;;
         --uninstall)    UNINSTALL=true; shift ;;
         -y|--yes)       NONINTERACTIVE=true; shift ;;
         *)              err "unknown option: $1" ;;
@@ -416,6 +423,8 @@ done
 #     run - its previous value is parsed from the existing unit's
 #     -console-addr and seeded as the prompt default, so a plain re-run never
 #     resets a port the user has changed back to the install default
+#   - seeding never overrides an explicit --http-port / --https-port /
+#     --console-port: the command line wins over the old config/unit
 # ---------------------------------------------------------------------------
 CONFIG_FILE="$DATA_DIR/config.json"
 OLD_HTTP_ADDR=""
@@ -429,23 +438,24 @@ FINAL_HTTP_ADDR="$OLD_HTTP_ADDR"
 FINAL_HTTPS_ADDR="$OLD_HTTPS_ADDR"
 if [[ -z "$FINAL_HTTP_ADDR" ]]; then
     FINAL_HTTP_ADDR="0.0.0.0:${DATA_PORT_DEFAULT}"
-else
-    # carry the existing port forward as the effective default
+elif [[ $DATA_PORT_SET == false ]]; then
+    # carry the existing port forward as the effective default (an explicit
+    # --http-port takes precedence over the old config)
     _p="${FINAL_HTTP_ADDR##*:}"
     [[ "$_p" =~ ^[0-9]{1,5}$ ]] && DATA_PORT_DEFAULT="$_p"
 fi
 if [[ -z "$FINAL_HTTPS_ADDR" ]]; then
     if [[ -f "$CONFIG_FILE" ]]; then
         FINAL_HTTPS_ADDR=""           # upgrade from an older install: keep the HTTPS data plane off unless a port is entered below
-        DATA_HTTPS_PORT_DEFAULT=""
+        [[ $DATA_HTTPS_PORT_SET == false ]] && DATA_HTTPS_PORT_DEFAULT=""
     else
         FINAL_HTTPS_ADDR="0.0.0.0:${DATA_HTTPS_PORT_DEFAULT}"
     fi
-else
+elif [[ $DATA_HTTPS_PORT_SET == false ]]; then
     _p="${FINAL_HTTPS_ADDR##*:}"
     [[ "$_p" =~ ^[0-9]{1,5}$ ]] && DATA_HTTPS_PORT_DEFAULT="$_p"
 fi
-if [[ -f /etc/systemd/system/kingmoat.service ]]; then
+if [[ -f /etc/systemd/system/kingmoat.service && $CONSOLE_PORT_SET == false ]]; then
     _old_console=$(sed -n 's/.*-console-addr [^[:space:]]*:\([0-9]\{1,5\}\).*/\1/p' /etc/systemd/system/kingmoat.service | head -1 || true)
     if [[ -n "$_old_console" ]]; then
         CONSOLE_PORT_DEFAULT="$_old_console"
@@ -459,34 +469,44 @@ if [[ $NONINTERACTIVE == false ]]; then
     printf '\033[1;36m── 数据面端口 ──\033[0m\n'
     echo "默认监听 0.0.0.0:80(HTTP) / 0.0.0.0:443(HTTPS)。80/443 为特权端口，本脚本以 root 部署并已授予 CAP_NET_BIND_SERVICE，可直接绑定。"
     echo "安装前会用 ss 检测端口是否已被宿主机上其他进程监听，被占用时会要求重选。"
-    _http_def="${FINAL_HTTP_ADDR##*:}"
-    [[ "$_http_def" =~ ^[0-9]{1,5}$ ]] || _http_def="$DATA_PORT_DEFAULT"
-    if [[ -n "$OLD_HTTP_ADDR" ]]; then
+    if [[ $DATA_PORT_SET == true ]]; then
+        echo "已通过 --http-port 指定端口 ${DATA_PORT_DEFAULT}，直接回车生效（输入其他值可覆盖）。"
+    elif [[ -n "$OLD_HTTP_ADDR" ]]; then
         echo "检测到现有配置 listen_http=${OLD_HTTP_ADDR}，直接回车保留。"
     fi
-    read -rp "数据面 HTTP 端口 [$_http_def]: " INPUT_HTTP_PORT || true
+    read -rp "数据面 HTTP 端口 [${DATA_PORT_DEFAULT}]: " INPUT_HTTP_PORT || true
     if [[ -n "${INPUT_HTTP_PORT:-}" ]]; then
         DATA_PORT_DEFAULT="$INPUT_HTTP_PORT"
     fi
     if [[ -n "$OLD_HTTPS_ADDR" ]]; then
-        _https_def="${OLD_HTTPS_ADDR##*:}"
-        [[ "$_https_def" =~ ^[0-9]{1,5}$ ]] || _https_def="$DATA_HTTPS_PORT_DEFAULT"
-        echo "检测到现有配置 listen_https=${OLD_HTTPS_ADDR}，直接回车保留。"
-        read -rp "数据面 HTTPS 端口 [$_https_def]: " INPUT_HTTPS_PORT || true
+        if [[ $DATA_HTTPS_PORT_SET == true ]]; then
+            echo "已通过 --https-port 指定端口 ${DATA_HTTPS_PORT_DEFAULT}，直接回车生效（输入其他值可覆盖）。"
+        else
+            echo "检测到现有配置 listen_https=${OLD_HTTPS_ADDR}，直接回车保留。"
+        fi
+        read -rp "数据面 HTTPS 端口 [${DATA_HTTPS_PORT_DEFAULT}]: " INPUT_HTTPS_PORT || true
+        if [[ -n "${INPUT_HTTPS_PORT:-}" ]]; then
+            DATA_HTTPS_PORT_DEFAULT="$INPUT_HTTPS_PORT"
+        fi
+    elif [[ ! -f "$CONFIG_FILE" || $DATA_HTTPS_PORT_SET == true ]]; then
+        # Fresh install (or an explicit --https-port): Enter enables the
+        # HTTPS data plane on the shown default, matching the -y path and
+        # the banner above.
+        read -rp "数据面 HTTPS 端口 [0.0.0.0:${DATA_HTTPS_PORT_DEFAULT}，直接回车=启用]: " INPUT_HTTPS_PORT || true
         if [[ -n "${INPUT_HTTPS_PORT:-}" ]]; then
             DATA_HTTPS_PORT_DEFAULT="$INPUT_HTTPS_PORT"
         fi
     else
-        read -rp "数据面 HTTPS 端口 [${DATA_HTTPS_PORT_DEFAULT:-443}，直接回车=保持未启用]: " INPUT_HTTPS_PORT || true
-        if [[ -n "${INPUT_HTTPS_PORT:-}" ]]; then
-            DATA_HTTPS_PORT_DEFAULT="$INPUT_HTTPS_PORT"
-        else
-            DATA_HTTPS_PORT_DEFAULT=""
-        fi
+        # Upgrade with the HTTPS data plane currently off and no explicit
+        # --https-port: Enter keeps it off; typing a port turns it on.
+        read -rp "数据面 HTTPS 端口 [直接回车=保持未启用，输入端口=启用]: " INPUT_HTTPS_PORT || true
+        DATA_HTTPS_PORT_DEFAULT="${INPUT_HTTPS_PORT:-}"
     fi
 
     printf '\033[1;36m── 控制台端口 ──\033[0m\n'
-    if [[ -n "$_old_console" ]]; then
+    if [[ $CONSOLE_PORT_SET == true ]]; then
+        echo "已通过 --console-port 指定端口 ${CONSOLE_PORT_DEFAULT}，直接回车生效（输入其他值可覆盖）。"
+    elif [[ -n "$_old_console" ]]; then
         echo "检测到现有控制台端口 ${_old_console}（升级时直接回车保留）。"
     fi
     read -rp "控制台 HTTPS 端口 [$CONSOLE_PORT_DEFAULT]: " INPUT_PORT || true
@@ -646,13 +666,13 @@ else
     # listen_* fields in place; every other byte of the seed config stays.
     if [[ "$FINAL_HTTP_ADDR" != "$OLD_HTTP_ADDR" ]]; then
         log "updating listen_http in $CONFIG_FILE: $OLD_HTTP_ADDR -> $FINAL_HTTP_ADDR"
-        case "$FINAL_HTTP_ADDR" in *'&'*|*'\'*|*'|'*) err "listen address contains unsupported characters: $FINAL_HTTP_ADDR" ;; esac
+        case "$FINAL_HTTP_ADDR" in *'&'*|*\\*|*'|'*) err "listen address contains unsupported characters: $FINAL_HTTP_ADDR" ;; esac
         sed -i "s|\"listen_http\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"listen_http\": \"${FINAL_HTTP_ADDR}\"|" "$CONFIG_FILE"
         grep -qF "\"listen_http\": \"${FINAL_HTTP_ADDR}\"" "$CONFIG_FILE" || err "failed to patch listen_http in $CONFIG_FILE - edit it manually, then re-run"
     fi
     if [[ -n "$FINAL_HTTPS_ADDR" && "$FINAL_HTTPS_ADDR" != "$OLD_HTTPS_ADDR" ]]; then
         log "updating listen_https in $CONFIG_FILE: ${OLD_HTTPS_ADDR:-<unset>} -> $FINAL_HTTPS_ADDR"
-        case "$FINAL_HTTPS_ADDR" in *'&'*|*'\'*|*'|'*) err "listen address contains unsupported characters: $FINAL_HTTPS_ADDR" ;; esac
+        case "$FINAL_HTTPS_ADDR" in *'&'*|*\\*|*'|'*) err "listen address contains unsupported characters: $FINAL_HTTPS_ADDR" ;; esac
         sed -i "s|\"listen_https\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"listen_https\": \"${FINAL_HTTPS_ADDR}\"|" "$CONFIG_FILE"
         grep -qF "\"listen_https\": \"${FINAL_HTTPS_ADDR}\"" "$CONFIG_FILE" || err "failed to patch listen_https in $CONFIG_FILE - edit it manually, then re-run"
     fi

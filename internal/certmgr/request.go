@@ -304,10 +304,14 @@ func (s *Service) Request(domain, email string, staging bool) (RequestTask, erro
 	}
 	s.addTaskLocked(t)
 	s.inflight[key] = t
+	// Snapshot under the lock: once the goroutine below is scheduled, run()
+	// may already be mutating t (Status = running), so copying after the
+	// unlock would race it. Mirrors the inflight/cache paths above.
+	task := *t
 	s.mu.Unlock()
 
 	go s.run(t)
-	return *t, nil
+	return task, nil
 }
 
 // addTaskLocked registers t (caller holds s.mu), evicting the oldest task

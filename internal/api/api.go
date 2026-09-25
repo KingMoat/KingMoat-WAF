@@ -305,8 +305,10 @@ type Options struct {
 	// PortProbe checks whether a TCP port is free on the host (nil error =
 	// free). nil = default wildcard net.Listen probe. Test hook.
 	PortProbe func(port int) error
-	// Restart applies the console-port change by restarting the service
-	// (nil = `systemctl restart kingmoat`). Test hook.
+	// Restart applies the console-port change by submitting the service
+	// restart to systemd WITHOUT waiting for it (nil = fire-and-forget
+	// `systemctl restart kingmoat`; see defaultRestart for why blocking is
+	// unsafe). Test hook.
 	Restart func() error
 	// RestartDelay defers the restart so the change response reaches the
 	// client first (0 = 2s). Test hook.

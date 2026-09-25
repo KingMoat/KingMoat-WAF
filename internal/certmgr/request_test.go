@@ -284,3 +284,84 @@ func TestACMEManagerMergesCachedHosts(t *testing.T) {
 		}
 	}
 }
+
+// TestRequestConcurrentSubmit hammers Request from many goroutines. Same-
+// domain submissions must collapse into one single-flight task and every
+// returned snapshot must be a coherent copy taken under the service lock.
+// Under `go test -race` this is the regression guard for the historical
+// unlocked `return *t` that raced run()'s Status write; without -race it
+// still pins the single-flight and snapshot-validity behavior.
+func TestRequestConcurrentSubmit(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	s := NewService(NewACMEHolder(t.TempDir()), nil, WithIssuer(
+		func(ctx context.Context, domain, email string, staging bool) (*x509.Certificate, error) {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-release
+			return okLeaf(t, domain), nil
+		}))
+
+	// Phase 1: concurrent submissions of ONE domain share one in-flight
+	// task; the issuer blocks so every submission must observe it.
+	const same = 16
+	snapshots := make([]RequestTask, same)
+	var wg sync.WaitGroup
+	for i := 0; i < same; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			task, err := s.Request("race.local", "", false)
+			if err != nil {
+				t.Errorf("concurrent request: %v", err)
+				return
+			}
+			snapshots[i] = task
+		}(i)
+	}
+	<-started // the issuer is running: run() already flipped Status under the lock
+	wg.Wait()
+	for i := 1; i < same; i++ {
+		if snapshots[i].ID != snapshots[0].ID {
+			t.Fatalf("single-flight split under concurrency: %s vs %s", snapshots[0].ID, snapshots[i].ID)
+		}
+		if st := snapshots[i].Status; st != TaskPending && st != TaskRunning {
+			t.Fatalf("incoherent snapshot status %q: %+v", st, snapshots[i])
+		}
+		if snapshots[i].Domain != "race.local" || snapshots[i].CreatedAt == "" {
+			t.Fatalf("incoherent snapshot: %+v", snapshots[i])
+		}
+	}
+	close(release)
+	waitTask(t, s, snapshots[0].ID, TaskSuccess)
+
+	// Phase 2: distinct domains — every submission takes the async path,
+	// maximizing the return-path vs run() overlap the race detector watches.
+	const distinct = 24
+	ids := make([]string, distinct)
+	for i := 0; i < distinct; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			task, err := s.Request(fmt.Sprintf("r%d.local", i), "", false)
+			if err != nil {
+				t.Errorf("request r%d.local: %v", i, err)
+				return
+			}
+			ids[i] = task.ID
+		}(i)
+	}
+	wg.Wait()
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if seen[id] {
+			t.Fatalf("distinct domains shared a task id: %s", id)
+		}
+		seen[id] = true
+	}
+	for _, id := range ids {
+		waitTask(t, s, id, TaskSuccess)
+	}
+}

@@ -7,7 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"testing"
 	"time"
 
@@ -67,9 +70,14 @@ func waitRestarted(t *testing.T, got *[]int, want int) {
 }
 
 // TestConsolePortGet covers the settings-card read: the boot-time port and
-// the changeable flag (true with the EnvironmentFile wired).
+// the changeable flag (true only for a fully wired systemd deployment: env
+// path set, file present, process started by systemd).
 func TestConsolePortGet(t *testing.T) {
-	ts, _, _ := portServer(t, nil)
+	t.Setenv("INVOCATION_ID", "test-invocation")
+	ts, envPath, _ := portServer(t, nil)
+	if err := os.WriteFile(envPath, []byte("CONSOLE_PORT=9443\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	resp, err := http.Get(ts.URL + "/api/settings/console-port")
 	if err != nil {
 		t.Fatal(err)
@@ -81,6 +89,9 @@ func TestConsolePortGet(t *testing.T) {
 	}
 	if out["changeable"] != true {
 		t.Fatalf("changeable = %v, want true", out["changeable"])
+	}
+	if _, has := out["reason"]; has {
+		t.Fatalf("changeable response must not carry a reason: %v", out)
 	}
 }
 
@@ -116,6 +127,9 @@ func TestConsolePortDisabled(t *testing.T) {
 	if out["port"].(float64) != 9443 || out["changeable"] != false {
 		t.Fatalf("get = %v, want port 9443 changeable false", out)
 	}
+	if reason, _ := out["reason"].(string); reason == "" {
+		t.Fatalf("degraded get missing reason: %v", out)
+	}
 	code, body := doJSONBody(t, http.DefaultClient, "POST", ts.URL+"/api/settings/console-port",
 		map[string]any{"port": 9444})
 	if code != http.StatusNotImplemented {
@@ -131,6 +145,7 @@ func TestConsolePortDisabled(t *testing.T) {
 // out-of-range ports, same-as-current, data-plane collisions and an occupied
 // port (injected probe) - none of which may write the env file or restart.
 func TestConsolePortValidation(t *testing.T) {
+	t.Setenv("INVOCATION_ID", "test-invocation")
 	ts, envPath, restarts := portServer(t, func(int) error { return errors.New("listen tcp: bind: address already in use") })
 	if err := os.WriteFile(envPath, []byte("CONSOLE_PORT=9443\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -174,6 +189,7 @@ func TestConsolePortValidation(t *testing.T) {
 // an atomically rewritten EnvironmentFile (pre-existing content replaced)
 // and exactly one scheduled restart.
 func TestConsolePortChange(t *testing.T) {
+	t.Setenv("INVOCATION_ID", "test-invocation")
 	ts, envPath, restarts := portServer(t, nil)
 	if err := os.WriteFile(envPath, []byte("CONSOLE_PORT=9443\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -236,4 +252,127 @@ func TestListenerPort(t *testing.T) {
 			t.Fatalf("listenerPort(%q) = %d, want %d", addr, got, want)
 		}
 	}
+}
+
+// TestConsolePortChangeable pins the three-condition deployment probe: the
+// EnvironmentFile must be wired AND exist on disk AND the process must run
+// under systemd (INVOCATION_ID); every failure carries a reason.
+func TestConsolePortChangeable(t *testing.T) {
+	envPath := filepath.Join(t.TempDir(), "console.env")
+	if err := os.WriteFile(envPath, []byte("CONSOLE_PORT=9443\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("env not wired", func(t *testing.T) {
+		ok, reason := consolePortChangeable("")
+		if ok || reason == "" {
+			t.Fatalf("empty path: ok=%v reason=%q, want false with reason", ok, reason)
+		}
+	})
+	t.Run("env file missing", func(t *testing.T) {
+		ok, reason := consolePortChangeable(filepath.Join(t.TempDir(), "absent.env"))
+		if ok || reason == "" {
+			t.Fatalf("missing file: ok=%v reason=%q, want false with reason", ok, reason)
+		}
+	})
+	t.Run("not systemd", func(t *testing.T) {
+		t.Setenv("INVOCATION_ID", "")
+		ok, reason := consolePortChangeable(envPath)
+		if ok || reason == "" {
+			t.Fatalf("non-systemd: ok=%v reason=%q, want false with reason", ok, reason)
+		}
+	})
+	t.Run("systemd deployment", func(t *testing.T) {
+		t.Setenv("INVOCATION_ID", "test-invocation")
+		ok, reason := consolePortChangeable(envPath)
+		if !ok || reason != "" {
+			t.Fatalf("wired systemd deployment: ok=%v reason=%q, want true", ok, reason)
+		}
+	})
+}
+
+// TestConsolePortChangeableHTTP covers the probe at the API layer: the card
+// reports changeable=true only for the fully wired systemd deployment,
+// otherwise it carries a reason and POST is rejected 501 before any side
+// effect (no env write, no restart).
+func TestConsolePortChangeableHTTP(t *testing.T) {
+	cases := []struct {
+		name       string
+		invocation bool
+		writeEnv   bool
+		wantOK     bool
+	}{
+		{"systemd + env file", true, true, true},
+		{"env file missing", true, false, false},
+		{"not systemd", false, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.invocation {
+				t.Setenv("INVOCATION_ID", "test-invocation")
+			} else {
+				t.Setenv("INVOCATION_ID", "")
+			}
+			ts, envPath, restarts := portServer(t, nil)
+			if tc.writeEnv {
+				if err := os.WriteFile(envPath, []byte("CONSOLE_PORT=9443\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			resp, err := http.Get(ts.URL + "/api/settings/console-port")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out map[string]any
+			decodeInto(t, resp, &out)
+			if out["changeable"] != tc.wantOK {
+				t.Fatalf("changeable = %v, want %v", out["changeable"], tc.wantOK)
+			}
+			reason, hasReason := out["reason"]
+			if tc.wantOK && hasReason {
+				t.Fatalf("changeable=true must not carry a reason: %v", out)
+			}
+			if tc.wantOK {
+				return
+			}
+			if r, _ := reason.(string); r == "" {
+				t.Fatalf("changeable=false missing reason: %v", out)
+			}
+			code, _ := doJSONBody(t, http.DefaultClient, "POST", ts.URL+"/api/settings/console-port",
+				map[string]any{"port": 9444})
+			if code != http.StatusNotImplemented {
+				t.Fatalf("post = %d (%v), want 501", code, out)
+			}
+			time.Sleep(30 * time.Millisecond)
+			if len(*restarts) != 0 {
+				t.Fatalf("rejected change restarted the service %d times", len(*restarts))
+			}
+		})
+	}
+}
+
+// slowChild returns a command that runs for about d and then exits, portable
+// across platforms (Windows: ping; Unix: sleep).
+func slowChild(d time.Duration) *exec.Cmd {
+	if runtime.GOOS == "windows" {
+		return exec.Command("ping", "-n", strconv.Itoa(int(d.Seconds())+1), "127.0.0.1")
+	}
+	return exec.Command("sleep", strconv.Itoa(int(d.Seconds())))
+}
+
+// TestStartRestartDoesNotBlock pins the fire-and-forget restart submit: the
+// submit must return while the child is still running. Blocking on the
+// restart child would let systemd's cgroup teardown (KillMode=control-group)
+// SIGTERM the very process waiting on it, so every successful restart
+// surfaced `signal: terminated` as a spurious error.
+func TestStartRestartDoesNotBlock(t *testing.T) {
+	cmd := slowChild(3 * time.Second)
+	start := time.Now()
+	if err := submitRestart(cmd); err != nil {
+		t.Fatalf("submit = %v, want nil", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("restart submit blocked for %v; it must not wait for the child", elapsed)
+	}
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait()
 }

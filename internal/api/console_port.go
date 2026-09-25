@@ -6,9 +6,12 @@
 // deploy/install.sh) instead of a hardcoded -console-addr value, because
 // ProtectSystem=strict keeps the unit file in /etc/systemd/system read-only
 // for the service while the data directory stays writable (ReadWritePaths).
-// The change flow: validate → rewrite console.env atomically → schedule
-// `systemctl restart kingmoat` → answer the client immediately (the restart
-// tears the process down ~2s later; the new process binds the new port).
+// The change flow: validate → rewrite console.env atomically → submit
+// `systemctl restart kingmoat` (fire-and-forget) → answer the client
+// immediately (the restart tears the process down ~2s later; the new process
+// binds the new port). The flow is only offered when it can actually work:
+// the EnvironmentFile is wired AND exists AND the process runs under systemd
+// (see consolePortChangeable).
 package api
 
 import (
@@ -49,43 +52,90 @@ func defaultPortProbe(port int) error {
 	return ln.Close()
 }
 
-// defaultRestart applies the console-port change by restarting the unit.
+// defaultRestart applies the console-port change by SUBMITTING the unit
+// restart to systemd, deliberately without waiting for it.
 //
-// systemctl is a dbus IPC call to PID 1 and is NOT restricted by
-// ProtectSystem=strict (that sandbox limits filesystem writes, not IPC) - to
-// be confirmed on the real machine (openEuler hardened profile). The restart
-// job is submitted to systemd within milliseconds of the exec; the unit's
-// own cgroup teardown may kill this client process afterwards, but the job
-// already queued in PID 1 proceeds. If real-machine testing ever shows the
+// Waiting here is self-kill: `systemctl restart kingmoat` is a dbus IPC call
+// to PID 1, and the restart's stop phase SIGTERMs every process in the unit's
+// cgroup - the default KillMode=control-group includes this very systemctl
+// client. Blocking on it (CombinedOutput/Wait) therefore surfaces
+// `signal: terminated` as a spurious error on every successful restart. The
+// dbus submission precedes the stop phase (the queued job is what triggers
+// the stop), so start-and-forget is safe: the job always ends up queued in
+// PID 1, and the torn-down client is reaped by init moments later. Note that
+// systemctl IPC is NOT restricted by ProtectSystem=strict (that sandbox
+// limits filesystem writes, not IPC) - to be confirmed on the real machine
+// (openEuler hardened profile). If real-machine testing ever shows the
 // submission losing that race, switch to `systemd-run --on-active=...`
 // (transient timer outside the unit's cgroup).
 func defaultRestart() error {
 	cmd := exec.Command("systemctl", "restart", "kingmoat")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("systemctl restart kingmoat: %w: %s", err, strings.TrimSpace(string(out)))
+	if err := submitRestart(cmd); err != nil {
+		return fmt.Errorf("systemctl restart kingmoat: %w", err)
 	}
 	return nil
 }
 
+// submitRestart starts cmd fire-and-forget: only a failed exec is an error,
+// the child runs (and is torn down with the cgroup) on its own - no Wait, no
+// zombie care (the cgroup teardown reaps it). Test seam for the
+// must-not-block guarantee.
+func submitRestart(cmd *exec.Cmd) error {
+	return cmd.Start()
+}
+
+// consolePortChangeable reports whether the online port-change flow can
+// actually work in the current deployment, and (when false) why. All three
+// conditions must hold:
+//
+//  1. the EnvironmentFile path was wired at boot (systemd all-in-one model);
+//  2. the EnvironmentFile exists on disk: a binary-replacement upgrade onto
+//     an old unit without the EnvironmentFile line would otherwise accept
+//     the write while the restart still uses the old unit (port never
+//     moves);
+//  3. this process was started by systemd: every unit-spawned process has
+//     INVOCATION_ID set, a hand-launched binary (development, Windows,
+//     manual runs) does not - scheduling `systemctl restart` from it would
+//     either fail (polkit denies non-root users managing system units) or
+//     restart nothing meaningful.
+func consolePortChangeable(envPath string) (bool, string) {
+	if envPath == "" {
+		return false, "未接入 systemd 部署（启动参数未提供 EnvironmentFile 路径）"
+	}
+	if _, err := os.Stat(envPath); err != nil {
+		return false, "EnvironmentFile 不存在（当前 unit 未接入 console.env，重启后端口变更不会生效）"
+	}
+	if os.Getenv("INVOCATION_ID") == "" {
+		return false, "非 systemd 启动（手工运行或开发模式），不支持在线重启服务"
+	}
+	return true, ""
+}
+
 // handleConsolePortGet returns the console port this process is serving on
-// and whether the port-change flow is available (EnvironmentFile wired).
+// and whether the port-change flow is available (changeable is a real
+// deployment probe, not the wired flag; reason explains a false).
 func (s *Server) handleConsolePortGet(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
+	changeable, reason := consolePortChangeable(s.opts.ConsoleEnvPath)
+	out := map[string]any{
 		"port":       s.opts.ConsolePort,
-		"changeable": s.opts.ConsoleEnvPath != "",
-	})
+		"changeable": changeable,
+	}
+	if !changeable {
+		out["reason"] = reason
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // handleConsolePortSet moves the management console to a new port. After all
 // validations pass the EnvironmentFile is rewritten atomically and the
-// service restart is scheduled (delayed so this response reaches the client
-// first); the response is final even though the restart happens later.
+// service restart request is submitted (delayed so this response reaches the
+// client first); the response is final even though the restart happens later.
 func (s *Server) handleConsolePortSet(w http.ResponseWriter, r *http.Request) {
 	if !s.requireRole(w, r, store.RoleAdmin) {
 		return
 	}
-	if s.opts.ConsoleEnvPath == "" {
-		writeErr(w, http.StatusNotImplemented, simpleError("当前运行模式不支持在线修改管理端口（未接入 systemd EnvironmentFile 部署）"))
+	if changeable, reason := consolePortChangeable(s.opts.ConsoleEnvPath); !changeable {
+		writeErr(w, http.StatusNotImplemented, simpleError("当前运行模式不支持在线修改管理端口（"+reason+"）"))
 		return
 	}
 	var req struct {
@@ -136,12 +186,13 @@ func (s *Server) handleConsolePortSet(w http.ResponseWriter, r *http.Request) {
 		restart = defaultRestart
 	}
 	s.recordChange(r, "console.port_change", strconv.Itoa(req.Port),
-		fmt.Sprintf("console port change %d -> %d, service restart scheduled", s.opts.ConsolePort, req.Port))
+		fmt.Sprintf("console port change %d -> %d, restart request submitted to systemd", s.opts.ConsolePort, req.Port))
 	time.AfterFunc(delay, func() {
 		if err := restart(); err != nil {
 			// console.env is already written: a manual `systemctl restart
-			// kingmoat` still applies the new port.
-			slog.Error("console port change: service restart failed", "port", req.Port, "err", err)
+			// kingmoat` still applies the new port. With the fire-and-forget
+			// submit this only fires when the systemctl exec itself failed.
+			slog.Error("console port change: restart request submission failed", "port", req.Port, "err", err)
 		}
 	})
 	writeJSON(w, http.StatusOK, map[string]any{

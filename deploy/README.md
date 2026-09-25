@@ -200,6 +200,7 @@ systemctl status kingmoat
 单元要点（与 `kingmoat.service` 对应）：
 
 - **非 root 运行**：`User=kingmoat` + `AmbientCapabilities=CAP_NET_BIND_SERVICE`，只授予绑定 80/443 低端口的能力，其余能力全无。
+- **在线改端口仅限 root unit**：控制台「管理界面端口」依赖服务进程向 systemd 提交重启自身 unit；一键部署（install.sh）生成的单元以 root 运行可以做到，本模板以 `User=kingmoat` 非 root 运行，systemd/polkit 默认拒绝服务进程管理 unit——**非 root systemd unit 或非 systemd 部署不支持在线改端口（polkit 限制），需手工改 unit/重启**（控制台端口卡片会如实显示不可修改及原因）。
 - 沙箱加固：`NoNewPrivileges` / `ProtectSystem=strict` / `ProtectHome` / `PrivateTmp`；数据目录 `/var/lib/kingmoat` 通过 `StateDirectory`/`ReadWritePaths` 保持可写（配置库、审计日志、证书库都在这里写）。
 - 环境变量从 `/etc/kingmoat/env` 读入（`KINGMOAT_ADMIN_HASH`、可选 `KINGMOAT_ADMIN_TOTP`、`KINGMOAT_AI_API_KEY`）；控制台端口从数据目录 `console.env` 读入（`CONSOLE_PORT`，见 3.1，控制台设置页改端口时由服务自动改写并重启）。
 - 启动参数：`-config /etc/kingmoat/config.json -console-addr 127.0.0.1:${CONSOLE_PORT} -console-db /var/lib/kingmoat/kingmoat.db`（端口由 systemd 从 EnvironmentFile 展开）。

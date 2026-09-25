@@ -294,6 +294,23 @@ type Options struct {
 	// requests, status queries, cert-library entries; nil = the
 	// /api/certs/acme/* endpoints report "not available").
 	ACME *certmgr.Service
+	// ConsolePort is the port the management console is currently serving on
+	// (parsed from -console-addr at boot; 0 = unknown).
+	ConsolePort int
+	// ConsoleEnvPath is the absolute path of the systemd EnvironmentFile
+	// carrying CONSOLE_PORT (deploy/install.sh writes <data-dir>/console.env
+	// and wires it into the unit). Empty = the console port-change endpoint
+	// reports "not supported" (no systemd deployment wired).
+	ConsoleEnvPath string
+	// PortProbe checks whether a TCP port is free on the host (nil error =
+	// free). nil = default wildcard net.Listen probe. Test hook.
+	PortProbe func(port int) error
+	// Restart applies the console-port change by restarting the service
+	// (nil = `systemctl restart kingmoat`). Test hook.
+	Restart func() error
+	// RestartDelay defers the restart so the change response reaches the
+	// client first (0 = 2s). Test hook.
+	RestartDelay time.Duration
 }
 
 // Server is the control-plane HTTP server.
@@ -399,6 +416,9 @@ func New(opts Options) *Server {
 	mux.HandleFunc("POST /api/certs/acme/request", s.handleACMERequest)
 	mux.HandleFunc("GET /api/certs/acme/request", s.handleACMERequestStatus)
 	mux.HandleFunc("GET /api/certs/acme/entries", s.handleACMEEntries)
+	// Console port change (settings page; systemd EnvironmentFile + restart).
+	mux.HandleFunc("GET /api/settings/console-port", s.handleConsolePortGet)
+	mux.HandleFunc("POST /api/settings/console-port", s.handleConsolePortSet)
 	if opts.ConsoleTLS != nil {
 		mux.HandleFunc("GET /api/console/tls", s.handleConsoleTLSGet)
 		mux.HandleFunc("POST /api/console/tls", s.handleConsoleTLSApply)

@@ -28,11 +28,19 @@ WorkingDirectory=/var/lib/kingmoat
 # If the hash is unset, console auth is still enforced: sign in with the
 # bootstrap account kmadmin / KingMoat@2026 (password change forced at first login).
 EnvironmentFile=-/etc/kingmoat/env
+# Console port (CONSOLE_PORT): the in-console port change (settings page)
+# rewrites this file and restarts the unit. Create it before first start:
+#   echo CONSOLE_PORT=8443 | sudo tee /var/lib/kingmoat/console.env
+#   sudo chmod 600 /var/lib/kingmoat/console.env
+# If it is missing the unit fails to start (keep the dash prefix removed for
+# fail-fast behavior; restore the value as shown above to recover).
+EnvironmentFile=/var/lib/kingmoat/console.env
 # -config            seed config, imported on first boot; live config lives in the console DB
 # -console-addr      embedded console (Web UI + /api/* + /metrics); HTTPS by default
-#                    (self-signed bootstrap cert; replace from the console settings)
+#                    (self-signed bootstrap cert; replace from the console settings);
+#                    the port is expanded by systemd from the EnvironmentFile above
 # -console-db        SQLite config store; keep on a LOCAL disk, never on NFS/SMB
-ExecStart=/usr/local/bin/kingmoat -config /etc/kingmoat/config.json -console-addr 127.0.0.1:8443 -console-db /var/lib/kingmoat/kingmoat.db
+ExecStart=/usr/local/bin/kingmoat -config /etc/kingmoat/config.json -console-addr 127.0.0.1:${CONSOLE_PORT} -console-db /var/lib/kingmoat/kingmoat.db
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=65536

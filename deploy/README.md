@@ -165,7 +165,12 @@ sudo chown kingmoat:kingmoat /var/lib/kingmoat
 # 3. seed config (copy from the repo root; edit listen_http/listen_https/sites)
 sudo install -m 0640 config.example.json /etc/kingmoat/config.json
 
-# 4. validate before first start (dry-runs WAF compilation too)
+# 4. seed the console port env file (read by the unit's EnvironmentFile; the
+#    in-console port change rewrites this file and restarts the service)
+echo CONSOLE_PORT=8443 | sudo tee /var/lib/kingmoat/console.env >/dev/null
+sudo chmod 600 /var/lib/kingmoat/console.env
+
+# 5. validate before first start (dry-runs WAF compilation too)
 sudo -u kingmoat kingmoat-cli validate -config /etc/kingmoat/config.json
 ```
 
@@ -196,8 +201,8 @@ systemctl status kingmoat
 
 - **非 root 运行**：`User=kingmoat` + `AmbientCapabilities=CAP_NET_BIND_SERVICE`，只授予绑定 80/443 低端口的能力，其余能力全无。
 - 沙箱加固：`NoNewPrivileges` / `ProtectSystem=strict` / `ProtectHome` / `PrivateTmp`；数据目录 `/var/lib/kingmoat` 通过 `StateDirectory`/`ReadWritePaths` 保持可写（配置库、审计日志、证书库都在这里写）。
-- 环境变量从 `/etc/kingmoat/env` 读入（`KINGMOAT_ADMIN_HASH`、可选 `KINGMOAT_ADMIN_TOTP`、`KINGMOAT_AI_API_KEY`）。
-- 启动参数：`-config /etc/kingmoat/config.json -console-addr 127.0.0.1:8443 -console-db /var/lib/kingmoat/kingmoat.db`。
+- 环境变量从 `/etc/kingmoat/env` 读入（`KINGMOAT_ADMIN_HASH`、可选 `KINGMOAT_ADMIN_TOTP`、`KINGMOAT_AI_API_KEY`）；控制台端口从数据目录 `console.env` 读入（`CONSOLE_PORT`，见 3.1，控制台设置页改端口时由服务自动改写并重启）。
+- 启动参数：`-config /etc/kingmoat/config.json -console-addr 127.0.0.1:${CONSOLE_PORT} -console-db /var/lib/kingmoat/kingmoat.db`（端口由 systemd 从 EnvironmentFile 展开）。
 
 ```bash
 # console reachable?

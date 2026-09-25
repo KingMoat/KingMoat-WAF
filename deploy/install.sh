@@ -419,12 +419,14 @@ done
 #   - data plane ports live in config.json; that file is only generated when
 #     absent, so an upgrade keeps it as-is (a NEW port typed below is patched
 #     into the two listen_* fields instead of regenerating the file)
-#   - the console port lives in the systemd unit, which IS rewritten on every
-#     run - its previous value is parsed from the existing unit's
-#     -console-addr and seeded as the prompt default, so a plain re-run never
-#     resets a port the user has changed back to the install default
+#   - the console port used to live in the systemd unit only, which IS
+#     rewritten on every run - its previous value is parsed from the existing
+#     unit's -console-addr and seeded as the prompt default, so a plain
+#     re-run never resets a port the user has changed back to the install
+#     default; since the EnvironmentFile migration (console.env) the env
+#     file is authoritative instead and is seeded from the parsed unit port
 #   - seeding never overrides an explicit --http-port / --https-port /
-#     --console-port: the command line wins over the old config/unit
+#     --console-port: the command line wins over the old config/unit/env
 # ---------------------------------------------------------------------------
 CONFIG_FILE="$DATA_DIR/config.json"
 OLD_HTTP_ADDR=""
@@ -455,7 +457,23 @@ elif [[ $DATA_HTTPS_PORT_SET == false ]]; then
     _p="${FINAL_HTTPS_ADDR##*:}"
     [[ "$_p" =~ ^[0-9]{1,5}$ ]] && DATA_HTTPS_PORT_DEFAULT="$_p"
 fi
-if [[ -f /etc/systemd/system/kingmoat.service && $CONSOLE_PORT_SET == false ]]; then
+# Console port resolution precedence (an explicit --console-port always
+# wins over everything below):
+#   1. the existing console.env EnvironmentFile (migration already done) -
+#      the unit no longer carries the real port there, so the env file is
+#      authoritative;
+#   2. the previous unit's -console-addr (pre-EnvironmentFile installs) -
+#      the port is carried into the freshly written console.env so the unit
+#      switches to the EnvironmentFile mechanism without a port change.
+CONSOLE_ENV_FILE="$DATA_DIR/console.env"
+if [[ -f "$CONSOLE_ENV_FILE" && $CONSOLE_PORT_SET == false ]]; then
+    _env_console=$(sed -n 's/^CONSOLE_PORT=\([0-9]\{1,5\}\).*/\1/p' "$CONSOLE_ENV_FILE" | head -1 || true)
+    if [[ -n "$_env_console" ]]; then
+        _old_console="$_env_console"
+        CONSOLE_PORT_DEFAULT="$_env_console"
+    fi
+fi
+if [[ -z "$_old_console" && -f /etc/systemd/system/kingmoat.service && $CONSOLE_PORT_SET == false ]]; then
     _old_console=$(sed -n 's/.*-console-addr [^[:space:]]*:\([0-9]\{1,5\}\).*/\1/p' /etc/systemd/system/kingmoat.service | head -1 || true)
     if [[ -n "$_old_console" ]]; then
         CONSOLE_PORT_DEFAULT="$_old_console"
@@ -611,6 +629,21 @@ fi
 pick_port "控制台" "$CONSOLE_PORT_DEFAULT" "$DATA_PORT_DEFAULT $DATA_HTTPS_PORT_DEFAULT"
 CONSOLE_PORT_DEFAULT="$PICK_PORT"
 
+# ---------------------------------------------------------------------------
+# Console port EnvironmentFile (read by the unit's EnvironmentFile= below)
+# ---------------------------------------------------------------------------
+# ExecStart carries -console-addr 0.0.0.0:${CONSOLE_PORT} (expanded by systemd
+# at start, NOT by this script), so the running service can move the console
+# to a new port at runtime: the settings page rewrites this file and restarts
+# the unit (the unit file itself is read-only under ProtectSystem=strict,
+# while the data dir stays writable and the restart is a dbus IPC).
+# Fresh installs write the port chosen above; upgrades write the port
+# carried over from console.env or parsed from the previous unit (see the
+# upgrade-path section), preserving it across the migration.
+log "writing console environment file ..."
+printf 'CONSOLE_PORT=%s\n' "$CONSOLE_PORT_DEFAULT" > "$CONSOLE_ENV_FILE"
+chmod 600 "$CONSOLE_ENV_FILE"
+
 log "installing to $INSTALL_DIR ..."
 mkdir -p "$INSTALL_DIR" "$DATA_DIR/logs" "$DATA_DIR/archive"
 cp "$TMPDIR_INSTALL/kingmoat"      "$INSTALL_DIR/kingmoat"
@@ -681,11 +714,13 @@ fi
 # ---------------------------------------------------------------------------
 # systemd unit
 # ---------------------------------------------------------------------------
-# Rewritten on every run (fresh install AND upgrade). CONSOLE_PORT_DEFAULT
-# carries the console port resolved from the PREVIOUS unit for upgrades (see
-# the upgrade-path section above), so a re-run preserves a port the user
-# changed instead of resetting it to the install default. Data-plane ports
-# are not part of the unit; they live in config.json.
+# Rewritten on every run (fresh install AND upgrade). The console port comes
+# from the EnvironmentFile (${DATA_DIR}/console.env, written above): upgrades
+# carry the previous port over (parsed from console.env or the old unit), so
+# a re-run preserves a port the user changed instead of resetting it to the
+# install default. Data-plane ports are not part of the unit; they live in
+# config.json. \${CONSOLE_PORT} below is expanded by systemd from the env
+# file, not by this script.
 log "installing systemd unit ..."
 cat > /etc/systemd/system/kingmoat.service <<UNIT
 [Unit]
@@ -705,7 +740,12 @@ StateDirectory=kingmoat
 ConfigurationDirectory=kingmoat
 ReadWritePaths=${DATA_DIR} ${INSTALL_DIR}
 WorkingDirectory=${DATA_DIR}
-ExecStart="${INSTALL_DIR}/kingmoat" -config "${CONFIG_FILE}" -console-addr 0.0.0.0:${CONSOLE_PORT_DEFAULT} -console-db "${DATA_DIR}/kingmoat.db"
+# Console port (CONSOLE_PORT) lives in the EnvironmentFile so the running
+# service can move the console to a new port at runtime (settings page:
+# rewrite the file + systemctl restart; the unit file itself stays read-only
+# under ProtectSystem=strict).
+EnvironmentFile=${DATA_DIR}/console.env
+ExecStart="${INSTALL_DIR}/kingmoat" -config "${CONFIG_FILE}" -console-addr 0.0.0.0:\${CONSOLE_PORT} -console-db "${DATA_DIR}/kingmoat.db"
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=65536

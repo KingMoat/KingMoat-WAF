@@ -50,6 +50,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 			"/api/users/{username}": mergeOps(patchOp("改角色/密码/禁用/邮箱（admin）"), deleteOp("删除用户（admin，最后启用管理员受保护）")),
 			"/api/users/{username}/reset-password": postOp("重置用户密码（admin，返回一次性临时密码，下次登录强制改密）", nil),
 			"/api/console/tls":            mergeOps(getOp("管理控制台证书态势（自签名/库内绑定）", nil), postOp("切换管理控制台证书（库内条目，热生效）", nil)),
+		"/api/settings/console-port":  mergeOps(getOp("当前管理控制台端口", nil), postOp("修改管理控制台端口（写 console.env 并自动重启服务，约 30 秒后用新地址访问；admin）", nil)),
 			"/api/assets/apis":            getOp("API 资产清单", nil),
 			"/api/risks":                  getOp("风险列表", nil),
 			"/api/risks/scan":             postOp("触发风险扫描", nil),

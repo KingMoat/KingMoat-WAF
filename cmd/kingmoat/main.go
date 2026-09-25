@@ -19,6 +19,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -559,6 +560,16 @@ func main() {
 			ArchiveEnabled:       archiveEnabled,
 			ArchiveRetentionDays: activeCfg.AuditArchive.RetentionDaysOrDefault(),
 		}
+		// Console port wiring for the settings-page port change: the port this
+		// process serves on (parsed from -console-addr) and the EnvironmentFile
+		// the systemd unit reads it from (deploy/install.sh puts console.env
+		// next to the console DB, i.e. in the data directory).
+		consolePort := 0
+		if _, p, perr := net.SplitHostPort(*consoleAddr); perr == nil {
+			if v, aerr := strconv.Atoi(p); aerr == nil {
+				consolePort = v
+			}
+		}
 		apiSrv := api.New(api.Options{
 			Center:      center,
 			Logs:        auditStore,
@@ -579,6 +590,8 @@ func main() {
 			},
 			AssetsRef:      assetsRef,
 			ACME:           acmeSvc,
+			ConsolePort:    consolePort,
+			ConsoleEnvPath: filepath.Join(cdir, "console.env"),
 			PProf:          os.Getenv("KINGMOAT_PPROF") != "", // /debug/pprof behind console auth
 			GroupsFn:       func() *ipgroups.Manager { return handler.Groups() },
 			DisableStateFn: func() *stages.StageDisableRegistry { return handler.DisableState() },

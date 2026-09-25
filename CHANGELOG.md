@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### 修复
+
+- **一键部署脚本在真实 Linux 上提取失败**：`curl | bash` 安装在解压阶段连续报 `mv: ... are the same file` 并以 `kingmoat binary not found in archive` 终止——临时目录名（kingmoat-install.*）被包裹目录查找模式 `kingmoat*` 误匹配，归位步骤把目录内容移到自身（无效操作）；查找现限定解压根下一层且不会匹配临时目录自身。已在同构包裹/平铺两种包布局下回归验证。
+
 ## v0.7.5-beta (2026-09-25)
 
 基于 v0.7.4-beta，配置与数据库完全兼容、无需迁移。

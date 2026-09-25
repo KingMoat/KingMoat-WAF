@@ -235,9 +235,15 @@ log "checksum verified ✓"
 log "extracting ..."
 tar -xzf "$TMPDIR_INSTALL/$ASSET_FILE" -C "$TMPDIR_INSTALL"
 if [[ ! -f "$TMPDIR_INSTALL/kingmoat" ]]; then
-    # Some archives wrap in a subdirectory
-    SUBDIR=$(find "$TMPDIR_INSTALL" -type d -name "kingmoat*" | head -1)
-    [[ -n "$SUBDIR" ]] && mv "$SUBDIR"/* "$TMPDIR_INSTALL/"
+    # The archive wraps contents in a top-level package directory (e.g.
+    # kingmoat_v0.7.5-beta_linux_amd64/). Search exactly one level below the
+    # temp dir: -mindepth 1 keeps the temp dir itself (named kingmoat-install.*)
+    # from matching its own kingmoat* prefix, -maxdepth 1 matches the wrapper
+    # our packager produces without descending further.
+    SUBDIR=$(find "$TMPDIR_INSTALL" -mindepth 1 -maxdepth 1 -type d -name 'kingmoat*' | head -1)
+    if [[ -n "$SUBDIR" ]]; then
+        mv "$SUBDIR"/* "$TMPDIR_INSTALL/"
+    fi
 fi
 [[ -f "$TMPDIR_INSTALL/kingmoat" ]] || err "kingmoat binary not found in archive"
 log "extracted ✓"

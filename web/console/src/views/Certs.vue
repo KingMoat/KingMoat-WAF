@@ -120,6 +120,16 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="最近续签检查" width="190">
+          <template #default="{ row }">
+            <div class="km-mono" style="font-size:12px">{{ row.last_renew_attempt ? fmt(row.last_renew_attempt) : '尚未检查' }}</div>
+            <div v-if="row.last_renew_error" style="font-size:11.5px;margin-top:2px;color:var(--km-soft-red)">
+              <el-tooltip :content="row.last_renew_error" placement="top" :show-after="200">
+                <span>{{ renewErrShort(row.last_renew_error) }}</span>
+              </el-tooltip>
+            </div>
+          </template>
+        </el-table-column>
       </el-table>
     </el-card>
 
@@ -493,6 +503,12 @@ function acmeExpiry(row) {
   const d = Math.ceil((new Date(row.not_after).getTime() - Date.now()) / 86400000)
   if (d <= 0) return { text: '已过期', color: 'var(--km-soft-red)' }
   return { text: '剩余 ' + d + ' 天', color: row.status === 'expiring' ? 'var(--km-soft-amber)' : 'var(--km-txt-3)' }
+}
+
+// 最近续签检查错误摘要：首行截断展示，完整错误悬停可见
+function renewErrShort(msg) {
+  const s = String(msg || '').split('\n')[0].trim()
+  return s.length > 42 ? s.slice(0, 42) + '…' : s
 }
 
 function fmt(ts) { return fmtTime(ts) }

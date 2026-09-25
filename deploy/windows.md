@@ -15,7 +15,7 @@ C:\kingmoat\
 ```
 
 > 整个目录必须位于**本地磁盘**：SQLite 在 NFS/SMB/网盘同步目录上会报
-disk I/O error。控制台示例端口统一用 `28443`（`-console-addr` 可任意指定）。
+disk I/O error。控制台示例端口统一用 `8443`（`-console-addr` 可任意指定）。
 
 ## 2. 生成控制台管理员凭证（强烈建议）
 
@@ -36,11 +36,11 @@ echo 'YourStrongPassw0rd!' | .\kingmoat-cli.exe hash-password -stdin
 ```powershell
 cd C:\kingmoat
 .\kingmoat-cli.exe validate -config config.json
-.\kingmoat.exe -config config.json -console-addr 127.0.0.1:28443 -console-db C:\kingmoat\kingmoat.db
+.\kingmoat.exe -config config.json -console-addr 127.0.0.1:8443 -console-db C:\kingmoat\kingmoat.db
 ```
 
 - 数据面监听 `config.json` 的 `listen_http` / `listen_https`
-- 控制台：`https://127.0.0.1:28443/`（Web UI）、`/api/*`、`/metrics`
+- 控制台：`https://127.0.0.1:8443/`（Web UI）、`/api/*`、`/metrics`
   —— `-console-addr` 默认 **HTTPS**（首次启动自动生成 10 年期自签证书，浏览器
   告警属预期；可在控制台设置页替换正式证书）
 - 进程日志为 JSON 行输出到 stdout；审计数据在 `logs\audit.db`（SQLite，控制台
@@ -58,7 +58,7 @@ cd C:\kingmoat
   <name>KingMoat WAF</name>
   <description>KingMoat WAF data plane + console</description>
   <executable>C:\kingmoat\kingmoat.exe</executable>
-  <arguments>-config C:\kingmoat\config.json -console-addr 127.0.0.1:28443 -console-db C:\kingmoat\kingmoat.db</arguments>
+  <arguments>-config C:\kingmoat\config.json -console-addr 127.0.0.1:8443 -console-db C:\kingmoat\kingmoat.db</arguments>
   <workingdirectory>C:\kingmoat</workingdirectory>
   <env name="KINGMOAT_ADMIN_HASH">$env{KINGMOAT_ADMIN_HASH}</env>
   <startmode>Automatic</startmode>
@@ -75,7 +75,7 @@ cd C:\kingmoat
 ### 方式 B：NSSM
 
 ```powershell
-nssm install kingmoat C:\kingmoat\kingmoat.exe "-config C:\kingmoat\config.json -console-addr 127.0.0.1:28443 -console-db C:\kingmoat\kingmoat.db"
+nssm install kingmoat C:\kingmoat\kingmoat.exe "-config C:\kingmoat\config.json -console-addr 127.0.0.1:8443 -console-db C:\kingmoat\kingmoat.db"
 nssm set kingmoat AppDirectory C:\kingmoat
 nssm set kingmoat AppEnvironmentExtra KINGMOAT_ADMIN_HASH=<哈希>
 nssm start kingmoat
@@ -90,7 +90,7 @@ New-NetFirewallRule -DisplayName "KingMoat HTTPS" -Direction Inbound -Protocol T
 # 控制台默认只绑 127.0.0.1；如需远程管理，改为绑内网地址、放行管理网段，
 # 并在控制台「设置」页配置 console.allowed_ips 白名单（IP/CIDR 列表，
 # 对控制台所有请求生效含登录；为空表示不限制）
-New-NetFirewallRule -DisplayName "KingMoat Console" -Direction Inbound -Protocol TCP -LocalPort 28443 -Action Allow -RemoteAddress 198.51.100.0/24
+New-NetFirewallRule -DisplayName "KingMoat Console" -Direction Inbound -Protocol TCP -LocalPort 8443 -Action Allow -RemoteAddress 198.51.100.0/24
 #                                                                            ^ 示例网段（RFC 5737 文档段），替换为实际管理网段
 ```
 

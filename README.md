@@ -99,6 +99,8 @@ KingMoat 是一个开源、纯 Go 实现的 **All-in-one Web 应用防火墙**�
 curl -fsSL https://gitee.com/kingmoat/KingMoat-WAF/raw/main/deploy/install.sh | bash
 ```
 
+安装过程交互选择端口，默认数据面 `80/443`、控制台 `8443`；端口被占用会要求重选，也可用 `-y --http-port/--https-port/--console-port` 非交互指定。80/443 为特权端口：一键部署以 root + `CAP_NET_BIND_SERVICE` 运行，可直接绑定。
+
 或手动部署（macOS / Windows / 任意平台）：
 
 ```bash

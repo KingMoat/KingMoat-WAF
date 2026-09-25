@@ -10,7 +10,7 @@ Linux（Debian 12+ / Ubuntu 24.04+ / openEuler 22.03+）可跳过本文档全部
 curl -fsSL https://gitee.com/kingmoat/KingMoat-WAF/raw/main/deploy/install.sh | bash
 ```
 
-脚本自动安装依赖、下载最新 Release、交互式选安装/数据目录、注册 systemd 守护并自启动。详见脚本头部注释与下方第 3 节（路径 B）。
+脚本自动安装依赖、下载最新 Release、交互式选安装/数据目录与端口（默认数据面 80/443、控制台 8443，端口被占用会要求重选）、注册 systemd 守护并自启动。详见脚本头部注释与下方第 3 节（路径 B）。
 
 | 文件 | 用途 |
 |---|---|
@@ -25,7 +25,7 @@ curl -fsSL https://gitee.com/kingmoat/KingMoat-WAF/raw/main/deploy/install.sh | 
 
 KingMoat 是**纯 Go 单二进制**：数据面（反向代理 + WAF）与控制台（Web UI + REST API + SQLite 配置库）在同一进程内。
 
-- **all-in-one（推荐）**：`kingmoat -config config.json -console-addr :28443`。`-console-addr` 一旦指定即启用内嵌控制台，配置持久化到 SQLite（`-console-db`，默认工作目录下 `kingmoat.db`），控制台发布配置热生效、无需重启。
+- **all-in-one（推荐）**：`kingmoat -config config.json -console-addr :8443`。`-console-addr` 一旦指定即启用内嵌控制台，配置持久化到 SQLite（`-console-db`，默认工作目录下 `kingmoat.db`），控制台发布配置热生效、无需重启。
 - **static（静态配置文件模式）**：只给 `-config`、不给 `-console-addr`。无控制台、无热更新，配置即 `config.json` 本身。适合嵌入式/极简场景，本文不再展开。
 
 > 本文档默认 all-in-one。二进制与 `kingmoat-cli` 工具从 [Releases](https://gitee.com/kingmoat/KingMoat-WAF/releases) 下载，或按仓库根 README 自行构建。
@@ -42,15 +42,15 @@ KingMoat 是**纯 Go 单二进制**：数据面（反向代理 + WAF）与控制
 
 | 端口 | 用途 | 来源 |
 |---|---|---|
-| `:80` / `:443`（可自定义，如 `:8080`/`:8443`） | **数据面**：业务流量入口。由配置的 `listen_http` / `listen_https` 决定 | 访客 |
-| `:28443`（示例，可任意） | **控制台**：Web UI + `/api/*` + `/metrics`。由 `-console-addr` 决定，**默认 HTTPS（自签证书）** | 管理员 |
+| `:80` / `:443`（一键部署默认；可自定义） | **数据面**：业务流量入口。由配置的 `listen_http` / `listen_https` 决定 | 访客 |
+| `:8443`（一键部署默认，可任意） | **控制台**：Web UI + `/api/*` + `/metrics`。由 `-console-addr` 决定，**默认 HTTPS（自签证书）** | 管理员 |
 | （可选）`-console-listen-http` | 控制台额外明文 HTTP 监听。仅建议内网排障用，勿暴露公网 | 管理员 |
 
 要点：
 
 - 数据面端口在**控制台配置里改**（站点/监听设置），改完热生效；重启后沿用控制台里的激活配置，而不是磁盘上的 `config.json` 种子（种子仅在首次初始化配置库时导入）。
 - 非 root 监听 80/443：Linux 用 systemd 单元自带的 `CAP_NET_BIND_SERVICE` 能力（见 3.3），无需 root 运行。**Docker 例外**：distroless 非 root 容器内改用非特权端口 `:8080`/`:8443`，宿主侧 80/443 由端口映射提供（见第 2 节）。
-- 控制台端口建议用非常见高位端口（如 `:28443`）并只对管理网段放行。
+- 控制台端口默认 8443；公网/跨网段部署建议改为非常见高位端口并只对管理网段放行。
 
 ### 1.3 防火墙放行清单
 
@@ -61,7 +61,7 @@ KingMoat 是**纯 Go 单二进制**：数据面（反向代理 + WAF）与控制
 firewall-cmd --permanent --add-port=80/tcp
 firewall-cmd --permanent --add-port=443/tcp
 # console: admin networks only (example: 198.51.100.0/24, RFC 5737 test range)
-firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=198.51.100.0/24 port port=28443 protocol=tcp accept'
+firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=198.51.100.0/24 port port=8443 protocol=tcp accept'
 firewall-cmd --reload
 ```
 
@@ -197,16 +197,16 @@ systemctl status kingmoat
 - **非 root 运行**：`User=kingmoat` + `AmbientCapabilities=CAP_NET_BIND_SERVICE`，只授予绑定 80/443 低端口的能力，其余能力全无。
 - 沙箱加固：`NoNewPrivileges` / `ProtectSystem=strict` / `ProtectHome` / `PrivateTmp`；数据目录 `/var/lib/kingmoat` 通过 `StateDirectory`/`ReadWritePaths` 保持可写（配置库、审计日志、证书库都在这里写）。
 - 环境变量从 `/etc/kingmoat/env` 读入（`KINGMOAT_ADMIN_HASH`、可选 `KINGMOAT_ADMIN_TOTP`、`KINGMOAT_AI_API_KEY`）。
-- 启动参数：`-config /etc/kingmoat/config.json -console-addr 127.0.0.1:28443 -console-db /var/lib/kingmoat/kingmoat.db`。
+- 启动参数：`-config /etc/kingmoat/config.json -console-addr 127.0.0.1:8443 -console-db /var/lib/kingmoat/kingmoat.db`。
 
 ```bash
 # console reachable?
-curl -k https://127.0.0.1:28443/api/status
+curl -k https://127.0.0.1:8443/api/status
 # process logs go to journald (JSON lines)
 journalctl -u kingmoat -f
 ```
 
-> 默认单元把控制台绑在 `127.0.0.1:28443`（仅本机可访问）。需要远程管理时，把 `-console-addr` 改为内网管理地址（如 `198.51.100.10:28443`，RFC 5737 示例），同步放行防火墙，并在控制台「设置」里配置 `console.allowed_ips` 白名单（见 5.3）。
+> 默认单元把控制台绑在 `127.0.0.1:8443`（仅本机可访问）。需要远程管理时，把 `-console-addr` 改为内网管理地址（如 `198.51.100.10:8443`，RFC 5737 示例），同步放行防火墙，并在控制台「设置」里配置 `console.allowed_ips` 白名单（见 5.3）。
 
 ## 4. 路径 C：Windows（Path C: Windows Server）
 
@@ -217,7 +217,7 @@ journalctl -u kingmoat -f
 cd C:\kingmoat
 # 2. manual smoke test (console is HTTPS on the -console-addr port)
 .\kingmoat-cli.exe validate -config config.json
-.\kingmoat.exe -config config.json -console-addr 127.0.0.1:28443 -console-db C:\kingmoat\kingmoat.db
+.\kingmoat.exe -config config.json -console-addr 127.0.0.1:8443 -console-db C:\kingmoat\kingmoat.db
 # 3. register as a service with WinSW (recommended) or NSSM, then:
 .\kingmoat-service.exe install ; .\kingmoat-service.exe start
 # 4. open firewall for the data plane (and console from admin networks only)
@@ -228,13 +228,13 @@ New-NetFirewallRule -DisplayName "KingMoat HTTP" -Direction Inbound -Protocol TC
 
 ### 5.1 登录与改密
 
-- [ ] 浏览器打开 `https://<控制台地址>:28443/`——自签证书告警属预期（引导证书为 10 年期自签），继续访问即可；
+- [ ] 浏览器打开 `https://<控制台地址>:8443/`——自签证书告警属预期（引导证书为 10 年期自签），继续访问即可；
 - [ ] 用内置引导账号 `kmadmin / KingMoat@2026` 登录，**首次登录强制修改密码**——设置强口令（这是产品唯一自动创建的账号）；
 - [ ] 建议启用 MFA（TOTP）并为团队建立独立账号（RBAC：admin / operator / auditor），`kmadmin` 留作应急。
 
 ### 5.2 监听地址与控制台暴露面
 
-- [ ] 控制台默认建议只绑回环或内网管理地址（`-console-addr 127.0.0.1:28443` 或内网 IP）；
+- [ ] 控制台默认建议只绑回环或内网管理地址（`-console-addr 127.0.0.1:8443` 或内网 IP）；
 - [ ] 若确需更大范围访问，**必须**同时配置 `console.allowed_ips` 白名单（控制台「设置」页，或配置文件 `console.allowed_ips`，支持 IP/CIDR 列表）。白名单对控制台**所有**请求生效（含登录接口），不在名单内的来源一律 403；为空表示不限制；
 - [ ] 确认没有把控制台端口对公网放行（`0.0.0.0` 上裸暴露控制台 = 把管理面交给全网扫描器；默认凭据窗口期内风险最高，务必先完成 5.1）。
 
@@ -330,7 +330,7 @@ Docker：替换镜像 tag 后 `docker compose up -d`。Windows：停服务 → �
 ## 7. 常见问题（FAQ）
 
 **Q1：启动报 `bind: address already in use` / 端口占用？**
-数据面或控制台端口被其他进程抢占（常见：IIS/Nginx/Apache 占 80/443）。定位：`sudo ss -lntp | grep -E ':(80|443|28443)'`（Windows：`netstat -ano | findstr :443`）。要么停掉占用者，要么改 `listen_http/listen_https` 与 `-console-addr`。另外控制台发布配置时会预探测监听端口，端口被占的发布会以 400 报错拒绝，不会导致启动失败。
+数据面或控制台端口被其他进程抢占（常见：IIS/Nginx/Apache 占 80/443）。定位：`sudo ss -lntp | grep -E ':(80|443|8443)'`（Windows：`netstat -ano | findstr :443`）。要么停掉占用者，要么改 `listen_http/listen_https` 与 `-console-addr`。另外控制台发布配置时会预探测监听端口，端口被占的发布会以 400 报错拒绝，不会导致启动失败。
 
 **Q2：SQLite 报 `disk I/O error` / `database is locked` / 配置库打不开？**
 数据目录被放在了网络盘（NFS/SMB/网盘同步目录/云盘挂载）上——SQLite 不支持这类文件系统。把数据目录移回本地磁盘（见 1.4），Docker 场景检查 volume 挂载源；恢复从最近备份还原。

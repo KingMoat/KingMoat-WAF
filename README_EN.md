@@ -87,6 +87,8 @@ What small teams actually need is simple: **easy to install, easy to understand,
 curl -fsSL https://gitee.com/kingmoat/KingMoat-WAF/raw/main/deploy/install.sh | bash
 ```
 
+The installer picks ports interactively; defaults are data plane `80/443` and console `8443`. Occupied ports are re-prompted, or pass `-y --http-port/--https-port/--console-port` for non-interactive runs. 80/443 are privileged ports: the one-click deploy runs as root with `CAP_NET_BIND_SERVICE`, so they bind fine.
+
 Or manual deployment (macOS / Windows / any platform):
 
 ```bash

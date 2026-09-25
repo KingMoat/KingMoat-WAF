@@ -10,7 +10,7 @@ Usage:  powershell -File scripts\smoke.ps1
 Exit 0 = all checks passed.
 #>
 param(
-    [int]$DataPort = 18080,
+    [int]$DataPort = 8080,
     [int]$ConsolePort = 18899,
     [int]$UpstreamPort = 19099,
     [string]$WorkDir = (Join-Path $env:TEMP ("kingmoat-smoke-" + [guid]::NewGuid().ToString("N").Substring(0, 8)))

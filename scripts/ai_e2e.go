@@ -48,7 +48,7 @@ func main() {
 	st, sb := do("GET", "/api/config", "")
 	fmt.Println("get config:", st)
 	_ = sb
-	aiCfg := `{"note":"ai-toggle","config":{"listen_http":":18080","sites":[{"domains":["a.local"],"upstream":{"nodes":[{"address":"127.0.0.1:19099"}]}}],"ai":{"enabled":true,"provider":{"template":"openai","base_url":"https://api.openai.com/v1","model":"gpt-4o-mini","api_key_env":"KINGMOAT_AI_API_KEY"}}}}`
+	aiCfg := `{"note":"ai-toggle","config":{"listen_http":":8080","sites":[{"domains":["a.local"],"upstream":{"nodes":[{"address":"127.0.0.1:19099"}]}}],"ai":{"enabled":true,"provider":{"template":"openai","base_url":"https://api.openai.com/v1","model":"gpt-4o-mini","api_key_env":"KINGMOAT_AI_API_KEY"}}}}`
 	st, sb = do("POST", "/api/config/publish", aiCfg)
 	fmt.Println("publish ai:", st, sb)
 

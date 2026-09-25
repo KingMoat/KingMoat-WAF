@@ -23,16 +23,23 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Re-exec guard: when piped in (curl | bash), stdin is the script itself and
 # the interactive "read" prompts below would swallow script lines. Re-run
-# from a temp copy so stdin is the terminal again.
+# from a temp copy read from a file instead. KINGMOAT_REEXEC carries the
+# copy's path into the second pass: it keeps this guard from re-triggering
+# (fd0 is still not a tty there) and lets the EXIT trap below remove the
+# copy.
 # ---------------------------------------------------------------------------
-if [[ ! -t 0 ]]; then
+if [[ ! -t 0 && -z "${KINGMOAT_REEXEC:-}" ]]; then
     _reexec="$(mktemp /tmp/kingmoat-install.XXXXXX.sh)"
     cat > "$_reexec"
     if [[ ! -s "$_reexec" ]]; then
         rm -f "$_reexec"
-        err "stdin is not a terminal and no script was piped in. Run: bash $0"
+        printf '\033[1;31m[error]\033[0m stdin is not a terminal and no script was piped in. Run: bash %s\n' "$0" >&2
+        exit 1
     fi
-    exec bash "$_reexec" "$@"
+    KINGMOAT_REEXEC="$_reexec" exec bash "$_reexec" "$@"
+fi
+if [[ -n "${KINGMOAT_REEXEC:-}" ]]; then
+    trap 'rm -f "$KINGMOAT_REEXEC" 2>/dev/null; :' EXIT
 fi
 
 # ---------------------------------------------------------------------------
@@ -179,7 +186,9 @@ resolve_version
 # Download
 # ---------------------------------------------------------------------------
 TMPDIR_INSTALL=$(mktemp -d /tmp/kingmoat-install.XXXXXX)
-trap 'rm -rf "$TMPDIR_INSTALL"' EXIT
+# Also remove the re-exec copy of this script (path in KINGMOAT_REEXEC); the
+# trailing ":" keeps a failed rm from overriding the script's exit status.
+trap 'rm -rf "$TMPDIR_INSTALL"; if [[ -n "${KINGMOAT_REEXEC:-}" ]]; then rm -f "$KINGMOAT_REEXEC" 2>/dev/null; fi; :' EXIT
 
 PKG_NAME="kingmoat_${RELEASE_TAG}_linux_${PKG_ARCH}"
 # Gitee asset naming convention (no dot in tag): tar.gz

@@ -25,12 +25,16 @@ jobs:
           cache: true
       - name: Build
         run: go build ./...
+      - name: Build (release tags)
+        run: go build -tags no_fs_access ./...
       - name: Vet
         run: go vet ./...
       - name: License compliance check
         run: go run ./scripts/gen-licenses -check
       - name: Test
         run: go test ./... -race -count=1
+      - name: Test (release tags)
+        run: go test -tags no_fs_access ./... -count=1
 
   docker:
     name: docker build

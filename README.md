@@ -147,6 +147,8 @@ go vet ./...     # 静态检查
 go test ./...    # 单元 + 集成测试（CRS 检测回归 / 配置中心 / API / 热更新）
 ```
 
+> 发布产物构建（`scripts/build.ps1` / `scripts/build.sh` / `deploy/Dockerfile`）统一带 `-tags no_fs_access`（coraza 跳过 /tmp 可写性探测，适配 systemd 严格沙箱）；自行分步构建部署二进制时请携带同一标签。
+
 CI：`.github/workflows/ci.yml`（build / vet / test）。架构设计与依赖许可证合规策略见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)；配置字段级说明见 [docs/CONFIG.md](docs/CONFIG.md)；更新历史见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 📚 作为库嵌入（SDK 模式）

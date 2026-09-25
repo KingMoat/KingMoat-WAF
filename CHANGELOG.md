@@ -18,6 +18,7 @@
 ### 工程
 
 - CI 新增 shellcheck 步骤（扫描 deploy/install.sh 与 scripts/build.sh，部署脚本静态检查进门禁）；工作流权限收敛为最小化（默认只读，仅发布步骤保留写权限）
+- 构建入口统一携带 coraza `no_fs_access` 标签（构建脚本、Dockerfile、CI 冒烟与测试全链路对齐），发布产物与开发/容器变体行为一致
 
 ## v0.7.5-beta (2026-09-25)
 

@@ -6,8 +6,8 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=dev" -o /out/kingmoat ./cmd/kingmoat \
- && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=dev" -o /out/kingmoat-cli ./cmd/kingmoat-cli
+RUN CGO_ENABLED=0 go build -trimpath -tags no_fs_access -ldflags "-s -w -X main.version=dev" -o /out/kingmoat ./cmd/kingmoat \
+ && CGO_ENABLED=0 go build -trimpath -tags no_fs_access -ldflags "-s -w -X main.version=dev" -o /out/kingmoat-cli ./cmd/kingmoat-cli
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/kingmoat /kingmoat

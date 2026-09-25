@@ -134,6 +134,8 @@ go vet ./...     # static checks
 go test ./...    # unit + integration tests (CRS regression / config center / API / hot reload)
 ```
 
+> Release artifacts (`scripts/build.ps1` / `scripts/build.sh` / `deploy/Dockerfile`) build with `-tags no_fs_access` (skips coraza's /tmp writability probe for hardened systemd sandboxes); carry the same tag when building a deployable binary yourself.
+
 CI: `.github/workflows/ci.yml` (build / vet / test). Architecture design and dependency license compliance: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); config reference: [docs/CONFIG.md](docs/CONFIG.md); release history: [CHANGELOG.md](CHANGELOG.md).
 
 ## 📚 SDK Mode

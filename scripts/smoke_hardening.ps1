@@ -68,7 +68,7 @@ try {
 
     Push-Location $repo
     $go = "$env:USERPROFILE\go-sdk\go\bin\go.exe"
-    & $go build -o (Join-Path $WorkDir 'kingmoat.exe') ./cmd/kingmoat
+    & $go build -tags no_fs_access -o (Join-Path $WorkDir 'kingmoat.exe') ./cmd/kingmoat
     $buildOk = ($LASTEXITCODE -eq 0)
     Pop-Location
     Check 'build kingmoat.exe' $buildOk ("go build exit " + $LASTEXITCODE)

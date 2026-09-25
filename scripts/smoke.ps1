@@ -92,7 +92,7 @@ try {
 
     # 1. build
     Push-Location $repo
-    & $go build -o (Join-Path $WorkDir 'kingmoat.exe') ./cmd/kingmoat
+    & $go build -tags no_fs_access -o (Join-Path $WorkDir 'kingmoat.exe') ./cmd/kingmoat
     $buildOk = ($LASTEXITCODE -eq 0)
     Pop-Location
     Check 'build kingmoat.exe' $buildOk ("go build exit " + $LASTEXITCODE)

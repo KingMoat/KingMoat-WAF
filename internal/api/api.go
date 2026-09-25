@@ -290,6 +290,10 @@ type Options struct {
 	// registry for GET /api/policy/disable-state (nil = endpoint reports an
 	// empty state, e.g. static assemblies without a reloadable plane).
 	DisableStateFn func() *stages.StageDisableRegistry
+	// ACME hosts the certificate-library issuance queue (async ACME
+	// requests, status queries, cert-library entries; nil = the
+	// /api/certs/acme/* endpoints report "not available").
+	ACME *certmgr.Service
 }
 
 // Server is the control-plane HTTP server.
@@ -392,6 +396,9 @@ func New(opts Options) *Server {
 	mux.HandleFunc("GET /api/certificates/ca", s.handleLocalCAGet)
 	mux.HandleFunc("POST /api/certificates/ca", s.handleLocalCACreate)
 	mux.HandleFunc("POST /api/certificates/ca/sign", s.handleLocalCASign)
+	mux.HandleFunc("POST /api/certs/acme/request", s.handleACMERequest)
+	mux.HandleFunc("GET /api/certs/acme/request", s.handleACMERequestStatus)
+	mux.HandleFunc("GET /api/certs/acme/entries", s.handleACMEEntries)
 	if opts.ConsoleTLS != nil {
 		mux.HandleFunc("GET /api/console/tls", s.handleConsoleTLSGet)
 		mux.HandleFunc("POST /api/console/tls", s.handleConsoleTLSApply)
@@ -751,6 +758,76 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCertificates(w http.ResponseWriter, r *http.Request) {
 	_, cfg := s.opts.Center.Current()
 	writeJSON(w, http.StatusOK, certmgr.InspectSites(cfg))
+}
+
+// handleACMERequest submits an asynchronous ACME issuance request for ONE
+// domain (cert-library "request first, attach site later" flow). It answers
+// 202 immediately with the task; progress is polled via the status endpoint.
+// Single-flight and cache-idempotent submissions answer with the existing
+// task instead of issuing again.
+func (s *Server) handleACMERequest(w http.ResponseWriter, r *http.Request) {
+	svc := s.opts.ACME
+	if svc == nil {
+		writeErr(w, http.StatusNotImplemented, simpleError("当前运行模式未启用证书库 ACME 申请"))
+		return
+	}
+	// HTTP-01 and TLS-ALPN-01 both need the global data-plane listeners;
+	// without them the ACME servers could never reach the challenge handlers.
+	_, cfg := s.opts.Center.Current()
+	if cfg.ListenHTTP == "" || cfg.ListenHTTPS == "" {
+		writeErr(w, http.StatusBadRequest, simpleError("请先在站点防护页配置全局 HTTP/HTTPS 监听地址，再申请 ACME 证书"))
+		return
+	}
+	var req struct {
+		Domain  string `json:"domain"`
+		Email   string `json:"email"`
+		Staging bool   `json:"staging"`
+	}
+	if err := decodeBody(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	task, err := svc.Request(req.Domain, req.Email, req.Staging)
+	if err != nil {
+		switch {
+		case errors.Is(err, certmgr.ErrCooldown):
+			writeErr(w, http.StatusTooManyRequests, err)
+		default:
+			writeErr(w, http.StatusBadRequest, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusAccepted, task)
+}
+
+// handleACMERequestStatus returns a snapshot of one issuance task.
+func (s *Server) handleACMERequestStatus(w http.ResponseWriter, r *http.Request) {
+	svc := s.opts.ACME
+	if svc == nil {
+		writeErr(w, http.StatusNotImplemented, simpleError("当前运行模式未启用证书库 ACME 申请"))
+		return
+	}
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		writeErr(w, http.StatusBadRequest, simpleError("缺少任务 id 参数"))
+		return
+	}
+	task, ok := svc.Task(id)
+	if !ok {
+		writeErr(w, http.StatusNotFound, simpleError("申请任务不存在或已被清理"))
+		return
+	}
+	writeJSON(w, http.StatusOK, task)
+}
+
+// handleACMEEntries lists the ACME-managed cert-library entries read live
+// from both cache directories (production first, then staging).
+func (s *Server) handleACMEEntries(w http.ResponseWriter, r *http.Request) {
+	if s.opts.ACME == nil {
+		writeJSON(w, http.StatusOK, []certmgr.CertEntry{})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.opts.ACME.Entries())
 }
 
 // handleStatus returns build/runtime info.

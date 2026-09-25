@@ -168,11 +168,22 @@ func ACMEHosts(cfg *config.Config) []string {
 	return out
 }
 
+// stagingDirectoryURL is the Let's Encrypt staging CA (testing endpoint).
+const stagingDirectoryURL = "https://acme-staging-v02.api.letsencrypt.org/directory"
+
 // ACMEManager builds an autocert.Manager for all sites with acme enabled,
-// or nil when no site uses ACME. cacheDir persists issued certificates and
-// account keys across restarts.
+// or nil when neither a site uses ACME nor a cached certificate exists.
+// cacheDir is the production cache base (staging certificates live in the
+// sibling "-staging" directory, gate item S-2). The HostWhitelist merges the
+// site domains with every domain already present in a cache directory: a
+// certificate requested from the cert library without a site ("request
+// first, attach site later") must keep being served and renewed by rebuilt
+// managers, and the merge persists across restarts because it reads the
+// cache directories.
 func ACMEManager(cfg *config.Config, cacheDir string, globalEmail string) *autocert.Manager {
 	hosts := ACMEHosts(cfg)
+	cached := CachedHosts(cacheDir)
+	cachedStaging := CachedHosts(cacheDir + stagingCacheSuffix)
 	email := ""
 	staging := false
 	for i := range cfg.Sites {
@@ -188,19 +199,33 @@ func ACMEManager(cfg *config.Config, cacheDir string, globalEmail string) *autoc
 		}
 		staging = staging || s.ACME.Staging
 	}
-	if len(hosts) == 0 {
+	if len(hosts) == 0 && len(cached) == 0 && len(cachedStaging) == 0 {
 		return nil
 	}
+	whitelist := dedupStrings(append(append(hosts, cached...), cachedStaging...))
 	m := &autocert.Manager{
 		Cache:      autocert.DirCache(cacheDir),
-		HostPolicy: autocert.HostWhitelist(hosts...),
+		HostPolicy: autocert.HostWhitelist(whitelist...),
 		Email:      email,
 		Prompt:     autocert.AcceptTOS,
 	}
 	if staging {
-		m.Client = &acme.Client{DirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory"}
+		m.Client = &acme.Client{DirectoryURL: stagingDirectoryURL}
 	}
 	return m
+}
+
+// dedupStrings preserves first-appearance order.
+func dedupStrings(in []string) []string {
+	seen := map[string]bool{}
+	out := in[:0:0]
+	for _, s := range in {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // ACMEHolder dynamically holds the ACME manager for the ACTIVE configuration.
@@ -211,10 +236,19 @@ func ACMEManager(cfg *config.Config, cacheDir string, globalEmail string) *autoc
 // uses ACME, which disables ACME cleanly (challenge requests fall through to
 // the data plane). ACMEManager construction is a pure in-memory operation, so
 // a rebuild itself cannot fail: the swap always lands.
+//
+// The per-publish full rebuild is a deliberate trade-off (review item S-1
+// kept as-is): publish/ACME changes are low-frequency, and a singleton
+// manager with incremental whitelist mutation would add shared-state
+// complexity for no measurable gain.
 type ACMEHolder struct {
 	mgr      atomic.Pointer[autocert.Manager]
 	cacheDir string
 }
+
+// BaseDir returns the production cache directory base (staging certificates
+// live in the sibling "-staging" directory).
+func (h *ACMEHolder) BaseDir() string { return h.cacheDir }
 
 // NewACMEHolder returns an empty holder persisting issued certificates in
 // cacheDir.

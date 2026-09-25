@@ -331,6 +331,19 @@ func main() {
 		logger.Info("ACME certificate management enabled", "hosts", len(certmgr.ACMEHosts(activeCfg)))
 	}
 
+	// Certificate-library ACME service: async issuance requests, status
+	// queries and cert-library entries (API endpoints). It shares the
+	// holder's cache base so requested certificates are immediately
+	// servable by the data plane; the global-email fallback resolves the
+	// ACTIVE config's AcmeEmail on every use (follows hot reload).
+	acmeSvc := certmgr.NewService(acmeHolder, func() string {
+		if center == nil {
+			return activeCfg.AcmeEmail
+		}
+		_, c := center.Current()
+		return c.AcmeEmail
+	})
+
 	// rebuildACME swaps the ACME manager to one built from the configuration
 	// just applied to the data plane, keeping the HostWhitelist in sync with
 	// the live site router (new domains issue on demand, removed domains
@@ -556,6 +569,7 @@ func main() {
 				return k
 			},
 			AssetsRef: assetsRef,
+			ACME:      acmeSvc,
 			PProf:   os.Getenv("KINGMOAT_PPROF") != "", // /debug/pprof behind console auth
 			GroupsFn: func() *ipgroups.Manager { return handler.Groups() },
 			DisableStateFn: func() *stages.StageDisableRegistry { return handler.DisableState() },

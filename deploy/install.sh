@@ -25,8 +25,7 @@ set -euo pipefail
 # the interactive "read" prompts below would swallow script lines. Re-run
 # from a temp copy read from a file instead. KINGMOAT_REEXEC carries the
 # copy's path into the second pass: it keeps this guard from re-triggering
-# (fd0 is still not a tty there) and lets the EXIT trap below remove the
-# copy.
+# and lets the EXIT trap below remove the copy.
 # ---------------------------------------------------------------------------
 if [[ ! -t 0 && -z "${KINGMOAT_REEXEC:-}" ]]; then
     _reexec="$(mktemp /tmp/kingmoat-install.XXXXXX.sh)"
@@ -36,6 +35,12 @@ if [[ ! -t 0 && -z "${KINGMOAT_REEXEC:-}" ]]; then
         printf '\033[1;31m[error]\033[0m stdin is not a terminal and no script was piped in. Run: bash %s\n' "$0" >&2
         exit 1
     fi
+    # Best effort: hand the second pass a terminal on stdin so the
+    # interactive prompts can read real input when the pipe came from an
+    # interactive session. Without a tty (CI, nested automation) this is
+    # skipped and the interactive reads below fall back to their defaults
+    # on EOF.
+    { exec 0</dev/tty; } 2>/dev/null || true
     KINGMOAT_REEXEC="$_reexec" exec bash "$_reexec" "$@"
 fi
 if [[ -n "${KINGMOAT_REEXEC:-}" ]]; then
@@ -244,24 +249,26 @@ chmod +x "$TMPDIR_INSTALL/kingmoat"
 # ---------------------------------------------------------------------------
 INSTALL_DIR="/opt/kingmoat"
 if [[ $NONINTERACTIVE == false ]]; then
+    # Every prompt tolerates EOF (piped install without a terminal): read
+    # keeps the default and the install continues unattended.
     echo ""
     printf '\033[1;36m── 安装目录 ──\033[0m\n'
-    read -rp "安装目录 [$INSTALL_DIR]: " INPUT_INSTALL
-    [[ -n "$INPUT_INSTALL" ]] && INSTALL_DIR="$INPUT_INSTALL"
+    read -rp "安装目录 [$INSTALL_DIR]: " INPUT_INSTALL || true
+    [[ -n "${INPUT_INSTALL:-}" ]] && INSTALL_DIR="$INPUT_INSTALL"
 
     printf '\033[1;36m── 数据目录 ──\033[0m\n'
     echo "数据目录存放 SQLite 配置库、审计日志与证书（必须是本机磁盘，不能是 NFS/SMB）。"
     DEFAULT_DATA="/var/lib/kingmoat"
-    read -rp "数据目录 [$DEFAULT_DATA]: " INPUT_DATA
-    if [[ -n "$INPUT_DATA" ]]; then
+    read -rp "数据目录 [$DEFAULT_DATA]: " INPUT_DATA || true
+    if [[ -n "${INPUT_DATA:-}" ]]; then
         DATA_DIR="$INPUT_DATA"
     elif [[ -z "$DATA_DIR" ]]; then
         DATA_DIR="$DEFAULT_DATA"
     fi
 
     printf '\033[1;36m── 控制台端口 ──\033[0m\n'
-    read -rp "控制台 HTTPS 端口 [$CONSOLE_PORT_DEFAULT]: " INPUT_PORT
-    [[ -n "$INPUT_PORT" ]] && CONSOLE_PORT_DEFAULT="$INPUT_PORT"
+    read -rp "控制台 HTTPS 端口 [$CONSOLE_PORT_DEFAULT]: " INPUT_PORT || true
+    [[ -n "${INPUT_PORT:-}" ]] && CONSOLE_PORT_DEFAULT="$INPUT_PORT"
 fi
 
 # Validate data dir is on a local filesystem (create it first so df can

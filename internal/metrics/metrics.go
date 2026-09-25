@@ -224,16 +224,29 @@ func rollDailyDay() {
 		return
 	}
 	dailyDayMu.Lock()
-	if dailyDay.Load() != day {
-		DailyRequestsTotal.resetAll()
-		// The recovered baseline belongs to the previous day once the
-		// clock crossed midnight; drop it along with the live counters.
-		dailyBaseMu.Lock()
-		dailyBase = nil
-		dailyBaseMu.Unlock()
-		dailyDay.Store(day)
+	defer dailyDayMu.Unlock()
+	rollDailyDayLocked(day)
+}
+
+// rollDailyDayLocked performs the rollover with dailyDayMu held: the final
+// counts are folded into the previous day's history key before the live
+// counters are dropped, so a request-side rollover no longer loses the last
+// flush interval, and the fold cannot interleave with a concurrent flush's
+// history-key selection (overwrite semantics make repeated folds idempotent).
+func rollDailyDayLocked(day int64) {
+	if dailyDay.Load() == day {
+		return
 	}
-	dailyDayMu.Unlock()
+	if cur := dailyDay.Load(); cur != 0 {
+		recordDailyHistoryLocked(dayKeyString(cur))
+	}
+	DailyRequestsTotal.resetAll()
+	// The recovered baseline belongs to the previous day once the
+	// clock crossed midnight; drop it along with the live counters.
+	dailyBaseMu.Lock()
+	dailyBase = nil
+	dailyBaseMu.Unlock()
+	dailyDay.Store(day)
 }
 
 // DailyReqInc counts one request for the per-site "today" card.
@@ -271,6 +284,23 @@ func LoadDailyRequestsBase(path string) {
 	dailyDay.Store(localDayKey(time.Now()))
 }
 
+// foldDailyAndRoll folds the live daily counters into the per-day history
+// and rolls the day forward as one critical section under dailyDayMu:
+// right after local midnight the pending counts belong to the previous day
+// and must land on that date, and the history-key selection and the counter
+// read must not interleave with a concurrent rollover — a reset in between
+// would make the fold overwrite the previous day's history with zeros.
+func foldDailyAndRoll() {
+	dailyDayMu.Lock()
+	defer dailyDayMu.Unlock()
+	histKey := time.Now().Format("2006-01-02")
+	if cur := dailyDay.Load(); cur != 0 && cur != localDayKey(time.Now()) {
+		histKey = dayKeyString(cur)
+	}
+	recordDailyHistoryLocked(histKey)
+	rollDailyDayLocked(localDayKey(time.Now()))
+}
+
 // StartDailyRequestsPersist flushes baseline+live daily counters to the
 // state file every interval and once on shutdown, until ctx is cancelled.
 // When historyPath is non-empty the same flush also folds the counters into
@@ -280,15 +310,7 @@ func StartDailyRequestsPersist(ctx context.Context, dailyPath, historyPath strin
 		return
 	}
 	flush := func() {
-		// Fold the live counters into the per-day history BEFORE rolling:
-		// right after local midnight the pending counts belong to the
-		// previous day and must land on that date, not today's.
-		histKey := time.Now().Format("2006-01-02")
-		if cur := dailyDay.Load(); cur != 0 && cur != localDayKey(time.Now()) {
-			histKey = dayKeyString(cur)
-		}
-		recordDailyHistory(histKey)
-		rollDailyDay()
+		foldDailyAndRoll()
 		st := dailyReqState{Date: time.Now().Format("2006-01-02"), Counts: map[string]int64{}}
 		dailyBaseMu.RLock()
 		for k, v := range dailyBase {
@@ -345,8 +367,20 @@ func dayKeyString(cur int64) string {
 
 // recordDailyHistory folds the current daily counters (baseline+live,
 // keyed site\x00outcome) into history[dayKey] by outcome and prunes days
-// older than the retention window.
+// older than the retention window. The dailyDayMu round-trip keeps the
+// standalone form safe for tests and future callers; the flush path uses
+// recordDailyHistoryLocked under its own dailyDayMu hold.
 func recordDailyHistory(dayKey string) {
+	dailyDayMu.Lock()
+	defer dailyDayMu.Unlock()
+	recordDailyHistoryLocked(dayKey)
+}
+
+// recordDailyHistoryLocked is recordDailyHistory for callers already holding
+// dailyDayMu: the counter read and the history overwrite must stay atomic
+// relative to rollDailyDayLocked, or a midnight reset in between would be
+// folded as an empty snapshot over the previous day's history.
+func recordDailyHistoryLocked(dayKey string) {
 	sums := map[string]int64{}
 	dailyBaseMu.RLock()
 	for k, v := range dailyBase {

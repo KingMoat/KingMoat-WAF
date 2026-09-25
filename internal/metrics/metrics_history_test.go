@@ -49,6 +49,66 @@ func TestRecordDailyHistoryFoldsAndPrunes(t *testing.T) {
 	}
 }
 
+// TestRolloverFoldsFinalCountsIntoHistory verifies that the request-side
+// rollover folds the final counts into the previous day's history key before
+// wiping the live counters, and that subsequent same-day folds (flushes) no
+// longer overwrite that old day.
+func TestRolloverFoldsFinalCountsIntoHistory(t *testing.T) {
+	resetDaily(t)
+
+	DailyReqInc("a.local", "forwarded")
+	DailyReqInc("a.local", "forwarded")
+	DailyReqInc("a.local", "blocked")
+
+	yDate := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	// Pretend the live counters belong to yesterday and let the next
+	// request trigger the rollover.
+	dailyDay.Store(localDayKey(time.Now().AddDate(0, 0, -1)))
+	DailyReqInc("b.local", "challenged")
+
+	hist := SnapshotRequestsHistory()
+	if h := hist[yDate]; h == nil || h["forwarded"] != 2 || h["blocked"] != 1 {
+		t.Fatalf("rollover must fold final counts into history[%s]: %+v", yDate, hist[yDate])
+	}
+
+	// A later fold for the new day must not touch the old day.
+	recordDailyHistory(time.Now().Format("2006-01-02"))
+	hist = SnapshotRequestsHistory()
+	if h := hist[yDate]; h == nil || h["forwarded"] != 2 || h["blocked"] != 1 {
+		t.Fatalf("later fold must not overwrite history[%s]: %+v", yDate, hist[yDate])
+	}
+	if h := hist[time.Now().Format("2006-01-02")]; h == nil || h["challenged"] != 1 {
+		t.Fatalf("post-rollover fold must land on today: %+v", hist[time.Now().Format("2006-01-02")])
+	}
+}
+
+// TestFlushFoldKeepsYesterdayFinalCounts exercises the flush critical
+// section (foldDailyAndRoll) on the post-midnight path: the pending counts
+// belong to yesterday, and the fold-then-roll sequence must preserve them
+// on yesterday's history key instead of overwriting it with the post-roll
+// (empty) snapshot.
+func TestFlushFoldKeepsYesterdayFinalCounts(t *testing.T) {
+	resetDaily(t)
+
+	DailyReqInc("a.local", "forwarded")
+	DailyReqInc("a.local", "challenged")
+	yDate := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	dailyDay.Store(localDayKey(time.Now().AddDate(0, 0, -1)))
+
+	foldDailyAndRoll()
+
+	hist := SnapshotRequestsHistory()
+	if h := hist[yDate]; h == nil || h["forwarded"] != 1 || h["challenged"] != 1 {
+		t.Fatalf("flush must keep yesterday's final counts in history[%s]: %+v", yDate, hist[yDate])
+	}
+	if dailyDay.Load() != localDayKey(time.Now()) {
+		t.Fatalf("day key not advanced: %d", dailyDay.Load())
+	}
+	if m := SnapshotDailyRequestsBySite(); len(m) != 0 {
+		t.Fatalf("live counters must be reset after the rollover: %+v", m)
+	}
+}
+
 // TestRequestsHistoryPersist verifies the flush writes the history file and
 // LoadRequestsHistory restores it.
 func TestRequestsHistoryPersist(t *testing.T) {

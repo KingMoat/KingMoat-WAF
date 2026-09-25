@@ -21,33 +21,6 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Re-exec guard: when piped in (curl | bash), stdin is the script itself and
-# the interactive "read" prompts below would swallow script lines. Re-run
-# from a temp copy read from a file instead. KINGMOAT_REEXEC carries the
-# copy's path into the second pass: it keeps this guard from re-triggering
-# and lets the EXIT trap below remove the copy.
-# ---------------------------------------------------------------------------
-if [[ ! -t 0 && -z "${KINGMOAT_REEXEC:-}" ]]; then
-    _reexec="$(mktemp /tmp/kingmoat-install.XXXXXX.sh)"
-    cat > "$_reexec"
-    if [[ ! -s "$_reexec" ]]; then
-        rm -f "$_reexec"
-        printf '\033[1;31m[error]\033[0m stdin is not a terminal and no script was piped in. Run: bash %s\n' "$0" >&2
-        exit 1
-    fi
-    # Best effort: hand the second pass a terminal on stdin so the
-    # interactive prompts can read real input when the pipe came from an
-    # interactive session. Without a tty (CI, nested automation) this is
-    # skipped and the interactive reads below fall back to their defaults
-    # on EOF.
-    { exec 0</dev/tty; } 2>/dev/null || true
-    KINGMOAT_REEXEC="$_reexec" exec bash "$_reexec" "$@"
-fi
-if [[ -n "${KINGMOAT_REEXEC:-}" ]]; then
-    trap 'rm -f "$KINGMOAT_REEXEC" 2>/dev/null; :' EXIT
-fi
-
-# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 readonly GITEE_API="https://gitee.com/api/v5/repos/kingmoat/KingMoat-WAF"
@@ -68,7 +41,7 @@ err()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
 
 need_root() {
     if [[ $EUID -ne 0 ]]; then
-        err "please run as root (sudo bash $0)"
+        err "please run as root: re-run with sudo ('sudo bash install.sh', or re-run the piped install command with sudo)"
     fi
 }
 
@@ -80,6 +53,11 @@ DATA_DIR=""
 UNINSTALL=false
 NONINTERACTIVE=false
 
+# Parsing consumes "$@" via shift; keep the original list so the piped
+# re-exec guard below can hand the exact same options to the second pass
+# (parsing is idempotent and side-effect free).
+_ORIG_ARGS=("$@")
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --version)      [[ $# -ge 2 ]] || err "--version requires a value"; PINNED_VERSION="$2"; shift 2 ;;
@@ -89,6 +67,48 @@ while [[ $# -gt 0 ]]; do
         *)              err "unknown option: $1" ;;
     esac
 done
+
+# ---------------------------------------------------------------------------
+# Re-exec guard: when piped in (curl | bash), stdin is the script itself and
+# the interactive "read" prompts below would swallow script lines. Re-run
+# from a temp copy read from a file instead. KINGMOAT_REEXEC carries the
+# copy's path into the second pass: it keeps this guard from re-triggering
+# and lets the EXIT trap remove the copy.
+#
+# The guard only applies to runs that actually consume stdin interactively:
+# -y (non-interactive) and --uninstall never read from stdin, so they
+# proceed even on a non-tty fd0 (CI, `ssh host 'bash install.sh -y'`).
+# ---------------------------------------------------------------------------
+# Only trust a caller-provided KINGMOAT_REEXEC that looks like what this
+# script itself sets for the second pass: an absolute path under
+# /tmp/kingmoat-install.* pointing at an existing file. Anything else is
+# dropped so a forged value can neither bypass the guard nor leak into the
+# cleanup rm below.
+KINGMOAT_REEXEC="${KINGMOAT_REEXEC:-}"
+if [[ -n "$KINGMOAT_REEXEC" && ( $KINGMOAT_REEXEC != /* || $KINGMOAT_REEXEC != /tmp/kingmoat-install.* || ! -f $KINGMOAT_REEXEC ) ]]; then
+    KINGMOAT_REEXEC=""
+fi
+if [[ ! -t 0 && -z "$KINGMOAT_REEXEC" && $NONINTERACTIVE == false && $UNINSTALL == false ]]; then
+    _reexec="$(mktemp /tmp/kingmoat-install.XXXXXX)"
+    cat > "$_reexec"
+    if [[ ! -s "$_reexec" ]]; then
+        rm -f "$_reexec"
+        printf '\033[1;31m[error]\033[0m stdin is not a terminal and no script was piped in.\n' >&2
+        printf '\033[1;31m[error]\033[0m run: curl -fsSL https://gitee.com/kingmoat/KingMoat-WAF/raw/main/deploy/install.sh | bash\n' >&2
+        printf '\033[1;31m[error]\033[0m or:  bash install.sh [options]\n' >&2
+        exit 1
+    fi
+    # Best effort: hand the second pass a terminal on stdin so the
+    # interactive prompts can read real input when the pipe came from an
+    # interactive session. Without a tty (CI, nested automation) this is
+    # skipped and the interactive reads below fall back to their defaults
+    # on EOF.
+    { exec 0</dev/tty; } 2>/dev/null || true
+    KINGMOAT_REEXEC="$_reexec" exec bash "$_reexec" "${_ORIG_ARGS[@]}"
+fi
+if [[ -n "$KINGMOAT_REEXEC" ]]; then
+    trap 'rm -f "$KINGMOAT_REEXEC" 2>/dev/null; :' EXIT
+fi
 
 # ---------------------------------------------------------------------------
 # Uninstall path
@@ -277,11 +297,21 @@ if [[ $NONINTERACTIVE == false ]]; then
     [[ -n "${INPUT_PORT:-}" ]] && CONSOLE_PORT_DEFAULT="$INPUT_PORT"
 fi
 
-# Validate data dir is on a local filesystem (create it first so df can
-# resolve the mount instead of silently failing on a missing path)
+# Validate data dir is on a local filesystem (create it first so the
+# detection can resolve the mount instead of silently failing on a
+# missing path)
 DATA_DIR="${DATA_DIR:-/var/lib/kingmoat}"
 mkdir -p "$DATA_DIR" 2>/dev/null || true
-if df "$DATA_DIR" 2>/dev/null | tail -1 | grep -qE 'nfs|cifs|smbfs|fuse'; then
+_fs_type=""
+if command -v findmnt &>/dev/null; then
+    # FSTYPE lookup is authoritative; no more guessing from device-name
+    # strings in df output.
+    _fs_type=$(findmnt -n -o FSTYPE --target "$DATA_DIR" 2>/dev/null || true)
+    case "$_fs_type" in
+        nfs*|cifs*|smb*|fuse*) err "data dir is on a network filesystem ($_fs_type) - SQLite requires a local disk" ;;
+    esac
+elif df -T "$DATA_DIR" 2>/dev/null | tail -1 | grep -qE 'nfs|cifs|smbfs|fuse'; then
+    # Fallback for minimal/container environments without findmnt.
     err "data dir is on a network filesystem - SQLite requires a local disk"
 fi
 
@@ -289,13 +319,15 @@ fi
 # /root entirely, and spaces cannot be carried through ExecStart safely.
 for _p in "$INSTALL_DIR" "$DATA_DIR"; do
     case "$_p" in
-        *' '*) err "path contains spaces (unsupported): $_p" ;;
+        *' '*|*'"'*|*'$'*|*'`'*) err "path contains unsupported characters (space, double quote, \$ or backtick): $_p" ;;
         /home|/home/*|/root|/root/*) err "path under /home or /root is hidden by systemd ProtectHome=true: $_p" ;;
     esac
 done
 
-# Console port sanity before it lands in ExecStart
-if ! [[ "$CONSOLE_PORT_DEFAULT" =~ ^[0-9]+$ ]] || (( CONSOLE_PORT_DEFAULT < 1 || CONSOLE_PORT_DEFAULT > 65535 )); then
+# Console port sanity before it lands in ExecStart. Leading zeros are
+# rejected outright (they used to slip past this check via octal arithmetic
+# errors) and the range check forces decimal evaluation with 10#.
+if ! [[ "$CONSOLE_PORT_DEFAULT" =~ ^(0|[1-9][0-9]{0,4})$ ]] || (( 10#$CONSOLE_PORT_DEFAULT < 1 || 10#$CONSOLE_PORT_DEFAULT > 65535 )); then
     err "invalid console port: $CONSOLE_PORT_DEFAULT (need 1-65535)"
 fi
 

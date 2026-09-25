@@ -672,6 +672,22 @@ func computeStats(logs logstore.Queryable, center *configcenter.Center) map[stri
 	}
 }
 
+// tlsConfigForWithFallback wraps the per-site TLS override so it always
+// carries the listener's certificate chain: TLSConfigFor returns a fresh
+// tls.Config when a site disables HTTP/2 or overrides the cipher profile,
+// and Go then replaces the connection config wholesale - without this, the
+// override's site-router-only GetCertificate would bypass the ACME fallback
+// and an ACME-only site with such settings could never complete a handshake.
+func tlsConfigForWithFallback(handler *proxy.Handler, getCert func(*tls.ClientHelloInfo) (*tls.Certificate, error)) func(*tls.ClientHelloInfo) (*tls.Config, error) {
+	return func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
+		oc, err := handler.TLSConfigFor(chi)
+		if oc != nil {
+			oc.GetCertificate = getCert
+		}
+		return oc, err
+	}
+}
+
 func startServers(ctx context.Context, handler *proxy.Handler, cfg *config.Config, acme *certmgr.ACMEHolder, logger *slog.Logger) {
 	var (
 		srvHTTP *http.Server
@@ -717,7 +733,7 @@ func startServers(ctx context.Context, handler *proxy.Handler, cfg *config.Confi
 				MinVersion:         tls.VersionTLS12,
 				CipherSuites:       config.TLSCipherSuitesModerate,
 				GetCertificate:     getCert,
-				GetConfigForClient: handler.TLSConfigFor, // per-site strong/compatible override
+				GetConfigForClient: tlsConfigForWithFallback(handler, getCert), // per-site override must keep the ACME fallback
 			},
 		}
 		lnTLS, lerr := net.Listen("tcp", cfg.ListenHTTPS)

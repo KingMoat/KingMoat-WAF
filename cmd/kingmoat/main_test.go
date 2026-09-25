@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/tls"
 	"io"
 	"log/slog"
@@ -204,5 +205,77 @@ func TestACMEChallengeHandlerFollowsRebuild(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "http://new.local/.well-known/acme-challenge/token", nil))
 	if rec.Body.String() != "DATA" {
 		t.Fatalf("challenge after removal: body = %q, want data plane response", rec.Body.String())
+	}
+}
+
+// TestTLSOverrideConfigKeepsCertChain covers the GetConfigForClient wrapper
+// used by the HTTPS listener: a per-site override (http2 disabled or cipher
+// profile) returns a fresh tls.Config and Go replaces the connection config
+// with it wholesale, so the override must carry the same certificate chain
+// as the listener - site SNI certificates first, then the ACME fallback.
+// Without the re-attach, an ACME-only site with such settings can never
+// complete a 443 handshake (the pre-fix bug).
+func TestTLSOverrideConfigKeepsCertChain(t *testing.T) {
+	dir := t.TempDir()
+	certPath, keyPath, err := certmgr.EnsureSelfSigned(dir, "cert.local")
+	if err != nil {
+		t.Fatalf("EnsureSelfSigned: %v", err)
+	}
+
+	withCert := mainTestSite("cert.local")
+	withCert.TLSCert, withCert.TLSKey = certPath, keyPath
+	withCert.HTTP2Enabled = boolPtr(false) // forces a per-site override config
+
+	withoutCert := mainTestSite("nocert.local")
+	withoutCert.HTTP2Enabled = boolPtr(false) // override + ACME-only SNI scenario
+
+	cfg := &config.Config{Sites: []config.Site{withCert, withoutCert, acmeSite("acme.local")}}
+	handler, err := proxy.NewReloadableObserved(cfg, nil, nil, testLogger())
+	if err != nil {
+		t.Fatalf("NewReloadableObserved: %v", err)
+	}
+	holder := certmgr.NewACMEHolder(t.TempDir())
+	holder.Rebuild(cfg, "")
+
+	getCert := certSelector(handler, holder)
+	wrap := tlsConfigForWithFallback(handler, getCert)
+
+	// Site with a static certificate: the override answers with the same
+	// site certificate the listener chain would serve (site cert first).
+	chi := &tls.ClientHelloInfo{ServerName: "cert.local"}
+	oc, err := wrap(chi)
+	if err != nil || oc == nil {
+		t.Fatalf("TLSConfigFor(cert.local) = (%v, %v), want override config", oc, err)
+	}
+	certOverride, errOverride := oc.GetCertificate(chi)
+	certChain, errChain := getCert(chi)
+	if errOverride != nil || certOverride == nil {
+		t.Fatalf("override GetCertificate(cert.local) err=%v, want site certificate", errOverride)
+	}
+	if errChain != nil || certChain == nil || !bytes.Equal(certOverride.Certificate[0], certChain.Certificate[0]) {
+		t.Fatalf("override certificate differs from listener chain result (chain err=%v)", errChain)
+	}
+
+	// ACME-only SNI through an override: the site router has no certificate,
+	// so the override must fall through to the ACME layer exactly like the
+	// listener chain - not stop at the site router (pre-fix behavior).
+	chi = &tls.ClientHelloInfo{ServerName: "nocert.local"}
+	oc, err = wrap(chi)
+	if err != nil || oc == nil {
+		t.Fatalf("TLSConfigFor(nocert.local) = (%v, %v), want override config", oc, err)
+	}
+	_, wantErr := getCert(chi)
+	_, gotErr := oc.GetCertificate(chi)
+	if gotErr == nil || wantErr == nil || gotErr.Error() != wantErr.Error() {
+		t.Fatalf("override GetCertificate(nocert.local) err=%v, want listener chain error %v", gotErr, wantErr)
+	}
+	if strings.Contains(gotErr.Error(), "site router") {
+		t.Fatalf("override stopped at the site router, ACME fallback lost: %v", gotErr)
+	}
+
+	// Default site settings keep the listener default (no override config).
+	oc, err = wrap(&tls.ClientHelloInfo{ServerName: "acme.local"})
+	if err != nil || oc != nil {
+		t.Fatalf("TLSConfigFor(acme.local) = (%v, %v), want nil override (listener default)", oc, err)
 	}
 }

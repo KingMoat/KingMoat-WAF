@@ -27,15 +27,61 @@ func TestValidateRedirectRequiresTLS(t *testing.T) {
 	s.TLSCert = ""
 	s.TLSKey = ""
 	c := &Config{ListenHTTP: ":80", ListenHTTPS: ":443", Sites: []Site{s}}
-	if err := c.Validate(); err == nil {
+	err := c.Validate()
+	if err == nil {
 		t.Fatal("redirect without tls_cert/tls_key must be rejected")
+	}
+	if !strings.Contains(err.Error(), `site "a.local" enables "redirect HTTP to HTTPS"`) ||
+		!strings.Contains(err.Error(), "serve HTTPS first") {
+		t.Fatalf("unfriendly redirect TLS message: %v", err)
 	}
 }
 
 func TestValidateRedirectRequiresHTTPSListener(t *testing.T) {
 	c := &Config{ListenHTTP: ":80", Sites: []Site{baseRedirSite()}}
-	if err := c.Validate(); err == nil {
+	err := c.Validate()
+	if err == nil {
 		t.Fatal("redirect without global listen_https must be rejected")
+	}
+	if !strings.Contains(err.Error(), `site "a.local" enables "redirect HTTP to HTTPS"`) ||
+		!strings.Contains(err.Error(), "global HTTPS listen address") ||
+		!strings.Contains(err.Error(), "Sites page") {
+		t.Fatalf("unfriendly redirect listen message: %v", err)
+	}
+}
+
+func baseACMESite() Site {
+	return Site{
+		Domains:  []string{"acme.local"},
+		Upstream: Upstream{Nodes: []UpstreamNode{{Address: "127.0.0.1:9000"}}},
+		ACME:     &ACMESettings{},
+	}
+}
+
+func TestValidateACMEEmailRequired(t *testing.T) {
+	c := &Config{ListenHTTP: ":80", ListenHTTPS: ":443", Sites: []Site{baseACMESite()}}
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("ACME site without any contact email must be rejected")
+	}
+	if !strings.Contains(err.Error(), `site "acme.local" enables ACME`) ||
+		!strings.Contains(err.Error(), "contact email") {
+		t.Fatalf("unfriendly ACME email message: %v", err)
+	}
+}
+
+func TestValidateACMERequiresHTTPSListener(t *testing.T) {
+	s := baseACMESite()
+	s.ACME.Email = "ops@example.com"
+	c := &Config{ListenHTTP: ":80", Sites: []Site{s}}
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("ACME site without global listen_https must be rejected")
+	}
+	if !strings.Contains(err.Error(), `site "acme.local" enables ACME`) ||
+		!strings.Contains(err.Error(), "global HTTPS listen address") ||
+		!strings.Contains(err.Error(), "Sites page") {
+		t.Fatalf("unfriendly ACME listen message: %v", err)
 	}
 }
 

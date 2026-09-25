@@ -1014,6 +1014,16 @@ func validSNIHostname(s string) bool {
 // ValidAlgorithms lists the supported load-balancing algorithms.
 
 
+// siteLabel returns a user-facing identifier for validation messages: the
+// site's first domain (already validated as non-empty before the per-feature
+// checks run), or the numeric index as a fallback.
+func siteLabel(i int, s *Site) string {
+	if len(s.Domains) > 0 {
+		return s.Domains[0]
+	}
+	return fmt.Sprintf("#%d", i)
+}
+
 func (c *Config) validateSite(i int, s *Site, groups map[string]bool) error {
 	if err := s.Upstream.Validate(); err != nil {
 		return fmt.Errorf("config: sites[%d]: %w", i, err)
@@ -1040,18 +1050,18 @@ func (c *Config) validateSite(i int, s *Site, groups map[string]bool) error {
 		}
 		if s.ACME != nil {
 			if s.ACME.Email == "" && c.AcmeEmail == "" {
-				return fmt.Errorf("config: sites[%d].acme requires acme_email (settings) or a per-site email", i)
+				return fmt.Errorf("site %q enables ACME: set a contact email first (per-site email, or the global ACME email in Settings)", siteLabel(i, s))
 			}
 			if c.ListenHTTPS == "" {
-				return fmt.Errorf("config: sites[%d].acme requires a global listen_https", i)
+				return fmt.Errorf("site %q enables ACME: set the global HTTPS listen address first (Sites page, global settings, e.g. 0.0.0.0:443)", siteLabel(i, s))
 			}
 		}
 		if s.RedirectToHTTPS {
 			if s.TLSCert == "" && s.ACME == nil {
-				return fmt.Errorf("config: sites[%d].redirect_to_https requires tls_cert/tls_key or acme", i)
+				return fmt.Errorf("site %q enables \"redirect HTTP to HTTPS\": serve HTTPS first (upload a TLS certificate or enable ACME in the site form)", siteLabel(i, s))
 			}
 			if c.ListenHTTPS == "" {
-				return fmt.Errorf("config: sites[%d].redirect_to_https requires a global listen_https", i)
+				return fmt.Errorf("site %q enables \"redirect HTTP to HTTPS\": set the global HTTPS listen address first (Sites page, global settings, e.g. 0.0.0.0:443)", siteLabel(i, s))
 			}
 		}
 		if s.Health != nil && s.Health.Enabled && s.Health.Path != "" && !strings.HasPrefix(s.Health.Path, "/") {

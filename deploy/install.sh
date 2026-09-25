@@ -27,6 +27,10 @@ readonly GITEE_API="https://gitee.com/api/v5/repos/kingmoat/KingMoat-WAF"
 readonly GITEE_DL="https://gitee.com/kingmoat/KingMoat-WAF/releases/download"
 readonly GITHUB_DL="https://github.com/kingmoat/KingMoat-WAF/releases/download"
 readonly GITHUB_API="https://api.github.com/repos/kingmoat/KingMoat-WAF"
+# The script's own source URLs: the piped-install guard re-downloads a fresh
+# copy instead of trusting the unread tail of stdin (see the guard below).
+readonly INSTALLER_URL_PRIMARY="https://gitee.com/kingmoat/KingMoat-WAF/raw/main/deploy/install.sh"
+readonly INSTALLER_URL_FALLBACK="https://raw.githubusercontent.com/kingmoat/KingMoat-WAF/main/deploy/install.sh"
 # CONSOLE_PORT_DEFAULT is deliberately NOT readonly: the interactive prompt
 # below may replace it (assigning a readonly var aborts under set -e).
 CONSOLE_PORT_DEFAULT="28443"
@@ -100,11 +104,16 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ---------------------------------------------------------------------------
-# Re-exec guard: when piped in (curl | bash), stdin is the script itself and
-# the interactive "read" prompts below would swallow script lines. Re-run
-# from a temp copy read from a file instead. KINGMOAT_REEXEC carries the
-# copy's path into the second pass: it keeps this guard from re-triggering
-# and lets the EXIT trap remove the copy.
+# Re-exec guard: when piped in (curl | bash), the interactive "read" prompts
+# below would swallow script lines, so the second pass runs from a temp file
+# instead. KINGMOAT_REEXEC carries the copy's path into the second pass: it
+# keeps this guard from re-triggering and lets the EXIT trap remove the copy.
+#
+# The copy must NOT be built by "cat > file": bash reads the piped script
+# through its own buffer, so at this point fd0 only yields the unread tail of
+# the script - a partial copy that crashed real installs with undefined
+# helpers. The copy is re-downloaded from the fixed source URL instead,
+# which is independent of how much of stdin bash has already buffered.
 #
 # The guard only applies to runs that actually consume stdin interactively:
 # -y (non-interactive) and --uninstall never read from stdin, so they
@@ -121,21 +130,22 @@ if [[ -n "$KINGMOAT_REEXEC" && ( $KINGMOAT_REEXEC != /* || $KINGMOAT_REEXEC != /
 fi
 if [[ ! -t 0 && -z "$KINGMOAT_REEXEC" && $NONINTERACTIVE == false && $UNINSTALL == false ]]; then
     _reexec="$(mktemp /tmp/kingmoat-install.XXXXXX)"
-    cat > "$_reexec"
+    # Re-download a complete copy (see the rationale above); fail over to the
+    # mirror URL when the primary is unreachable.
+    if ! curl -fsSL --max-time 60 -o "$_reexec" "$INSTALLER_URL_PRIMARY" \
+       && ! curl -fsSL --max-time 60 -o "$_reexec" "$INSTALLER_URL_FALLBACK"; then
+        rm -f "$_reexec"
+        err "cannot fetch the installer for re-exec; run instead: curl -fsSL $INSTALLER_URL_PRIMARY -o install.sh && sudo bash install.sh"
+    fi
     if [[ ! -s "$_reexec" ]]; then
         rm -f "$_reexec"
-        printf '\033[1;31m[error]\033[0m stdin is not a terminal and no script was piped in.\n' >&2
-        printf '\033[1;31m[error]\033[0m run: curl -fsSL https://gitee.com/kingmoat/KingMoat-WAF/raw/main/deploy/install.sh | bash\n' >&2
-        printf '\033[1;31m[error]\033[0m or:  bash install.sh [options]\n' >&2
-        exit 1
+        err "fetched installer is empty; check network and re-run the install command"
     fi
-    # A truncated pipe (download interrupted mid-stream) would otherwise run
-    # as a partial installer. bash -n is best-effort: a cut landing exactly
-    # on a top-level command boundary can still slip through, but the second
-    # pass then fails on its own early steps.
+    # Integrity check on the downloaded copy (a proxy/CDN serving a truncated
+    # or corrupt body would otherwise fail cryptically in the second pass).
     if ! bash -n "$_reexec" 2>/dev/null; then
         rm -f "$_reexec"
-        err "piped script is truncated (download interrupted?) - re-run the install command"
+        err "fetched installer failed a syntax check - re-run the install command"
     fi
     # Best effort: hand the second pass a terminal on stdin so the
     # interactive prompts can read real input when the pipe came from an

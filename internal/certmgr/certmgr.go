@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/acme"
@@ -147,11 +148,31 @@ func containsStr(list []string, v string) bool {
 	return false
 }
 
+// ACMEHosts returns the deduplicated domain list of every site with ACME
+// enabled, in first-appearance order.
+func ACMEHosts(cfg *config.Config) []string {
+	var out []string
+	seen := map[string]bool{}
+	for i := range cfg.Sites {
+		s := &cfg.Sites[i]
+		if s.ACME == nil {
+			continue
+		}
+		for _, d := range s.Domains {
+			if !seen[d] {
+				seen[d] = true
+				out = append(out, d)
+			}
+		}
+	}
+	return out
+}
+
 // ACMEManager builds an autocert.Manager for all sites with acme enabled,
 // or nil when no site uses ACME. cacheDir persists issued certificates and
 // account keys across restarts.
 func ACMEManager(cfg *config.Config, cacheDir string, globalEmail string) *autocert.Manager {
-	var hosts []string
+	hosts := ACMEHosts(cfg)
 	email := ""
 	staging := false
 	for i := range cfg.Sites {
@@ -159,7 +180,6 @@ func ACMEManager(cfg *config.Config, cacheDir string, globalEmail string) *autoc
 		if s.ACME == nil {
 			continue
 		}
-		hosts = append(hosts, s.Domains...)
 		if email == "" {
 			email = s.ACME.Email
 		}
@@ -182,3 +202,34 @@ func ACMEManager(cfg *config.Config, cacheDir string, globalEmail string) *autoc
 	}
 	return m
 }
+
+// ACMEHolder dynamically holds the ACME manager for the ACTIVE configuration.
+// The console publishes new revisions without a restart, so data-plane wiring
+// (the TLS getCertificate chain and the HTTP-01 challenge handler) must
+// re-resolve the current manager on every use instead of holding the one built
+// at boot. Rebuild swaps the manager atomically; nil is stored when no site
+// uses ACME, which disables ACME cleanly (challenge requests fall through to
+// the data plane). ACMEManager construction is a pure in-memory operation, so
+// a rebuild itself cannot fail: the swap always lands.
+type ACMEHolder struct {
+	mgr      atomic.Pointer[autocert.Manager]
+	cacheDir string
+}
+
+// NewACMEHolder returns an empty holder persisting issued certificates in
+// cacheDir.
+func NewACMEHolder(cacheDir string) *ACMEHolder {
+	return &ACMEHolder{cacheDir: cacheDir}
+}
+
+// Rebuild builds the manager from cfg (the configuration just applied to the
+// data plane) and stores it; nil is stored when no site uses ACME. Returns
+// the new manager.
+func (h *ACMEHolder) Rebuild(cfg *config.Config, globalEmail string) *autocert.Manager {
+	m := ACMEManager(cfg, h.cacheDir, globalEmail)
+	h.mgr.Store(m)
+	return m
+}
+
+// Load returns the current manager, or nil when ACME is disabled.
+func (h *ACMEHolder) Load() *autocert.Manager { return h.mgr.Load() }

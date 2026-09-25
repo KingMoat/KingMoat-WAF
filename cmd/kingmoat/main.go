@@ -25,8 +25,6 @@ import (
 	"syscall"
 	"time"
 
-	"golang.org/x/crypto/acme/autocert"
-
 	"github.com/kingmoat/kingmoat/internal/accesslog"
 	"github.com/kingmoat/kingmoat/internal/ai"
 	"github.com/kingmoat/kingmoat/internal/alerting"
@@ -323,10 +321,31 @@ func main() {
 	buildEngines(activeCfg)
 
 	// ACME automatic certificates (TLS-ALPN-01 on the HTTPS listener,
-	// HTTP-01 challenge short-circuited on the HTTP listener).
-	acmeMgr := certmgr.ACMEManager(seed, "acme-cache", seed.AcmeEmail)
-	if acmeMgr != nil {
-		logger.Info("ACME certificate management enabled")
+	// HTTP-01 challenge short-circuited on the HTTP listener). The holder is
+	// rebuilt on every console publish (hot-reload consumer below) so ACME
+	// sites added, edited or removed after boot take effect without a
+	// restart. Boot state follows the ACTIVE config (console revisions),
+	// not the disk seed, mirroring the listener addresses below.
+	acmeHolder := certmgr.NewACMEHolder("acme-cache")
+	if acmeHolder.Rebuild(activeCfg, activeCfg.AcmeEmail) != nil {
+		logger.Info("ACME certificate management enabled", "hosts", len(certmgr.ACMEHosts(activeCfg)))
+	}
+
+	// rebuildACME swaps the ACME manager to one built from the configuration
+	// just applied to the data plane, keeping the HostWhitelist in sync with
+	// the live site router (new domains issue on demand, removed domains
+	// stop being answered). Called only after a successful data-plane reload;
+	// on reload failure the previous manager stays so both layers agree.
+	rebuildACME := func(cfg *config.Config) {
+		prev := acmeHolder.Load()
+		m := acmeHolder.Rebuild(cfg, cfg.AcmeEmail)
+		if m == nil {
+			if prev != nil {
+				logger.Info("ACME certificate management disabled")
+			}
+			return
+		}
+		logger.Info("ACME certificate management reloaded", "hosts", len(certmgr.ACMEHosts(cfg)))
 	}
 
 	// Bootstrap self-signed certificate (10 years) so the certificate
@@ -379,6 +398,7 @@ func main() {
 						logger.Error("hot reload failed, keeping previous config", "revision", rev, "err", applyErr)
 					} else {
 						logger.Info("hot reload applied", "revision", rev)
+						rebuildACME(cfg) // ACME sites hot-apply on publish
 					}
 					if aiBuilder != nil {
 						aiBuilder(cfg) // ai toggle hot-applies (close+rebuild)
@@ -587,7 +607,44 @@ func main() {
 	if center != nil {
 		_, listenCfg = center.Current()
 	}
-	startServers(ctx, handler, listenCfg, acmeMgr, logger)
+	startServers(ctx, handler, listenCfg, acmeHolder, logger)
+}
+
+// certSelector returns the TLS certificate selection chain for the HTTPS
+// listener: site SNI certificates first, then the current ACME manager
+// (issue/renew on demand). The manager is re-resolved from the holder on
+// every handshake so console publishes take effect without a restart; with
+// ACME disabled the chain degrades to the plain site-certificate path.
+func certSelector(handler *proxy.Handler, acme *certmgr.ACMEHolder) func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	return func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
+		cert, err := handler.GetCertificate(chi)
+		if err == nil {
+			return cert, nil
+		}
+		if m := acme.Load(); m != nil {
+			return m.GetCertificate(chi)
+		}
+		return nil, err
+	}
+}
+
+// acmeChallengeHandler serves ACME HTTP-01 challenges ahead of the data
+// plane. It re-resolves the current ACME manager on every request: a wrapper
+// built once at boot would pin the manager's HostWhitelist, so challenges
+// for domains published later would be rejected and domains removed from the
+// config would keep being answered. With ACME disabled the request goes
+// straight to the data plane.
+type acmeChallengeHandler struct {
+	acme *certmgr.ACMEHolder
+	data http.Handler
+}
+
+func (h acmeChallengeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if m := h.acme.Load(); m != nil {
+		m.HTTPHandler(h.data).ServeHTTP(w, r)
+		return
+	}
+	h.data.ServeHTTP(w, r)
 }
 
 // computeStats mirrors the console /api/stats aggregation for AI tools.
@@ -615,7 +672,7 @@ func computeStats(logs logstore.Queryable, center *configcenter.Center) map[stri
 	}
 }
 
-func startServers(ctx context.Context, handler *proxy.Handler, cfg *config.Config, acmeMgr *autocert.Manager, logger *slog.Logger) {
+func startServers(ctx context.Context, handler *proxy.Handler, cfg *config.Config, acme *certmgr.ACMEHolder, logger *slog.Logger) {
 	var (
 		srvHTTP *http.Server
 		srvTLS  *http.Server
@@ -623,25 +680,14 @@ func startServers(ctx context.Context, handler *proxy.Handler, cfg *config.Confi
 	)
 
 	// Certificate selection: site SNI certificates first, then the ACME
-	// manager (issue/renew on demand).
-	getCert := handler.GetCertificate
-	if acmeMgr != nil {
-		acmeGet := acmeMgr.GetCertificate
-		siteGet := handler.GetCertificate
-		getCert = func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			if c, err := siteGet(chi); err == nil {
-				return c, nil
-			}
-			return acmeGet(chi)
-		}
-	}
+	// manager (issue/renew on demand). certSelector re-resolves the current
+	// manager on every handshake so publishes take effect without a restart.
+	getCert := certSelector(handler, acme)
 
 	if cfg.ListenHTTP != "" {
-		var httpHandler http.Handler = handler
-		if acmeMgr != nil {
-			// Serve ACME HTTP-01 challenges before the data plane.
-			httpHandler = acmeMgr.HTTPHandler(handler)
-		}
+		// Serve ACME HTTP-01 challenges from the CURRENT manager before the
+		// data plane (the wrapper re-resolves it per request).
+		httpHandler := http.Handler(acmeChallengeHandler{acme: acme, data: handler})
 		srvHTTP = &http.Server{
 			Addr:              cfg.ListenHTTP,
 			Handler:           httpHandler,

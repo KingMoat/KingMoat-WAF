@@ -86,11 +86,19 @@ type Service struct {
 	issueFn IssueFunc
 
 	mu       sync.Mutex
-	tasks    []*RequestTask           // newest first, capped at maxRecentTasks
-	byID     map[string]*RequestTask  // id → task
-	inflight map[string]*RequestTask  // key → running task (single-flight)
-	cooldown map[string]time.Time     // key → earliest retry after failure
-	sem      chan struct{}            // issuance concurrency cap
+	tasks    []*RequestTask          // newest first, capped at maxRecentTasks
+	byID     map[string]*RequestTask // id → task
+	inflight map[string]*RequestTask // key → running task (single-flight)
+	cooldown map[string]time.Time    // key → earliest retry after failure
+	sem      chan struct{}           // issuance concurrency cap
+
+	// Daily proactive renewal (renewal.go): cancel for the active loop
+	// (nil = none), latest result per domain+mode key, and the injectable
+	// cadence (tests shorten both via WithRenewalTiming).
+	renewCancel     context.CancelFunc
+	renewals        map[string]RenewalResult
+	renewFirstDelay time.Duration
+	renewEvery      time.Duration
 }
 
 // Option customizes the service (test seams).
@@ -99,6 +107,12 @@ type Option func(*Service)
 // WithIssuer replaces the issuance implementation (tests: no network).
 func WithIssuer(f IssueFunc) Option {
 	return func(s *Service) { s.issueFn = f }
+}
+
+// WithRenewalTiming overrides the daily renewal cadence (test seam): first
+// run delay after (re)start, then the repeat interval.
+func WithRenewalTiming(first, every time.Duration) Option {
+	return func(s *Service) { s.renewFirstDelay, s.renewEvery = first, every }
 }
 
 // NewService builds the certificate-library service on top of the data-plane
@@ -117,6 +131,10 @@ func NewService(holder *ACMEHolder, globalEmail func() string, opts ...Option) *
 		inflight: map[string]*RequestTask{},
 		cooldown: map[string]time.Time{},
 		sem:      make(chan struct{}, maxConcurrentIssues),
+
+		renewals:        map[string]RenewalResult{},
+		renewFirstDelay: defaultRenewFirstDelay,
+		renewEvery:      defaultRenewEvery,
 	}
 	s.issueFn = s.defaultIssue
 	for _, o := range opts {
@@ -358,7 +376,20 @@ func (s *Service) Task(id string) (RequestTask, bool) {
 	return *t, true
 }
 
-// Entries lists the ACME cert-library entries (both cache directories).
+// Entries lists the ACME cert-library entries (both cache directories),
+// merged with the latest daily-renewal outcome per entry.
 func (s *Service) Entries() []CertEntry {
-	return CacheEntries(s.base)
+	entries := CacheEntries(s.base)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range entries {
+		e := &entries[i]
+		if r, ok := s.renewals[renewalKey(e.Staging, e.Domain)]; ok {
+			e.LastRenewalCheck = r.At
+			if !r.OK {
+				e.LastRenewError = r.Error
+			}
+		}
+	}
+	return entries
 }

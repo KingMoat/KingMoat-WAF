@@ -120,6 +120,13 @@ type CertEntry struct {
 	// 30-day renewal window, including already expired). Cache entries that
 	// do not parse never surface (skipped at read time).
 	Status string `json:"status"`
+	// LastRenewalCheck is the timestamp of the latest daily proactive
+	// renewal attempt for this domain (empty: not checked yet); filled in
+	// by Service.Entries from the renewal loop's results.
+	LastRenewalCheck string `json:"last_renew_attempt,omitempty"`
+	// LastRenewError carries the latest renewal failure reason (empty: the
+	// latest attempt succeeded or none ran).
+	LastRenewError string `json:"last_renew_error,omitempty"`
 }
 
 // CacheEntries lists the ACME-managed certificates of both cache directories

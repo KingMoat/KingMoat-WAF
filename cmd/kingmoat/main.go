@@ -40,8 +40,8 @@ import (
 	"github.com/kingmoat/kingmoat/internal/logstore"
 	"github.com/kingmoat/kingmoat/internal/metrics"
 	"github.com/kingmoat/kingmoat/internal/proxy"
-	"github.com/kingmoat/kingmoat/internal/stages"
 	"github.com/kingmoat/kingmoat/internal/redact"
+	"github.com/kingmoat/kingmoat/internal/stages"
 	"github.com/kingmoat/kingmoat/internal/telemetry"
 	"github.com/kingmoat/kingmoat/internal/webui"
 )
@@ -344,6 +344,11 @@ func main() {
 		return c.AcmeEmail
 	})
 
+	// Daily proactive renewal (first pass ~10min after boot, then every 24h):
+	// keeps certificates alive on long-idle sites and on cached domains no
+	// site references. Uses the root context so it stops with the process.
+	acmeSvc.RestartRenewer(ctx, activeCfg, activeCfg.AcmeEmail)
+
 	// rebuildACME swaps the ACME manager to one built from the configuration
 	// just applied to the data plane, keeping the HostWhitelist in sync with
 	// the live site router (new domains issue on demand, removed domains
@@ -352,6 +357,10 @@ func main() {
 	rebuildACME := func(cfg *config.Config) {
 		prev := acmeHolder.Load()
 		m := acmeHolder.Rebuild(cfg, cfg.AcmeEmail)
+		// The renewal loop works on the config snapshot just applied (site
+		// domains join/leave its target set), so it restarts on every rebuild
+		// even when the last ACME site was removed.
+		acmeSvc.RestartRenewer(ctx, cfg, cfg.AcmeEmail)
 		if m == nil {
 			if prev != nil {
 				logger.Info("ACME certificate management disabled")
@@ -387,9 +396,9 @@ func main() {
 	// goroutine below can call it; the client itself is only created in
 	// all-in-one mode where the console (and thus the switch) exists.
 	var (
-		telMu        sync.Mutex
-		telClient    *telemetry.Telemetry
-		telPrev      bool
+		telMu          sync.Mutex
+		telClient      *telemetry.Telemetry
+		telPrev        bool
 		buildTelemetry func(cfg *config.Config)
 	)
 
@@ -457,10 +466,10 @@ func main() {
 		if aiDB == "" {
 			aiDB = strings.TrimSuffix(*consoleDB, ".db") + "-ai.db"
 		}
-				// Shared builder: identical field set for the community assembly
+		// Shared builder: identical field set for the community assembly
 		// point; new DataSources fields are wired once in internal/ai.
 		aiSources := ai.NewCenterSources(center, auditStore, version, func() map[string]any { return computeStats(auditStore, center) })
-				aiSup := ai.NewSupervisor(logger)
+		aiSup := ai.NewSupervisor(logger)
 		// KEK guards the stored provider API key; it lives next to the console
 		// DB (same StateDir pattern as the console TLS state).
 		aiSup.SetKEKPath(filepath.Join(cdir, "ai-kek.key"))
@@ -551,15 +560,15 @@ func main() {
 			ArchiveRetentionDays: activeCfg.AuditArchive.RetentionDaysOrDefault(),
 		}
 		apiSrv := api.New(api.Options{
-			Center: center,
-			Logs:   auditStore,
+			Center:      center,
+			Logs:        auditStore,
 			LogsStorage: logsStorage,
-			ConsoleTLS:       ctlMgr,
+			ConsoleTLS:  ctlMgr,
 			Auth:        api.NewAuth(os.Getenv("KINGMOAT_ADMIN_HASH")).SetTOTP(os.Getenv("KINGMOAT_ADMIN_TOTP")).SetSessionTTL(activeCfg.Security.SessionTTLOrDefault()),
-			Version: version,
-			WebUI:   webui.Handler(version),
-			AccessRing: accessRing,
-			AIFn:    func() *ai.Service { return aiSup.Ref() },
+			Version:     version,
+			WebUI:       webui.Handler(version),
+			AccessRing:  accessRing,
+			AIFn:        func() *ai.Service { return aiSup.Ref() },
 			AIKEKFn: func() []byte {
 				k, kerr := aiSup.KEK()
 				if kerr != nil {
@@ -568,12 +577,12 @@ func main() {
 				}
 				return k
 			},
-			AssetsRef: assetsRef,
-			ACME:      acmeSvc,
-			PProf:   os.Getenv("KINGMOAT_PPROF") != "", // /debug/pprof behind console auth
-			GroupsFn: func() *ipgroups.Manager { return handler.Groups() },
+			AssetsRef:      assetsRef,
+			ACME:           acmeSvc,
+			PProf:          os.Getenv("KINGMOAT_PPROF") != "", // /debug/pprof behind console auth
+			GroupsFn:       func() *ipgroups.Manager { return handler.Groups() },
 			DisableStateFn: func() *stages.StageDisableRegistry { return handler.DisableState() },
-		GeoDBFn:  geoDBPath(center),
+			GeoDBFn:        geoDBPath(center),
 		})
 		mux.Handle("/", apiSrv.Handler())
 		csrv := &http.Server{

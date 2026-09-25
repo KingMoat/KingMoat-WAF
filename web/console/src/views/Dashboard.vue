@@ -207,9 +207,9 @@ const deltaLabel = computed(() => {
 const deltaCls = computed(() => (delta.value === null || delta.value === 0 ? 'km-muted' : delta.value > 0 ? 'up' : 'down'))
 
 const sparkPoints = computed(() => {
-  const b = trendData.value.slice(-14)
-  if (b.length < 2) return null
-  const vals = b.map(x => (x.by_action || x.ByAction || {}).blocked || 0)
+  // 铺满全部 48 个小时桶，与卡片「近48h」标注同口径
+  const vals = trendData.value.map(x => (x.by_action || x.ByAction || {}).blocked || 0)
+  if (vals.length < 2) return null
   const max = Math.max(...vals, 1)
   return vals.map((v, i) => `${(i * 120 / (vals.length - 1)).toFixed(1)},${(24 - v * 22 / max).toFixed(1)}`).join(' ')
 })

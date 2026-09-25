@@ -1220,17 +1220,10 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	rev, cfg := s.opts.Center.Current()
 	// Window request counts: per-day request history (outcome → count per
 	// local date) summed over the selected range. Source: the local request
-	// history (all-in-one deployment); the snapshot goes through a JSON
-	// round-trip into addHistory so window filtering stays in one place.
+	// history (all-in-one deployment); the typed snapshot goes straight into
+	// addHistory so window filtering stays in one place.
 	reqMap := map[string]int64{}
-	addHistory := func(raw json.RawMessage) {
-		if len(raw) == 0 {
-			return
-		}
-		var hist map[string]map[string]int64
-		if json.Unmarshal(raw, &hist) != nil {
-			return
-		}
+	addHistory := func(hist map[string]map[string]int64) {
 		for d, outcomes := range hist {
 			dt, err := time.ParseInLocation("2006-01-02", d, time.Local)
 			if err != nil || dt.Before(windowStart) || dt.After(now) {
@@ -1241,9 +1234,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if localHist, err := json.Marshal(metrics.SnapshotRequestsHistory()); err == nil {
-		addHistory(localHist)
-	}
+	addHistory(metrics.SnapshotRequestsHistory())
 	resp := map[string]any{
 		"revision":          rev,
 		"sites":             len(cfg.Sites),

@@ -960,20 +960,24 @@ function validateDisableStages() {
 async function saveMatcher() {
   if (!m.name.trim()) return ElMessage.error('请填写规则名称')
   if (!m.conditions.length) return ElMessage.error('至少一个条件')
-  // 规则名必须唯一：重名会让按名回写/命中计数混淆（findIndex 只命中首个）；
-  // 以下标排除正在编辑的规则本身，改名冲突与存量重名都会被拦下
-  const newName = m.name.trim()
-  const dupIdx = (matchers.value || []).findIndex((x, idx) => x.name === newName && !(mEditIndex.value >= 0 && idx === mEditIndex.value))
-  if (dupIdx >= 0) return ElMessage.error('规则名「' + newName + '」已存在，请换一个名称')
   if (m.action === 'disable') {
     const dsErr = validateDisableStages()
     if (dsErr) return ElMessage.error(dsErr)
   }
+  // 规则名必须唯一：重名会让按名回写/命中计数混淆（findIndex 只命中首个）。
+  // 查重基于刚拉取的服务端配置（并发新增的同名规则一并拦下），比较与落库
+  // 统一用 trim 后的名字（与服务端校验同口径，空白变体不再绕过查重）
+  const newName = m.name.trim()
   const d = await api('/api/config')
   const cfg = d.config
   cfg.policy = cfg.policy || {}
   cfg.policy.matchers = cfg.policy.matchers || []
+  const norm = n => String(n || '').trim()
+  const editing = mEditIndex.value >= 0 ? norm(mEditName.value) : null
+  const dupIdx = cfg.policy.matchers.findIndex(x => norm(x.name) === newName && norm(x.name) !== editing)
+  if (dupIdx >= 0) return ElMessage.error('规则名「' + newName + '」已存在，请换一个名称')
   const rule = JSON.parse(JSON.stringify(m))
+  rule.name = newName
   rule.logic = rule.logic || 'and'
   if (!rule.log_enabled) delete rule.log_enabled
   if (rule.action !== 'disable' || !Array.isArray(rule.disable_stages) || !rule.disable_stages.length) delete rule.disable_stages

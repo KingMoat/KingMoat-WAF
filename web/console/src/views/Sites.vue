@@ -810,6 +810,7 @@ function applyEdit() {
     return null
   }
   if (sniHost) s.upstream.sni_host = sniHost
+  else delete s.upstream.sni_host
   if ((edit.comment || '').trim()) s.comment = edit.comment.trim()
   if (edit.protocol === 'https') {
     if (edit.redirect_to_https) s.redirect_to_https = true

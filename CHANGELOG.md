@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.7.6-beta (2026-09-26)
+
+基于 v0.7.5-beta，配置与数据库完全兼容、无需迁移。**紧急修复版：v0.7.5-beta 的 Linux 包在 systemd 严格沙箱（如 openEuler 默认加固）下服务无法启动，受影响用户请升级**。
 
 ### 修复
 

@@ -332,6 +332,33 @@ Docker：替换镜像 tag 后 `docker compose up -d`。Windows：停服务 → �
 1. **拉取**：给 Prometheus 配 API Key（控制台用户设置里生成，形如 `kma1_<id>_<secret>`），请求头带 `Authorization: Bearer kma1_...` 抓 `https://<控制台>/metrics`（自签证书需配 `insecure_skip_verify` 或导入证书）；
 2. **推送**：配置 `metrics.push.url`，进程定时把 `/metrics` 全量 POST 到你的接收器（适合拉取不便的场景）。
 
+### 6.6 控制台端口更换与失联恢复
+
+**操作入口**：控制台「系统设置 → 通用设置 → 管理界面端口」。填写新端口（1-65535）并确认后，服务自动改写数据目录的 `console.env`（systemd 单元从这里读控制台端口）并触发服务重启，约 30 秒后请用新地址 `https://<主机>:<新端口>` 重新访问控制台。
+
+要点：
+
+- **重启窗口**：保存后约 30 秒内控制台不可访问，当前浏览器标签页会失联，属预期行为；数据面（80/443 业务流量）不受影响；
+- 提交前服务会校验端口范围、与数据面监听端口冲突与宿主机占用，校验不通过不会触发重启；
+- 防火墙需同步放行新端口（见 1.3），旧端口可按需收回；
+- 该能力依赖一键部署生成的 systemd 单元（`EnvironmentFile` 读 `console.env`）；未按此形态部署的实例请手工改 unit 的 `-console-addr`。
+
+**失联恢复**（改完端口后控制台打不开时的手工恢复路径）：
+
+```bash
+# 1. 查看当前控制台端口（一键部署默认数据目录 /var/lib/kingmoat；
+#    自定义 --data-dir 安装的按实际路径）
+cat /var/lib/kingmoat/console.env
+
+# 2. 改回可用端口
+sudo vim /var/lib/kingmoat/console.env      # CONSOLE_PORT=8443
+
+# 3. 重启服务生效
+sudo systemctl restart kingmoat
+```
+
+若 `console.env` 丢失，手工重建同格式文件（`CONSOLE_PORT=<端口>`，权限 600）后重启即可；unit 文件无需改动。
+
 ## 7. 常见问题（FAQ）
 
 **Q1：启动报 `bind: address already in use` / 端口占用？**

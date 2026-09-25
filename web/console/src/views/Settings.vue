@@ -13,6 +13,26 @@
 
       <!-- ① 通用 -->
       <template v-if="tab === 'general'">
+        <!-- 管理界面端口（在线更换：写 console.env + 自动重启，独立于配置发布流程） -->
+        <el-card v-if="portInfo" shadow="never" style="margin-bottom:16px">
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <div class="km-title" style="margin:0">管理界面端口</div>
+            <el-tag size="small" effect="plain" class="km-mono">当前 {{ portInfo.port }}</el-tag>
+            <div style="flex:1"></div>
+            <el-input-number v-model="portForm.port" :min="1" :max="65535" :controls="false" size="small"
+                             :disabled="!portInfo.changeable || !can('admin')" placeholder="新端口"
+                             class="km-mono" style="width:120px" />
+            <el-button size="small" type="primary" :disabled="!portInfo.changeable || !can('admin')"
+                       @click="openPortDlg">更换端口</el-button>
+          </div>
+          <div class="km-dim" style="font-size:12px;margin-top:8px;line-height:1.8">
+            控制台端口由 systemd 单元从数据目录 console.env 读取，更换后服务自动重启生效（约 30 秒），数据面业务监听不受影响；防火墙需同步放行新端口。
+          </div>
+          <el-alert v-if="portResult" type="success" :closable="false" show-icon style="margin-top:12px"
+                    :title="`端口变更已提交，服务重启中（约 ${portResult.seconds} 秒）`"
+                    :description="`重启完成后请用新地址访问：${portResult.url} —— 当前标签页将失联；若超时未恢复，请按部署文档「控制台端口更换与失联恢复」手工恢复。`" />
+        </el-card>
+
         <el-card shadow="never" style="margin-bottom:16px">
           <div class="km-title">功能开关</div>
           <el-form label-width="200px" label-position="left">
@@ -520,13 +540,33 @@
       </div>
     </div>
 
+    <!-- 管理界面端口更换确认 -->
+    <el-dialog v-model="portDlg" title="更换管理界面端口" width="540px" :close-on-click-modal="false">
+      <el-alert type="warning" :closable="false" show-icon style="margin-bottom:14px"
+                title="保存后服务将自动重启，约 30 秒内控制台不可访问" />
+      <el-form label-width="90px" label-position="left">
+        <el-form-item label="当前端口"><span class="km-mono">{{ portInfo?.port }}</span></el-form-item>
+        <el-form-item label="新端口">
+          <el-input-number v-model="portForm.port" :min="1" :max="65535" :controls="false" class="km-mono" style="width:160px" />
+        </el-form-item>
+      </el-form>
+      <div class="km-dim" style="font-size:12px;line-height:1.9">
+        重启完成后请用新地址访问：<span class="km-mono">{{ portPreviewUrl }}</span><br />
+        当前浏览器标签页将随重启失联；若重启后无法访问，请登录服务器按部署文档「控制台端口更换与失联恢复」小节手工恢复（改回 console.env 后 systemctl restart kingmoat）。
+      </div>
+      <template #footer>
+        <el-button @click="portDlg = false">取消</el-button>
+        <el-button type="primary" :loading="portChanging" :disabled="!portForm.port || portForm.port === portInfo?.port" @click="submitPort">确认更换</el-button>
+      </template>
+    </el-dialog>
+
     <!-- OpenAPI 清单弹窗 -->
     
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api, can, del, post, role } from '../api'
 
@@ -646,6 +686,48 @@ const urlHint = computed(() =>
   ({ clickhouse: 'http://ch:8123', elasticsearch: 'http://es:9200', loki: 'http://loki:3100', syslog: 'udp://siem.internal:514', kafka: 'broker1:9092, broker2:9092' }[f.shipper_type] || ''))
 const accessUrlHint = computed(() =>
   ({ clickhouse: 'http://ch:8123', elasticsearch: 'http://es:9200', loki: 'http://loki:3100', syslog: 'udp://siem.internal:514' }[f.access_type] || ''))
+
+// ===== 管理界面端口（console.env + 自动重启，独立于配置发布流程）=====
+const portInfo = ref(null)
+const portDlg = ref(false)
+const portChanging = ref(false)
+const portForm = reactive({ port: null })
+const portResult = ref(null)
+let portCountdown = null
+
+const portPreviewUrl = computed(() =>
+  portForm.port ? `https://${location.hostname}:${portForm.port}` : '-')
+
+async function loadConsolePort() {
+  try { portInfo.value = await api('/api/settings/console-port') } catch (e) { portInfo.value = null }
+}
+
+function openPortDlg() {
+  portForm.port = null
+  portDlg.value = true
+}
+
+async function submitPort() {
+  const p = Number(portForm.port)
+  if (!Number.isInteger(p) || p < 1 || p > 65535) return ElMessage.error('端口需在 1-65535 之间')
+  if (portInfo.value && p === portInfo.value.port) return ElMessage.error('新端口与当前端口相同')
+  portChanging.value = true
+  try {
+    const r = await post('/api/settings/console-port', { port: p })
+    // 提交成功即更新本地展示；服务即将重启，约 30 秒后旧地址失联
+    portInfo.value = { ...(portInfo.value || {}), port: p }
+    portResult.value = { port: p, url: `https://${location.hostname}:${p}`, seconds: 30 }
+    if (portCountdown) clearInterval(portCountdown)
+    portCountdown = setInterval(() => {
+      if (portResult.value && portResult.value.seconds > 0) portResult.value.seconds--
+      else { clearInterval(portCountdown); portCountdown = null }
+    }, 1000)
+    portDlg.value = false
+    ElMessage.success(r.message || '端口变更已提交，服务重启中')
+  } catch (e) {
+    ElMessage.error('端口变更失败：' + e.message) // 占用/冲突/非法：后端中文错误直接展示
+  } finally { portChanging.value = false }
+}
 
 // 拦截页定制：可用变量 + 实时预览（示例值替换 + iframe sandbox）
 const bpVars = ['{{request_id}}', '{{rule_id}}', '{{reason}}', '{{client_ip}}', '{{method}}', '{{host}}', '{{url}}', '{{ua}}', '{{timestamp}}']
@@ -791,6 +873,7 @@ async function load() {
     f.ai_report_days = [1, 2, 3, 4, 5, 6, 0]
   }
   refreshAIKeyStatus()
+  loadConsolePort()
 }
 
 // parseReportCron 把日报 cron（分 时 * * dow）解析回时间与星期多选；
@@ -1026,6 +1109,7 @@ async function save() {
 }
 
 onMounted(load)
+onBeforeUnmount(() => { if (portCountdown) clearInterval(portCountdown) })
 </script>
 
 <style scoped>

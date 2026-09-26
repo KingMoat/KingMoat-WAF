@@ -1053,7 +1053,7 @@ func (c *Config) validateSite(i int, s *Site, groups map[string]bool) error {
 				return fmt.Errorf("site %q enables ACME: set a contact email first (per-site email, or the global ACME email in Settings)", siteLabel(i, s))
 			}
 			if c.ListenHTTPS == "" {
-				return fmt.Errorf("site %q enables ACME: set the global HTTPS listen address first (Sites page, global settings, e.g. 0.0.0.0:443)", siteLabel(i, s))
+				return fmt.Errorf("site %q enables ACME: set the global HTTPS listen address first (System settings page, e.g. 0.0.0.0:443)", siteLabel(i, s))
 			}
 		}
 		if s.RedirectToHTTPS {
@@ -1061,7 +1061,7 @@ func (c *Config) validateSite(i int, s *Site, groups map[string]bool) error {
 				return fmt.Errorf("site %q enables \"redirect HTTP to HTTPS\": serve HTTPS first (upload a TLS certificate or enable ACME in the site form)", siteLabel(i, s))
 			}
 			if c.ListenHTTPS == "" {
-				return fmt.Errorf("site %q enables \"redirect HTTP to HTTPS\": set the global HTTPS listen address first (Sites page, global settings, e.g. 0.0.0.0:443)", siteLabel(i, s))
+				return fmt.Errorf("site %q enables \"redirect HTTP to HTTPS\": set the global HTTPS listen address first (System settings page, e.g. 0.0.0.0:443)", siteLabel(i, s))
 			}
 		}
 		if s.Health != nil && s.Health.Enabled && s.Health.Path != "" && !strings.HasPrefix(s.Health.Path, "/") {

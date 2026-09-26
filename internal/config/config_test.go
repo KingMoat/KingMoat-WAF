@@ -45,7 +45,7 @@ func TestValidateRedirectRequiresHTTPSListener(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `site "a.local" enables "redirect HTTP to HTTPS"`) ||
 		!strings.Contains(err.Error(), "global HTTPS listen address") ||
-		!strings.Contains(err.Error(), "Sites page") {
+		!strings.Contains(err.Error(), "System settings page") {
 		t.Fatalf("unfriendly redirect listen message: %v", err)
 	}
 }
@@ -80,7 +80,7 @@ func TestValidateACMERequiresHTTPSListener(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `site "acme.local" enables ACME`) ||
 		!strings.Contains(err.Error(), "global HTTPS listen address") ||
-		!strings.Contains(err.Error(), "Sites page") {
+		!strings.Contains(err.Error(), "System settings page") {
 		t.Fatalf("unfriendly ACME listen message: %v", err)
 	}
 }

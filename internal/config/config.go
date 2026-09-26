@@ -1050,7 +1050,7 @@ func (c *Config) validateSite(i int, s *Site, groups map[string]bool) error {
 		}
 		if s.ACME != nil {
 			if s.ACME.Email == "" && c.AcmeEmail == "" {
-				return fmt.Errorf("site %q enables ACME: set a contact email first (per-site email, or the global ACME email in Settings)", siteLabel(i, s))
+				return fmt.Errorf("site %q enables ACME: set a contact email first (per-site email, or the global ACME email on the Sites page toolbar)", siteLabel(i, s))
 			}
 			if c.ListenHTTPS == "" {
 				return fmt.Errorf("site %q enables ACME: set the global HTTPS listen address first (System settings page, e.g. 0.0.0.0:443)", siteLabel(i, s))

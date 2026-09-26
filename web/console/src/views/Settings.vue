@@ -47,10 +47,6 @@
               <div v-else-if="listenPortConflict" style="width:100%;font-size:12px;color:var(--km-red);margin-top:4px">HTTP 与 HTTPS 监听端口不能相同</div>
               <div class="km-dim" style="font-size:12px;width:100%">站点启用 HTTPS / ACME / HTTPS 跳转的前提，留空则 HTTPS 数据面关闭；支持 [::]:443 IPv6 写法</div>
             </el-form-item>
-            <el-form-item label="ACME 联系邮箱">
-              <el-input v-model="f.acme_email" placeholder="ops@example.com" clearable style="width:320px" :disabled="!can('operator')" />
-              <div class="km-dim" style="font-size:12px;width:100%">站点未单独填写 ACME 邮箱时的回退联系邮箱（Let's Encrypt 证书过期提醒）</div>
-            </el-form-item>
           </el-form>
           <el-alert v-if="listenPairEmpty" type="error" :closable="false" show-icon style="margin-top:6px"
                     title="至少需要配置一个全局监听地址（HTTP / HTTPS 至少一项）" />
@@ -619,8 +615,8 @@ const alertRuleDefs = [
 ]
 
 const f = reactive({
-  // 数据面监听（从站点防护页迁入；随「保存并发布」整份发布）
-  listen_http: '', listen_https: '', acme_email: '',
+  // 数据面监听（从站点防护页迁入，仅监听地址；随「保存并发布」整份发布）
+  listen_http: '', listen_https: '',
   capture_requests: false,
   api_assets_enabled: false,
   risks_enabled: false,
@@ -798,10 +794,9 @@ const rbac = [
 async function load() {
   const d = await api('/api/config')
   const c = d.config
-  // 数据面监听与全局 ACME 邮箱（从站点防护页迁入）
+  // 数据面监听（从站点防护页迁入，仅监听地址）
   f.listen_http = c.listen_http || ''
   f.listen_https = c.listen_https || ''
-  f.acme_email = c.acme_email || ''
   f.capture_requests = !!c.capture_requests
   f.telemetry_enabled = !!(c.telemetry && c.telemetry.enabled)
   f.api_assets_enabled = !!c.api_assets?.enabled
@@ -1003,11 +998,10 @@ async function save() {
   if (!lh.empty && !ls.empty && lh.port === ls.port) return ElMessage.error('HTTP 与 HTTPS 监听端口不能相同')
   const d = await api('/api/config')
   const cfg = d.config
-  // 数据面监听与全局 ACME 邮箱：随整份配置发布（从站点防护页迁入）；
-  // sites 等其余字段取自刚拉取的最新配置，发布不会丢失或清空监听设置
+  // 数据面监听（仅监听地址）：随整份配置发布（从站点防护页迁入）；
+  // sites、acme_email 等其余字段取自刚拉取的最新配置，发布不会丢失或清空监听设置
   cfg.listen_http = (f.listen_http || '').trim()
   cfg.listen_https = (f.listen_https || '').trim()
-  cfg.acme_email = (f.acme_email || '').trim()
   cfg.capture_requests = f.capture_requests
   // 匿名安装统计：缺省键 = 关闭（与后端语义一致）
   if (f.telemetry_enabled) cfg.telemetry = { enabled: true }

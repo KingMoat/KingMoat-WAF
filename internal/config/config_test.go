@@ -65,7 +65,8 @@ func TestValidateACMEEmailRequired(t *testing.T) {
 		t.Fatal("ACME site without any contact email must be rejected")
 	}
 	if !strings.Contains(err.Error(), `site "acme.local" enables ACME`) ||
-		!strings.Contains(err.Error(), "contact email") {
+		!strings.Contains(err.Error(), "contact email") ||
+		!strings.Contains(err.Error(), "Sites page toolbar") {
 		t.Fatalf("unfriendly ACME email message: %v", err)
 	}
 }

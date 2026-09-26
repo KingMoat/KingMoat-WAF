@@ -5,8 +5,9 @@
       <el-button :disabled="!can('operator')" @click="publishForm" :loading="publishing">发布配置（热生效）</el-button>
       <el-button :disabled="!can('operator')" @click="rollbackPrev">↩ 回滚上一版本</el-button>
       <el-input v-model="siteFilter" size="small" style="width:220px" placeholder="筛选：域名 / 名称 / 备注 / 源站 IP" clearable />
+      <el-input v-model="form.acme_email" size="small" style="width:230px" placeholder="ACME 联系邮箱（可选）" clearable @input="markDirty" :disabled="!can('operator')" />
       <div class="grow"></div>
-      <el-tag v-if="!dirty" effect="plain" type="success" class="km-tag">● 配置 revision #{{ rev }} 已发布 · 热更新生效</el-tag>
+      <el-tag v-if="!dirty" effect="plain" type="success" class="km-tag">● revision #{{ rev }} 已发布 · 热生效</el-tag>
       <el-tag v-else effect="plain" type="warning" class="km-tag">有未发布变更（草稿）</el-tag>
       <div class="km-seg">
         <span class="seg-item" :class="{ on: mode === 'form' }" @click="mode = 'form'">图形化</span>
@@ -15,7 +16,7 @@
     </div>
 
     <!-- 图形化:左列表 + 右能力概览 -->
-    <div v-if="mode === 'form'" class="km-grid-2" style="grid-template-columns:minmax(340px,380px) 1fr;align-items:start">
+    <div v-if="mode === 'form'" class="km-grid-2" style="grid-template-columns:minmax(340px,460px) 1fr;align-items:start">
       <el-card shadow="never" class="km-site-list" style="padding:0" :body-style="{ padding: 0 }">
         <div class="km-card-head"><span class="km-card-title">站点列表（{{ form.sites.length }}）</span></div>
         <div v-for="p in pagedSites" :key="p.i" class="site-item" :class="{ sel: sel === p.i }" @click="sel = p.i">
@@ -34,8 +35,8 @@
                          @click.stop="toggleSite(p.i)" @update:model-value="() => {}" />
             </el-tooltip>
           </div>
+          <div v-if="p.s.domains?.length" class="domains">{{ p.s.domains.join('、') }}</div>
           <div class="meta">
-            <span v-if="p.s.domains?.length > 1">{{ p.s.domains.length }} 个域名</span>
             <span>上游 ×{{ (p.s.upstream?.nodes || []).length }}</span>
             <span v-if="wafOn(p.s)">WAF</span>
             <span v-if="sec(p.s).semantic?.enabled">语义</span>
@@ -305,7 +306,7 @@
           <div class="km-dim" style="font-size:12px;margin-top:4px">证书在「证书管理」页上传</div>
         </el-form-item>
         <el-form-item v-if="edit.tlsSource === 'acme'" label="ACME 说明">
-          <span class="km-dim" style="font-size:12px">开启后该域名自动申请 Let's Encrypt 证书并续签；站点未单独填邮箱时使用系统设置页「数据面监听」中的 ACME 联系邮箱，状态见证书管理页</span>
+          <span class="km-dim" style="font-size:12px">开启后该域名自动申请 Let's Encrypt 证书并续签；站点未单独填邮箱时使用顶部工具栏的 ACME 联系邮箱，状态见证书管理页</span>
         </el-form-item>
 
         <el-form-item label="加密套件组">
@@ -482,8 +483,9 @@ function onUpstreamProtoChange(u) {
 }
 
 // 表单模型 = 整份配置（sites 数组 + 顶层）。
-// listen_http / listen_https / acme_email 已迁至系统设置页「数据面监听」，
-// 此处仅作发布透传：load() 时从配置初始化，publishForm 发布前再用最新配置覆写，避免发布时把监听清空
+// listen_http / listen_https 已迁至系统设置页「数据面监听」，此处仅作发布透传：
+// load() 时从配置初始化，publishForm 发布前再用最新配置覆写，避免发布时把监听清空；
+// acme_email 保留在本页工具栏编辑，随「发布配置」一并生效
 const form = reactive({ listen_http: '', listen_https: '', acme_email: '', audit_log_dir: 'logs', sites: [], _raw: null })
 
 // 发布整份配置前的前置校验（与后端 config.Validate 对齐）：
@@ -686,14 +688,14 @@ async function publishForm() {
   } else {
     cfg = JSON.parse(JSON.stringify(form))
     delete cfg._raw
-    // 监听三字段已迁至系统设置页：发布前用最新活跃配置覆写，避免把其他管理员
-    // 刚更新的监听设置用本页旧值覆盖回去（拉取失败时退回 form 初始化值）
+    // 监听两字段已迁至系统设置页：发布前用最新活跃配置覆写，避免把其他管理员
+    // 刚更新的监听设置用本页旧值覆盖回去（拉取失败时退回 form 初始化值）；
+    // acme_email 属本页工具栏编辑项，保留草稿值随本次发布生效
     try {
       const d = await api('/api/config')
       const latest = d.config || {}
       cfg.listen_http = latest.listen_http || ''
       cfg.listen_https = latest.listen_https || ''
-      cfg.acme_email = latest.acme_email || ''
     } catch (e) { /* 拉取失败沿用 form 初始化值 */ }
   }
   const preErr = validatePublishConfig(cfg)
@@ -989,6 +991,7 @@ onUnmounted(() => { if (statsTimer) { clearInterval(statsTimer); statsTimer = nu
 .km-site-list .site-item:hover { background: var(--km-panel-2); }
 .km-site-list .site-item.sel { background: var(--km-nav-grad); }
 .km-site-list .domain { font-size: 13.5px; font-weight: 600; color: var(--km-txt); display: flex; align-items: center; gap: 8px; }
+.km-site-list .domains { margin-top: 3px; font-size: 11.5px; line-height: 1.5; color: var(--km-txt-3); word-break: break-all; }
 .km-site-list .meta { font-size: 11px; color: var(--km-txt-3); margin-top: 3px; display: flex; gap: 8px; flex-wrap: wrap; }
 .km-site-list .domain + .meta { margin-top: 5px; }
 .km-site-list .stat-line { margin-top: 5px; font-size: 11px; color: var(--km-txt-2); }

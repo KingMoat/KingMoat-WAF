@@ -11,7 +11,7 @@
         <el-icon><MagicStick /></el-icon>&nbsp;申请证书
       </el-button>
       <el-tag effect="plain" type="info" class="km-tag">站点开启 ACME 后自动申请并续签（TLS-ALPN-01 / HTTP-01）</el-tag>
-      <span class="km-dim" style="font-size:12px;margin-left:8px">ACME 联系邮箱在「系统设置 → 数据面监听」中统一配置</span>
+      <span class="km-dim" style="font-size:12px;margin-left:8px">ACME 联系邮箱在「站点防护页」顶部工具栏中配置</span>
       <div class="grow"></div>
     </div>
 
@@ -213,7 +213,7 @@
             <el-input v-model="acmeForm.domain" class="km-mono" placeholder="如 demo.example.com（不支持通配符）" @keyup.enter="submitAcme" />
           </el-form-item>
           <el-form-item label="邮箱">
-            <el-input v-model="acmeForm.email" placeholder="留空则使用系统设置中的全局邮箱" />
+            <el-input v-model="acmeForm.email" placeholder="留空则使用站点防护页的全局邮箱" />
           </el-form-item>
           <el-form-item label="测试签发">
             <div style="display:flex;align-items:center;flex-wrap:wrap;gap:10px">

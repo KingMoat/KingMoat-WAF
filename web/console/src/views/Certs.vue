@@ -11,10 +11,7 @@
         <el-icon><MagicStick /></el-icon>&nbsp;申请证书
       </el-button>
       <el-tag effect="plain" type="info" class="km-tag">站点开启 ACME 后自动申请并续签（TLS-ALPN-01 / HTTP-01）</el-tag>
-      <el-input v-model="acmeEmail" placeholder="ops@example.com" class="km-mono" style="width:300px;margin-left:8px" size="small">
-        <template #prepend>ACME 邮箱</template>
-      </el-input>
-      <el-button size="small" type="primary" :loading="acmeSaving" @click="saveAcme">保存邮箱</el-button>
+      <span class="km-dim" style="font-size:12px;margin-left:8px">ACME 联系邮箱在「系统设置 → 数据面监听」中统一配置</span>
       <div class="grow"></div>
     </div>
 
@@ -216,7 +213,7 @@
             <el-input v-model="acmeForm.domain" class="km-mono" placeholder="如 demo.example.com（不支持通配符）" @keyup.enter="submitAcme" />
           </el-form-item>
           <el-form-item label="邮箱">
-            <el-input v-model="acmeForm.email" placeholder="留空则使用页面上方设置的 ACME 邮箱" />
+            <el-input v-model="acmeForm.email" placeholder="留空则使用系统设置中的全局邮箱" />
           </el-form-item>
           <el-form-item label="测试签发">
             <div style="display:flex;align-items:center;flex-wrap:wrap;gap:10px">
@@ -288,28 +285,13 @@ import { fmtTime } from '../timefmt'
 
 const router = useRouter()
 
-// ACME 全局邮箱（从系统设置迁移至此）
+// 全局 ACME 邮箱（读取自系统设置，仅用于申请弹窗预填；保存入口在系统设置页）
 const acmeEmail = ref('')
-const acmeSaving = ref(false)
 async function loadAcme() {
   try {
     const d = await api('/api/config')
     acmeEmail.value = d.config?.acme_email || ''
   } catch (e) { /* silent */ }
-}
-async function saveAcme() {
-  acmeSaving.value = true
-  try {
-    const d = await api('/api/config')
-    const cfg = d.config
-    cfg.acme_email = acmeEmail.value.trim()
-    const r = await post('/api/config/publish', { note: 'acme email update', config: cfg })
-    ElMessage.success('ACME 邮箱已发布并热生效（版本 ' + r.revision + '）')
-  } catch (e) {
-    ElMessage.error('保存失败：' + e.message)
-  } finally {
-    acmeSaving.value = false
-  }
 }
 const uploads = ref([])
 const dlg = ref(false)

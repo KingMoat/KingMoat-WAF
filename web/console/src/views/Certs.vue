@@ -223,7 +223,7 @@
           </el-form-item>
         </el-form>
         <el-alert type="info" :closable="false"
-                  title="申请前请确认：域名已解析到本机，且已在站点页配置全局 HTTP/HTTPS 监听（HTTP-01 验证需 80 端口可从公网访问）" />
+                  title="申请前请确认：域名已解析到本机，且已在系统设置页配置全局 HTTP/HTTPS 监听（HTTP-01 验证需 80 端口可从公网访问）" />
       </template>
       <div v-else-if="acmePhase === 'issuing' && acmeTask" style="text-align:center;padding:14px 0 4px">
         <el-icon class="km-acme-spin" style="font-size:36px;color:var(--km-cyan)"><Loading /></el-icon>

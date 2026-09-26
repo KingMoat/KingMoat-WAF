@@ -15,33 +15,6 @@
     </div>
 
     <!-- 图形化:左列表 + 右能力概览 -->
-    <!-- 全局监听设置：数据面监听与全局 ACME 邮箱，随「发布配置」一并提交 -->
-    <el-card v-if="mode === 'form'" shadow="never" :body-style="{ padding: 0 }" style="margin-bottom:16px">
-      <div class="km-card-head">
-        <span class="km-card-title">全局监听设置</span>
-        <span class="km-dim" style="font-size:12px">随「发布配置」一并生效，按站点域名自动路由</span>
-      </div>
-      <div class="km-listen-grid">
-        <div class="listen-item">
-          <div class="label">HTTP 监听地址</div>
-          <el-input v-model="form.listen_http" class="km-mono" placeholder="0.0.0.0:80" :disabled="!can('operator')" @input="markDirty" />
-          <div class="hint">数据面 HTTP 监听，按站点域名自动路由；留空则 HTTP 数据面关闭</div>
-          <div v-if="listenHttpError" class="err">{{ listenHttpError }}</div>
-        </div>
-        <div class="listen-item">
-          <div class="label">HTTPS 监听地址</div>
-          <el-input v-model="form.listen_https" class="km-mono" placeholder="0.0.0.0:443" :disabled="!can('operator')" @input="markDirty" />
-          <div class="hint">站点启用 HTTPS / ACME 的前提，留空则 HTTPS 数据面关闭</div>
-          <div v-if="listenHttpsError" class="err">{{ listenHttpsError }}</div>
-          <div v-else-if="listenPortConflict" class="err">HTTP 与 HTTPS 监听端口不能相同</div>
-        </div>
-        <div class="listen-item">
-          <div class="label">ACME 联系邮箱（全局）</div>
-          <el-input v-model="form.acme_email" placeholder="ops@example.com" clearable :disabled="!can('operator')" @input="markDirty" />
-          <div class="hint">站点未单独填写 ACME 邮箱时的回退联系邮箱（Let's Encrypt 证书过期提醒）</div>
-        </div>
-      </div>
-    </el-card>
     <div v-if="mode === 'form'" class="km-grid-2" style="grid-template-columns:minmax(340px,380px) 1fr;align-items:start">
       <el-card shadow="never" class="km-site-list" style="padding:0" :body-style="{ padding: 0 }">
         <div class="km-card-head"><span class="km-card-title">站点列表（{{ form.sites.length }}）</span></div>
@@ -284,7 +257,7 @@
           </el-radio-group>
         </el-form-item>
         <el-form-item label="监听端口">
-          <span class="km-dim" style="font-size:12px">站点不再单独配置端口：统一使用本页顶部「全局监听设置」的监听地址（默认 HTTP 80 / HTTPS 443），按域名自动路由</span>
+          <span class="km-dim" style="font-size:12px">站点不再单独配置端口：统一使用系统设置页「数据面监听」的监听地址（默认 HTTP 80 / HTTPS 443），按域名自动路由</span>
         </el-form-item>
         <el-form-item label="模式">
           <el-radio-group v-model="edit.mode">
@@ -332,7 +305,7 @@
           <div class="km-dim" style="font-size:12px;margin-top:4px">证书在「证书管理」页上传</div>
         </el-form-item>
         <el-form-item v-if="edit.tlsSource === 'acme'" label="ACME 说明">
-          <span class="km-dim" style="font-size:12px">开启后该域名自动申请 Let's Encrypt 证书并续签；站点未单独填邮箱时使用本页顶部「全局监听设置」中的 ACME 联系邮箱，状态见证书管理页</span>
+          <span class="km-dim" style="font-size:12px">开启后该域名自动申请 Let's Encrypt 证书并续签；站点未单独填邮箱时使用系统设置页「数据面监听」中的 ACME 联系邮箱，状态见证书管理页</span>
         </el-form-item>
 
         <el-form-item label="加密套件组">
@@ -428,6 +401,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api, can, post } from '../api'
 import { fmtTime } from '../timefmt'
+import { parseListenAddr } from '../listen'
 
 const route = useRoute()
 
@@ -507,64 +481,22 @@ function onUpstreamProtoChange(u) {
   if (!u.port || u.port === 80 || u.port === 443) u.port = d
 }
 
-// 表单模型 = 整份配置（sites 数组 + 顶层）
+// 表单模型 = 整份配置（sites 数组 + 顶层）。
+// listen_http / listen_https / acme_email 已迁至系统设置页「数据面监听」，
+// 此处仅作发布透传：load() 时从配置初始化，publishForm 发布前再用最新配置覆写，避免发布时把监听清空
 const form = reactive({ listen_http: '', listen_https: '', acme_email: '', audit_log_dir: 'logs', sites: [], _raw: null })
 
-// ---- 全局监听设置：地址解析与前置校验 ----
-// 解析监听地址，支持「:80」（全部接口）、「0.0.0.0:80」、「[::]:443」（IPv6）、「主机名:端口」；
-// 空值合法（HTTP 可关，HTTPS 有站点级前置条件），返回 { ok, empty, port, msg }
-function parseListenAddr(v) {
-  const s = String(v ?? '').trim()
-  if (!s) return { ok: true, empty: true }
-  let host, portStr
-  if (s.startsWith('[')) {
-    const end = s.indexOf(']')
-    if (end < 0) return { ok: false, msg: 'IPv6 地址需用方括号包裹，如 [::]:443' }
-    host = s.slice(1, end)
-    if (!host || !host.includes(':') || !/^[0-9a-fA-F:.]+$/.test(host)) return { ok: false, msg: '方括号内应为 IPv6 地址，如 [::]' }
-    const rest = s.slice(end + 1)
-    if (!rest.startsWith(':')) return { ok: false, msg: '格式应为 [IPv6地址]:端口，如 [::]:443' }
-    portStr = rest.slice(1)
-  } else {
-    const i = s.lastIndexOf(':')
-    if (i <= 0) {
-      if (i === 0) { host = ''; portStr = s.slice(1) }
-      else return { ok: false, msg: '格式应为 host:端口，如 0.0.0.0:80 或 :80' }
-    } else {
-      host = s.slice(0, i)
-      portStr = s.slice(i + 1)
-    }
-  }
-  if (!/^\d{1,5}$/.test(portStr)) return { ok: false, msg: '端口须为 1-65535 的数字' }
-  const port = Number(portStr)
-  if (port < 1 || port > 65535) return { ok: false, msg: '端口须在 1-65535 范围内' }
-  if (host && !/^[0-9a-zA-Z._-]+$/.test(host)) return { ok: false, msg: '地址仅支持 IP 或主机名' }
-  return { ok: true, empty: false, port }
-}
-const listenHttpError = computed(() => { const r = parseListenAddr(form.listen_http); return r.ok ? '' : r.msg })
-const listenHttpsError = computed(() => { const r = parseListenAddr(form.listen_https); return r.ok ? '' : r.msg })
-const listenPortConflict = computed(() => {
-  const a = parseListenAddr(form.listen_http)
-  const b = parseListenAddr(form.listen_https)
-  return a.ok && b.ok && !a.empty && !b.empty && a.port === b.port
-})
-
-// 发布整份配置前的前置校验，条件与后端 config.Validate 对齐：
-// ① 监听地址格式与端口范围；② 至少配置一个监听；③ HTTP/HTTPS 端口不同；
-// ④ 启用 ACME 或 HTTPS 跳转的站点必须先有全局 HTTPS 监听。返回第一条错误文案。
+// 发布整份配置前的前置校验（与后端 config.Validate 对齐）：
+// 启用 ACME 或 HTTPS 跳转的站点必须先有全局 HTTPS 监听。
+// 监听地址格式/端口范围校验已随「全局监听设置」迁至系统设置页，本页不再编辑监听、只做站点级前置拦截。
 function validatePublishConfig(cfg) {
-  const lh = parseListenAddr(cfg?.listen_http)
   const ls = parseListenAddr(cfg?.listen_https)
-  if (!lh.ok) return '全局 HTTP 监听地址无效：' + lh.msg + '（本页顶部「全局监听设置」）'
-  if (!ls.ok) return '全局 HTTPS 监听地址无效：' + ls.msg + '（本页顶部「全局监听设置」）'
-  if (lh.empty && ls.empty) return '至少需要配置一个全局监听地址（本页顶部「全局监听设置」）'
-  if (!lh.empty && !ls.empty && lh.port === ls.port) return 'HTTP 与 HTTPS 监听端口不能相同（本页顶部「全局监听设置」）'
   const sites = Array.isArray(cfg?.sites) ? cfg.sites : []
   for (let i = 0; i < sites.length; i++) {
     const s = sites[i] || {}
     const label = (s.domains && s.domains[0]) || '#' + i
-    if (s.acme && ls.empty) return '站点「' + label + '」启用 ACME 自动证书：请先在顶部「全局监听设置」填写 HTTPS 监听地址（如 0.0.0.0:443）'
-    if (s.redirect_to_https && ls.empty) return '站点「' + label + '」启用了 HTTPS 跳转：请先在顶部「全局监听设置」填写 HTTPS 监听地址（如 0.0.0.0:443）'
+    if (s.acme && (!ls.ok || ls.empty)) return '站点「' + label + '」启用 ACME 自动证书：请先在系统设置页「数据面监听」填写 HTTPS 监听地址（如 0.0.0.0:443）'
+    if (s.redirect_to_https && (!ls.ok || ls.empty)) return '站点「' + label + '」启用了 HTTPS 跳转：请先在系统设置页「数据面监听」填写 HTTPS 监听地址（如 0.0.0.0:443）'
   }
   return ''
 }
@@ -754,6 +686,15 @@ async function publishForm() {
   } else {
     cfg = JSON.parse(JSON.stringify(form))
     delete cfg._raw
+    // 监听三字段已迁至系统设置页：发布前用最新活跃配置覆写，避免把其他管理员
+    // 刚更新的监听设置用本页旧值覆盖回去（拉取失败时退回 form 初始化值）
+    try {
+      const d = await api('/api/config')
+      const latest = d.config || {}
+      cfg.listen_http = latest.listen_http || ''
+      cfg.listen_https = latest.listen_https || ''
+      cfg.acme_email = latest.acme_email || ''
+    } catch (e) { /* 拉取失败沿用 form 初始化值 */ }
   }
   const preErr = validatePublishConfig(cfg)
   if (preErr) return ElMessage.error(preErr)
@@ -861,7 +802,7 @@ function openEdit(i) {
   drawer.value = true
 }
 
-function applyEdit() {
+async function applyEdit() {
   // 域名行支持中/英文逗号分隔的批量录入：拆分、去空白、去重，杜绝
   // "a.com,b.com" 被存成单一字面域名导致的数据面 no_site 403。
   const seen = new Set()
@@ -885,13 +826,18 @@ function applyEdit() {
   if (domains.length === 0) { ElMessage.error('至少需要一个域名'); return null }
   if (nodes.length === 0) { ElMessage.error('至少需要一个完整的上游服务器（协议/IP/端口）'); return null }
   // ACME / HTTPS 跳转的前置条件：全局 HTTPS 监听必须先配置（与后端 config.Validate 对齐，
-  // 提前拦截并引导到顶部全局监听设置，避免发布时才被服务端拒绝）
+  // 提前拦截并引导到系统设置页，避免发布时才被服务端拒绝；监听设置已在系统设置页维护，
+  // 这里实时拉取最新活跃配置判断，拉取失败退回 form 初始化值）
   if (edit.protocol === 'https' && (edit.tlsSource === 'acme' || edit.redirect_to_https)) {
-    const lhp = parseListenAddr(form.listen_https)
+    let lhp = parseListenAddr(form.listen_https)
+    try {
+      const d = await api('/api/config')
+      lhp = parseListenAddr(d.config?.listen_https)
+    } catch (e) { /* 拉取失败沿用 form 初始化值 */ }
     if (!lhp.ok || lhp.empty) {
       ElMessage.error(edit.tlsSource === 'acme'
-        ? '启用 ACME 自动证书需先配置全局 HTTPS 监听：请先关闭本抽屉，在页面顶部「全局监听设置」填写（如 0.0.0.0:443）'
-        : '启用 HTTPS 跳转需先配置全局 HTTPS 监听：请先关闭本抽屉，在页面顶部「全局监听设置」填写（如 0.0.0.0:443）')
+        ? '启用 ACME 自动证书需先配置全局 HTTPS 监听：请到系统设置页「数据面监听」填写（如 0.0.0.0:443）'
+        : '启用 HTTPS 跳转需先配置全局 HTTPS 监听：请到系统设置页「数据面监听」填写（如 0.0.0.0:443）')
       return null
     }
   }
@@ -991,7 +937,7 @@ async function saveAndPublishSite() {
   // applyEdit shows the validation ElMessage errors itself; capture the
   // resulting site by re-running the draft update it performs.
   const before = JSON.stringify(form.sites)
-  const s = applyEdit()
+  const s = await applyEdit()
   if (!s) return
   publishingSite.value = true
   try {
@@ -1038,10 +984,6 @@ onUnmounted(() => { if (statsTimer) { clearInterval(statsTimer); statsTimer = nu
 </script>
 
 <style scoped>
-.km-listen-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px 20px; padding: 14px 16px 16px; }
-.km-listen-grid .listen-item .label { font-size: 12.5px; font-weight: 600; color: var(--km-txt-2); margin-bottom: 6px; }
-.km-listen-grid .listen-item .hint { font-size: 11.5px; color: var(--km-txt-3); line-height: 1.5; margin-top: 5px; }
-.km-listen-grid .listen-item .err { font-size: 11.5px; color: var(--km-red); line-height: 1.5; margin-top: 4px; }
 .km-site-list .site-item { padding: 11px 14px; border-bottom: 1px solid var(--km-line-soft); cursor: pointer; }
 .km-site-list .site-item:last-child { border-bottom: none; }
 .km-site-list .site-item:hover { background: var(--km-panel-2); }

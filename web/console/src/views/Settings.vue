@@ -34,6 +34,29 @@
         </el-card>
 
         <el-card shadow="never" style="margin-bottom:16px">
+          <div class="km-title">数据面监听</div>
+          <el-form label-width="160px" label-position="left">
+            <el-form-item label="HTTP 监听地址">
+              <el-input v-model="f.listen_http" class="km-mono" placeholder="0.0.0.0:80" style="width:320px" :disabled="!can('operator')" />
+              <div v-if="listenHttpError" style="width:100%;font-size:12px;color:var(--km-red);margin-top:4px">{{ listenHttpError }}</div>
+              <div class="km-dim" style="font-size:12px;width:100%">数据面 HTTP 监听，按站点域名自动路由；留空则 HTTP 数据面关闭</div>
+            </el-form-item>
+            <el-form-item label="HTTPS 监听地址">
+              <el-input v-model="f.listen_https" class="km-mono" placeholder="0.0.0.0:443" style="width:320px" :disabled="!can('operator')" />
+              <div v-if="listenHttpsError" style="width:100%;font-size:12px;color:var(--km-red);margin-top:4px">{{ listenHttpsError }}</div>
+              <div v-else-if="listenPortConflict" style="width:100%;font-size:12px;color:var(--km-red);margin-top:4px">HTTP 与 HTTPS 监听端口不能相同</div>
+              <div class="km-dim" style="font-size:12px;width:100%">站点启用 HTTPS / ACME / HTTPS 跳转的前提，留空则 HTTPS 数据面关闭；支持 [::]:443 IPv6 写法</div>
+            </el-form-item>
+            <el-form-item label="ACME 联系邮箱">
+              <el-input v-model="f.acme_email" placeholder="ops@example.com" clearable style="width:320px" :disabled="!can('operator')" />
+              <div class="km-dim" style="font-size:12px;width:100%">站点未单独填写 ACME 邮箱时的回退联系邮箱（Let's Encrypt 证书过期提醒）</div>
+            </el-form-item>
+          </el-form>
+          <el-alert v-if="listenPairEmpty" type="error" :closable="false" show-icon style="margin-top:6px"
+                    title="至少需要配置一个全局监听地址（HTTP / HTTPS 至少一项）" />
+        </el-card>
+
+        <el-card shadow="never" style="margin-bottom:16px">
           <div class="km-title">功能开关</div>
           <el-form label-width="200px" label-position="left">
             <el-form-item label="请求快照捕获">
@@ -569,6 +592,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api, can, del, post, role } from '../api'
+import { parseListenAddr } from '../listen'
 
 const tabs = [
   { id: 'general', name: '通用设置', icon: '⚙️' },
@@ -595,6 +619,8 @@ const alertRuleDefs = [
 ]
 
 const f = reactive({
+  // 数据面监听（从站点防护页迁入；随「保存并发布」整份发布）
+  listen_http: '', listen_https: '', acme_email: '',
   capture_requests: false,
   api_assets_enabled: false,
   risks_enabled: false,
@@ -634,6 +660,20 @@ const f = reactive({
   ai_report_tokens_wan: 20, ai_report_channel: 'webhook', ai_report_webhook: '', ai_report_email: '',
   s3_endpoint: '', s3_bucket: '', s3_prefix: 'kingmoat', s3_ak: '', s3_sk: '', s3_ssl: false,
   access_s3_endpoint: '', access_s3_bucket: '', access_s3_prefix: 'kingmoat', access_s3_ak: '', access_s3_sk: '', access_s3_ssl: false
+})
+
+// ---- 数据面监听（从站点防护页迁入）：输入即时校验，保存前再拦截 ----
+const listenHttpError = computed(() => { const r = parseListenAddr(f.listen_http); return r.ok ? '' : r.msg })
+const listenHttpsError = computed(() => { const r = parseListenAddr(f.listen_https); return r.ok ? '' : r.msg })
+const listenPortConflict = computed(() => {
+  const a = parseListenAddr(f.listen_http)
+  const b = parseListenAddr(f.listen_https)
+  return a.ok && b.ok && !a.empty && !b.empty && a.port === b.port
+})
+const listenPairEmpty = computed(() => {
+  const a = parseListenAddr(f.listen_http)
+  const b = parseListenAddr(f.listen_https)
+  return a.empty && b.empty
 })
 
 // AI Key 存库：状态徽标 + 保存/清除（仅 admin；密钥只在请求体内，不回显）
@@ -758,6 +798,10 @@ const rbac = [
 async function load() {
   const d = await api('/api/config')
   const c = d.config
+  // 数据面监听与全局 ACME 邮箱（从站点防护页迁入）
+  f.listen_http = c.listen_http || ''
+  f.listen_https = c.listen_https || ''
+  f.acme_email = c.acme_email || ''
   f.capture_requests = !!c.capture_requests
   f.telemetry_enabled = !!(c.telemetry && c.telemetry.enabled)
   f.api_assets_enabled = !!c.api_assets?.enabled
@@ -950,8 +994,20 @@ async function save() {
     const wan = Number(f.ai_report_tokens_wan)
     if (!Number.isFinite(wan) || wan < 1 || wan > 1000) return ElMessage.warning('单日 Token 限额需在 1–1000 万之间')
   }
+  // 数据面监听保存前拦截：格式/端口约束与后端 config.Validate 对齐，不合法不发请求
+  const lh = parseListenAddr(f.listen_http)
+  const ls = parseListenAddr(f.listen_https)
+  if (!lh.ok) return ElMessage.error('HTTP 监听地址无效：' + lh.msg)
+  if (!ls.ok) return ElMessage.error('HTTPS 监听地址无效：' + ls.msg)
+  if (lh.empty && ls.empty) return ElMessage.error('至少需要配置一个全局监听地址（HTTP / HTTPS 至少一项）')
+  if (!lh.empty && !ls.empty && lh.port === ls.port) return ElMessage.error('HTTP 与 HTTPS 监听端口不能相同')
   const d = await api('/api/config')
   const cfg = d.config
+  // 数据面监听与全局 ACME 邮箱：随整份配置发布（从站点防护页迁入）；
+  // sites 等其余字段取自刚拉取的最新配置，发布不会丢失或清空监听设置
+  cfg.listen_http = (f.listen_http || '').trim()
+  cfg.listen_https = (f.listen_https || '').trim()
+  cfg.acme_email = (f.acme_email || '').trim()
   cfg.capture_requests = f.capture_requests
   // 匿名安装统计：缺省键 = 关闭（与后端语义一致）
   if (f.telemetry_enabled) cfg.telemetry = { enabled: true }

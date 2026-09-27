@@ -437,6 +437,72 @@ func TestDownloadHTTPStatusError(t *testing.T) {
 	}
 }
 
+// TestDownloadRedirectPolicy: every redirect hop is re-validated against
+// the download policy - a hop to plain http or a non-allowlisted host is
+// refused (the default client policy would follow blindly), while
+// same-host hops (the shape Gitee uses to serve release attachments)
+// still download. The http hop points at a real listener on an
+// allowlisted host so the refusal is provably scheme-based.
+func TestDownloadRedirectPolicy(t *testing.T) {
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("should never be reached"))
+	}))
+	defer plain.Close()
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/http-hop":
+			http.Redirect(w, r, plain.URL+"/b", http.StatusFound)
+		case "/evil-hop":
+			http.Redirect(w, r, "https://evil.example.com/b", http.StatusFound)
+		case "/chain1":
+			http.Redirect(w, r, "/chain2", http.StatusFound)
+		case "/chain2":
+			_, _ = w.Write([]byte(testPayloadA))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	s := NewService("v0.7.8-beta", t.TempDir(),
+		WithHTTPClient(srv.Client()), WithAllowedHosts([]string{"127.0.0.1"}), WithPlatform("linux", "amd64"))
+	dest := filepath.Join(t.TempDir(), "out.bin")
+
+	if _, err := s.downloadFile(context.Background(), srv.URL+"/http-hop", dest, 1024); err == nil || !strings.Contains(err.Error(), "HTTPS") {
+		t.Fatalf("http hop = %v, want scheme refusal", err)
+	}
+	if _, err := s.downloadFile(context.Background(), srv.URL+"/evil-hop", dest, 1024); err == nil || !strings.Contains(err.Error(), "来源域名") {
+		t.Fatalf("foreign-host hop = %v, want allowlist refusal", err)
+	}
+	// A refused hop must not write the destination.
+	if _, err := os.Stat(dest); err == nil {
+		t.Fatal("refused download must not leave the destination file")
+	}
+	// Same-host hop (the Gitee attachment shape) downloads fine.
+	n, err := s.downloadFile(context.Background(), srv.URL+"/chain1", dest, 1024)
+	if err != nil || n != int64(len(testPayloadA)) {
+		t.Fatalf("same-host redirect download = %d, %v; want success", n, err)
+	}
+	if got, _ := os.ReadFile(dest); string(got) != testPayloadA {
+		t.Fatalf("redirected payload = %q", got)
+	}
+}
+
+// TestDownloadRedirectHopCap: a redirect loop stops at the hop cap with
+// an explicit error instead of spinning (or relying on net/http's generic
+// "stopped after 10 redirects" text).
+func TestDownloadRedirectHopCap(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/loop", http.StatusFound)
+	}))
+	defer srv.Close()
+	s := NewService("v0.7.8-beta", t.TempDir(),
+		WithHTTPClient(srv.Client()), WithAllowedHosts([]string{"127.0.0.1"}), WithPlatform("linux", "amd64"))
+	dest := filepath.Join(t.TempDir(), "out.bin")
+	if _, err := s.downloadFile(context.Background(), srv.URL+"/loop", dest, 1024); err == nil || !strings.Contains(err.Error(), "重定向超过") {
+		t.Fatalf("redirect loop = %v, want hop-cap refusal", err)
+	}
+}
+
 // TestParseChecksumsFormats pins the tolerated sums-file spellings.
 func TestParseChecksumsFormats(t *testing.T) {
 	h := sha256Hex([]byte("x"))

@@ -118,26 +118,31 @@ func (s *Service) verifyDownload(ctx context.Context, t *Task, rel *Release, arc
 }
 
 // downloadFile streams rawURL into destPath under the download policy:
-// HTTPS only, origin allowlist, hard per-file size cap. The allowlist
-// applies to the feed-supplied URL; redirects (Gitee serves attachments
-// through them) are followed as trusted-origin behavior, and the SHA256
+// HTTPS only, origin allowlist, hard per-file size cap. The policy applies
+// to the WHOLE redirect chain, not just the feed-supplied URL: Gitee
+// serves attachments through redirects, and a tampered feed (or a
+// compromised origin) could otherwise bounce the client to any scheme or
+// host - the default redirect policy follows blindly. CheckRedirect
+// re-validates every hop (and stops past maxRedirectHops), and the SHA256
 // verification remains the integrity backstop regardless of path.
 func (s *Service) downloadFile(ctx context.Context, rawURL, destPath string, maxBytes int64) (int64, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return 0, fmt.Errorf("解析下载地址失败: %w", err)
 	}
-	if u.Scheme != "https" {
-		return 0, fmt.Errorf("拒绝非 HTTPS 下载地址: %s", rawURL)
-	}
-	if !s.hostAllowed(u.Hostname()) {
-		return 0, fmt.Errorf("下载地址 %q 不在允许的来源域名列表", rawURL)
+	if err := s.validateDownloadURL(u); err != nil {
+		return 0, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return 0, fmt.Errorf("构造下载请求失败: %w", err)
 	}
-	resp, err := s.httpClient.Do(req)
+	// Per-download client copy: same transport (test TLS trust; deadlines
+	// ride on the request context) so the redirect gate below is scoped
+	// to this download instead of the shared feed client.
+	client := *s.httpClient
+	client.CheckRedirect = s.redirectCheck()
+	resp, err := client.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("下载 %s 失败: %w", u.Host+u.Path, err)
 	}
@@ -165,6 +170,43 @@ func (s *Service) downloadFile(ctx context.Context, rawURL, destPath string, max
 		return 0, copyErr
 	}
 	return n, nil
+}
+
+// maxRedirectHops bounds one download's redirect chain - the same
+// stop-after-10 the net/http default applies, but with a policy-flavored
+// error instead of the generic one. via[0] is the original request, so
+// the count includes it.
+const maxRedirectHops = 10
+
+// validateDownloadURL enforces the download policy on one URL of the
+// download chain - the initial feed-supplied address and every redirect
+// hop alike: HTTPS only and origin-allowlisted.
+func (s *Service) validateDownloadURL(u *url.URL) error {
+	if u.Scheme != "https" {
+		return fmt.Errorf("拒绝非 HTTPS 下载地址: %s", u)
+	}
+	if !s.hostAllowed(u.Hostname()) {
+		return fmt.Errorf("下载地址 %q 不在允许的来源域名列表", u)
+	}
+	return nil
+}
+
+// redirectCheck is the per-hop redirect gate installed as the download
+// client's CheckRedirect: every hop must re-satisfy the download policy
+// (HTTPS, allowlist) before it is sent, and chains past maxRedirectHops
+// are cut. A plain error aborts the chain and surfaces (wrapped in
+// url.Error) as the download failure; the client closes the refused
+// response body.
+func (s *Service) redirectCheck() func(*http.Request, []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		if len(via) >= maxRedirectHops {
+			return fmt.Errorf("重定向超过 %d 跳，中止下载", maxRedirectHops)
+		}
+		if err := s.validateDownloadURL(req.URL); err != nil {
+			return fmt.Errorf("重定向跳转未通过下载策略: %w", err)
+		}
+		return nil
+	}
 }
 
 // hostAllowed matches the URL host against the allowlist (exact hostnames,

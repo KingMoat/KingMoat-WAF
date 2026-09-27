@@ -846,7 +846,7 @@ const UPG_STEPS = [
 ]
 const UPG_POLL_MS = 2000          // 任务轮询间隔
 const UPG_RETRY_MS = 3000         // 服务重启窗口（接口失联）退避间隔
-const UPG_RESTART_MAX_MS = 180000 // 重启窗口判定上限，超时按失败引导人工排查
+const UPG_RESTART_MAX_MS = 180000 // 失联判定上限（距最后一次成功通信），超时按失败引导人工排查
 const upgradeModule = ref(null)   // null=探测中 true=可用 false=未接线/无权限
 const upgVersion = ref('')
 const upgLatest = ref(null)      // {version, update_available, notes, assets_url}
@@ -854,7 +854,8 @@ const upgChecking = ref(false)
 const upgTask = ref(null)        // 升级任务对象（轮询态数据源）
 const upgStatusError = ref('')
 let upgPollTimer = null
-let upgPollStart = 0
+let upgPollGen = 0    // 轮询代数：每次进入轮询自增；await 返回后校验，废弃旧代 in-flight 链
+let upgLastSeenAt = 0 // 最后一次成功通信时间（task/status 查询成功即刷新），失联超时锚点
 
 const upgDenied = computed(() => !can('admin'))
 const upgTaskActive = computed(() => !!upgTask.value && !['success', 'failed'].includes(upgTask.value.state))
@@ -932,22 +933,31 @@ function attachUpgradeTask(t) {
 
 function pollUpgradeTask(id) {
   stopUpgradePoll()
-  upgPollStart = Date.now()
-  const schedule = (ms) => { upgPollTimer = setTimeout(tick, ms) }
+  const gen = ++upgPollGen
+  upgLastSeenAt = Date.now()
+  const alive = () => gen === upgPollGen
+  const schedule = (ms) => { if (alive()) upgPollTimer = setTimeout(tick, ms) }
   const finish = (t) => {
+    if (!alive()) return
     upgTask.value = t
     if (t.state === 'success' && t.target_version) upgVersion.value = t.target_version
   }
   const tick = async () => {
+    if (!alive()) return
     upgPollTimer = null
     try {
       const t = await api('/api/upgrade/task?id=' + encodeURIComponent(id))
+      if (!alive()) return // 代数已更替（重挂/卸载/新任务）：丢弃本链，避免双轮询并存
+      upgLastSeenAt = Date.now() // task 查询成功（无论 state）即刷新失联锚点
       if (t.state === 'success' || t.state === 'failed') { finish(t); return }
       upgTask.value = t
     } catch (e) {
+      if (!alive()) return
       // 服务重启窗口接口失联属预期：改走 /status 判定成败；status 也不可达则退避重试
       try {
         const d = await api('/api/upgrade/status')
+        if (!alive()) return
+        upgLastSeenAt = Date.now() // status 可达同样是成功通信
         if (d.running_task) { upgTask.value = d.running_task; schedule(UPG_RETRY_MS); return }
         upgVersion.value = d.version || upgVersion.value
         const t0 = upgTask.value || {}
@@ -958,8 +968,11 @@ function pollUpgradeTask(id) {
         }
         return
       } catch (e2) {
-        if (Date.now() - upgPollStart > UPG_RESTART_MAX_MS) {
-          finish({ ...(upgTask.value || { id }), state: 'failed', error: '升级后服务未在 3 分钟内恢复响应，请登录服务器执行 systemctl status kingmoat 排查，必要时用安装目录 kingmoat.bak-* 备份手动恢复' })
+        if (!alive()) return
+        // 失联窗口锚定最后一次成功通信：任务仍在推进（响应回来）就一直续期，
+        // 下载/校验耗时长的正常升级不会被误判；仅连续失联超 3 分钟才判失败
+        if (Date.now() - upgLastSeenAt > UPG_RESTART_MAX_MS) {
+          finish({ ...(upgTask.value || { id }), state: 'failed', error: '升级服务已连续失联超过 3 分钟，请登录服务器执行 systemctl status kingmoat 排查，必要时用安装目录 kingmoat.bak-* 备份手动恢复' })
           return
         }
         schedule(UPG_RETRY_MS)
@@ -972,6 +985,7 @@ function pollUpgradeTask(id) {
 }
 
 function stopUpgradePoll() {
+  upgPollGen++ // 废弃旧代 in-flight 回调（卸载/重入轮询均生效）
   if (upgPollTimer) { clearTimeout(upgPollTimer); upgPollTimer = null }
 }
 

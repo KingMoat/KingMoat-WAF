@@ -328,7 +328,9 @@ func TestStartCleansOldWorkspaces(t *testing.T) {
 	s := NewService("v0.7.8-beta", dataDir,
 		WithChecker(func(ctx context.Context) ([]Release, error) { return testFeed(), nil }),
 		WithDownloader(func(ctx context.Context, t *Task, rel *Release) (string, error) { return "/fake/archive.tar.gz", nil }),
-		WithVerifier(func(ctx context.Context, t *Task, rel *Release, archivePath string) (string, error) { return "/fake/artifact", nil }),
+		WithVerifier(func(ctx context.Context, t *Task, rel *Release, archivePath string) (string, error) {
+			return "/fake/artifact", nil
+		}),
 		WithReplacer(nil)) // fails the task at the replace stage; cleanup already ran
 	task, err := s.Start("")
 	if err != nil {
@@ -390,5 +392,32 @@ func TestTaskEndToEndReplace(t *testing.T) {
 	}
 	if rec.TargetSHA256 != sha256Hex([]byte(testPayloadA)) || rec.TargetVersion != testVersion {
 		t.Fatalf("intent record = %+v", rec)
+	}
+}
+
+// TestProbeRestartCapabilityEuid: the restart authorization is probed
+// like the console port change gates it (consolePortChangeable and its
+// EuidProbe in internal/api/console_port.go) - a non-root caller gets an
+// early, distinct refusal (polkit default-deny) instead of a
+// mid-upgrade restart failure, and root passes. Runs through the
+// post-platform probe on any host, with a fake systemctl on PATH so the
+// preceding checks succeed.
+func TestProbeRestartCapabilityEuid(t *testing.T) {
+	_, noBlock := fakeSystemctlScripts()
+	fakeSystemctl(t, noBlock)
+
+	s := NewService("v0.7.8-beta", t.TempDir(),
+		WithBinaryDir(t.TempDir()),
+		WithEuidProbe(func() int { return 1000 }))
+	err := s.probeRestartCapability()
+	if err == nil || !strings.Contains(err.Error(), "需要 root 或 polkit 授权重启服务") {
+		t.Fatalf("probe as non-root = %v, want the polkit guidance", err)
+	}
+
+	sRoot := NewService("v0.7.8-beta", t.TempDir(),
+		WithBinaryDir(t.TempDir()),
+		WithEuidProbe(func() int { return 0 }))
+	if err := sRoot.probeRestartCapability(); err != nil {
+		t.Fatalf("probe as root = %v, want pass", err)
 	}
 }

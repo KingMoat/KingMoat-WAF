@@ -120,18 +120,35 @@ func (s *Service) restoreFromBackups(dir string) {
 //     rollback) is a Linux/systemd shape; Windows deployments get the
 //     manual-download guidance instead (upgrade card: no auto-replacement
 //     on Windows).
-//  1. the binary directory is writable: the swap is a rename inside that
-//     directory, and under ProtectSystem=strict the verdict depends on the
-//     unit's ReadWritePaths mounts - a real create-and-delete probe beats
-//     parsing unit text (old units lack the path and must re-run
-//     install.sh first).
-//  2. systemctl exists: the restart stage submits the unit restart through
-//     it; without it the upgrade could replace binaries but never hand
-//     over to the new ones.
+//
+// The host-level questions behind the restart handover live in
+// probeRestartCapability (writable directory, systemctl, root), split off
+// so tests on non-Linux hosts can exercise them too.
 func (s *Service) probeReplaceCapability() error {
 	if runtime.GOOS != "linux" {
 		return fmt.Errorf("当前平台 %s 不支持在线替换二进制（仅支持 systemd 部署的 Linux）", runtime.GOOS)
 	}
+	return s.probeRestartCapability()
+}
+
+// probeRestartCapability answers the three host-level questions the
+// restart handover depends on, each with a distinct actionable reason:
+//
+//  1. the binary directory is writable: the swap is a rename inside that
+//     directory, and under ProtectSystem=strict the verdict depends on the
+//     unit's ReadWritePaths mounts - a real create-and-delete probe beats
+//     parsing unit text (old units lack the path and must re-run
+//     install.sh first);
+//  2. systemctl exists: the restart stage submits the unit restart through
+//     it; without it the upgrade could replace binaries but never hand
+//     over to the new ones;
+//  3. the process runs as root: a non-root `systemctl restart kingmoat`
+//     is rejected by the default polkit policy (auth_admin_keep) - the
+//     same verdict the console port change gates on (consolePortChangeable,
+//     internal/api/console_port.go, and its EuidProbe). Probing it here
+//     fails the upgrade early with the manual path instead of swapping
+//     binaries and then failing the restart submission.
+func (s *Service) probeRestartCapability() error {
 	dir, err := s.currentBinaryDir()
 	if err != nil {
 		return fmt.Errorf("定位当前二进制目录失败: %w", err)
@@ -141,6 +158,9 @@ func (s *Service) probeReplaceCapability() error {
 	}
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return fmt.Errorf("未找到 systemctl，无法自动重启服务（非 systemd 部署）")
+	}
+	if s.euidProbe() != 0 {
+		return errors.New("当前进程非 root 运行，polkit 默认拒绝其重启 kingmoat 服务（需要 root 或 polkit 授权重启服务）")
 	}
 	return nil
 }

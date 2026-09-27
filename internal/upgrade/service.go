@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -130,9 +131,14 @@ type Service struct {
 
 	// Replace capability seams (see replace.go): probeFn overrides the
 	// capability probe; binaryDir pins the directory of the running
-	// binaries (tests; production derives it from os.Executable).
+	// binaries (tests; production derives it from os.Executable);
+	// euidProbe reports the effective uid of the running process (nil =
+	// os.Geteuid; tests inject a non-root identity; see
+	// probeRestartCapability and the aligned EuidProbe in
+	// internal/api).
 	probeFn   ProbeFunc
 	binaryDir string
+	euidProbe func() int
 
 	// Releases feed transport (WithAPIBase/WithHTTPClient test seams).
 	apiBase    string
@@ -171,6 +177,11 @@ func WithRestarter(f RestartFunc) Option { return func(s *Service) { s.restartFn
 // WithProber replaces the replace-capability probe (tests: forced verdicts;
 // see replace.go for the production probe).
 func WithProber(f ProbeFunc) Option { return func(s *Service) { s.probeFn = f } }
+
+// WithEuidProbe replaces the effective-uid probe used by the restart
+// authorization check (tests: inject a non-root identity; see
+// probeRestartCapability for the production use).
+func WithEuidProbe(f func() int) Option { return func(s *Service) { s.euidProbe = f } }
 
 // WithBinaryDir pins the directory holding the running kingmoat binaries
 // (tests: a fake layout; production: derived from os.Executable).
@@ -219,6 +230,7 @@ func NewService(currentVersion, dataDir string, opts ...Option) *Service {
 	s.verifyFn = s.verifyDownload
 	s.replaceFn = s.defaultReplace
 	s.restartFn = s.defaultRestartStage
+	s.euidProbe = os.Geteuid
 	for _, o := range opts {
 		o(s)
 	}

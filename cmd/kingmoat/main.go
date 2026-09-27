@@ -83,6 +83,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	// L1 self-heal: if a previous online upgrade left an intent marker and
+	// the running binary does not match the recorded target sha256, restore
+	// the backup before anything else initializes (the new binary failed to
+	// boot at least once; L2 ExecStartPre should have caught this earlier).
+	if *consoleAddr != "" {
+		if serverBin, berr := os.Executable(); berr == nil {
+			dataDir := filepath.Dir(*consoleDB)
+			if needed, reason := upgrade.CheckUpgradeIntent(dataDir, serverBin); needed {
+				if rerr := upgrade.PerformRollback(dataDir, serverBin); rerr != nil {
+					logger.Error("upgrade rollback failed", "err", rerr)
+				} else {
+					logger.Warn("upgraded binary failed to boot; rolled back", "reason", reason)
+				}
+			}
+		}
+	}
+
 	switch {
 	case *consoleAddr != "":
 		center, err = configcenter.Open(*consoleDB, seed, logger)

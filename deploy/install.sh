@@ -748,8 +748,10 @@ EnvironmentFile=${DATA_DIR}/console.env
 # Self-healing rollback for interrupted online upgrades: compares the
 # running binary against the recorded upgrade intent and restores the
 # backup if the new binary failed to boot. The command itself never
-# fails (exit 0 when no intent / intent satisfied / files missing).
-ExecStartPre=${INSTALL_DIR}/kingmoat-cli upgrade-rollback
+# fails (exit 0 when no intent / intent satisfied / files missing), and
+# the leading "-" makes systemd ignore its exit code even if the binary
+# itself is missing - startup must never be blocked by this hook.
+ExecStartPre="-${INSTALL_DIR}/kingmoat-cli" upgrade-rollback -data-dir "${DATA_DIR}"
 ExecStart="${INSTALL_DIR}/kingmoat" -config "${CONFIG_FILE}" -console-addr 0.0.0.0:\${CONSOLE_PORT} -console-db "${DATA_DIR}/kingmoat.db"
 Restart=on-failure
 RestartSec=3

@@ -636,8 +636,8 @@ func (s *Server) identify(r *http.Request) *currentUser {
 		if username == "" {
 			username = bootstrapUsername
 		}
-		role, ok := s.authenticate(username, pass, "")
-		if !ok {
+		res, role := s.authenticate(username, pass, "")
+		if res != authOK {
 			s.logins.recordFailure(r, s.loginWindow())
 			return nil
 		}
@@ -690,13 +690,29 @@ func (s *Server) identifyBearer(token string) *currentUser {
 	return nil
 }
 
-// authenticate validates credentials against the users table. Unknown
-// usernames burn one argon2id verification so response timing matches a real
-// credential check (no enumeration oracle).
-func (s *Server) authenticate(username, password, totpCode string) (string, bool) {
+// authResult classifies a credential check: authDenied rejects the attempt
+// (wrong password, disabled account or unknown user), authTOTPRequired means
+// the password verified but the second factor is missing or wrong, authOK
+// grants access.
+type authResult int
+
+const (
+	authDenied       authResult = iota
+	authTOTPRequired
+	authOK
+)
+
+// authenticate validates credentials against the users table and returns a
+// three-state result plus the account role. Password verification and the
+// disabled check always run BEFORE the TOTP decision: answering totp_required
+// for a bad password or a disabled account would leak the account's MFA and
+// state to unauthenticated callers. Unknown usernames burn one argon2id
+// verification so response timing matches a real credential check (no
+// enumeration oracle).
+func (s *Server) authenticate(username, password, totpCode string) (authResult, string) {
 	a := s.opts.Auth
 	if a == nil {
-		return "", false
+		return authDenied, ""
 	}
 	if username == "" {
 		username = bootstrapUsername // sole built-in account (kmadmin)
@@ -709,24 +725,24 @@ func (s *Server) authenticate(username, password, totpCode string) (string, bool
 			// an account-state oracle.
 			verified := passhash.VerifyArgon2id(u.PasswordHash, password)
 			if u.Disabled || !verified {
-				return "", false
+				return authDenied, ""
 			}
 			// Per-user TOTP takes precedence; the global env secret stays
 			// as the fallback so existing deployments keep their 2FA.
 			if u.TOTPEnabled {
 				if !totp.Validate(totpCode, u.TOTPSecret) {
-					return "", false
+					return authTOTPRequired, ""
 				}
 			} else if a.TOTPEnabled() && !totp.Validate(totpCode, a.totpSecret) {
-				return "", false
+				return authTOTPRequired, ""
 			}
-			return u.Role, true
+			return authOK, u.Role
 		}
 	}
 	// Unknown username: burn one argon2id verification so response timing
 	// matches a real credential check (no enumeration oracle).
 	passhash.VerifyDummy(password)
-	return "", false
+	return authDenied, ""
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -770,8 +786,16 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if username == "" {
 		username = bootstrapUsername
 	}
-	role, ok := s.authenticate(username, req.Password, req.TOTP)
-	if !ok {
+	res, role := s.authenticate(username, req.Password, req.TOTP)
+	switch res {
+	case authTOTPRequired:
+		// Valid password with a missing or wrong second factor: tell the SPA
+		// to prompt for the dynamic code, and count the miss into the same
+		// brute-force window as any other failed attempt.
+		s.logins.recordFailure(r, s.loginWindow())
+		writeErr(w, http.StatusUnauthorized, fmt.Errorf("totp_required"))
+		return
+	case authDenied:
 		s.logins.recordFailure(r, s.loginWindow())
 		writeErr(w, http.StatusUnauthorized, fmt.Errorf("invalid credentials"))
 		return

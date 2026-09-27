@@ -105,7 +105,7 @@ curl -H 'Authorization: Bearer kma1_1a2b3c4d_xxxxxxxxxxxx' http://127.0.0.1:8081
 - `username`：缺省时视为 `admin`。
 - `totp`：账号启用了逐用户 MFA，或部署设置了全局 `KINGMOAT_ADMIN_TOTP` 时必填。
 - `200`：`{"ok":true,"role":"admin","username":"admin","totp":false}` + `Set-Cookie: km_session=...`
-- `401`：`{"error":"invalid credentials"}`
+- `401`：`{"error":"invalid credentials"}`（密码错误 / 账号禁用 / 未知用户名）或 `{"error":"totp_required"}`（密码正确但缺动态码或动态码错误，同样计入防爆破计数）
 - `429`：`{"error":"too many failed attempts, try again later"}` + `Retry-After`（同一来源 IP 15 分钟内失败达 10 次后触发滑动窗口锁定，成功登录即清零；Basic 认证失败共用同一计数器）
 - `400`：`{"error":"auth is not configured"}`（未设置 ADMIN_HASH 时）
 

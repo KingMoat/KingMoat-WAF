@@ -21,15 +21,24 @@ export function can(level) {
 }
 
 export async function api(path, opts = {}) {
+  const { raw401, ...init } = opts
   const r = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
     credentials: 'same-origin',
-    ...opts
+    ...init
   })
-  if (r.status === 401) {
+  if (r.status === 401 && !raw401) {
     clearSession()
     location.hash = '#/login'
     throw new Error('未登录或会话已过期')
+  }
+  if (r.status === 401) {
+    let code = '', msg = r.statusText
+    try { const j = await r.json(); code = j.error || ''; msg = j.message || j.error || msg } catch (e) { /* keep */ }
+    const err = new Error(msg)
+    err.status = 401
+    err.code = code
+    throw err
   }
   if (r.status === 403) {
     let m403 = r.statusText

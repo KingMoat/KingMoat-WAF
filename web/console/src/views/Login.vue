@@ -50,7 +50,7 @@
 <script setup>
 import { useRouter } from 'vue-router'
 import { reactive, ref } from 'vue'
-import { post, setSession } from '../api'
+import { api, setSession } from '../api'
 
 const router = useRouter()
 const form = reactive({ username: '', password: '', totp: '' })
@@ -62,7 +62,11 @@ async function doLogin() {
   busy.value = true
   msg.value = ''
   try {
-    const r = await post('/api/login', { username: form.username, password: form.password, totp: form.totp })
+    const r = await api('/api/login', {
+      method: 'POST',
+      body: JSON.stringify({ username: form.username, password: form.password, totp: form.totp }),
+      raw401: true
+    })
     setSession(r.role || 'admin', form.username || 'admin')
     // 初始密码账户：先进入强制改密页，改完才能进控制台。
     if (r.must_change) {
@@ -72,8 +76,14 @@ async function doLogin() {
     }
     router.push('/')
   } catch (e) {
-    msg.value = e.message
-    if (String(e.message).includes('两步') || String(e.message).includes('totp')) needTotp.value = true
+    if (e.code === 'totp_required' || String(e.message).includes('两步') || String(e.message).includes('totp')) {
+      msg.value = needTotp.value ? '动态码不正确，请重新输入' : '此账号已开启两步验证，请输入验证器 App 中的 6 位动态码'
+      needTotp.value = true
+    } else if (e.code === 'invalid credentials') {
+      msg.value = '用户名或密码错误'
+    } else {
+      msg.value = e.message
+    }
   } finally {
     busy.value = false
   }

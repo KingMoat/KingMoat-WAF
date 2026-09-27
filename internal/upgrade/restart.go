@@ -96,20 +96,45 @@ func defaultRestarter(ctx context.Context) error {
 // its verdict: exit 0 means the restart job was accepted; any other exit
 // fails the submission with the command's combined stdout/stderr folded
 // into the error - the polkit/unit diagnostics live there, not in the
-// exit code. A context expiry (the restartSubmitTimeout bound or a
-// canceled task) is reported as its own failure so a hung dbus can never
-// masquerade as a systemd verdict. Test seam: tests inject fake
-// systemctl binaries and assert verdict propagation.
+// exit code. Two narrow windows are tolerated / reclassified so a real
+// submission is never misreported:
+//
+//   - A SIGTERM exit means systemd's stop phase tore down the unit cgroup
+//     (and this client with it) AFTER the job was accepted - reported as
+//     success. (A timeout kill uses SIGKILL instead, so the two are
+//     distinguishable.)
+//   - A SIGKILL exit paired with an expired context is the bounded-wait
+//     path (hung dbus): reported as a timeout, never as the raw "signal:
+//     killed" error. A context expiry only matters when no verdict was
+//     reached; a clean exit-0 submission stays a success.
+//
+// Test seam: tests inject fake systemctl binaries and assert verdict
+// propagation.
 func submitRestart(ctx context.Context, cmd *exec.Cmd) error {
 	out, err := cmd.CombinedOutput()
-	if ctx.Err() != nil {
-		return fmt.Errorf("等待 systemctl 提交结果超时: %w", ctx.Err())
-	}
 	if err != nil {
+		// Unix: systemd's stop phase may tear down the unit cgroup (and
+		// this client with it, SIGTERM) after the restart job was accepted
+		// - tolerate that as a success. The bounded-wait kill uses SIGKILL
+		// ("signal: killed"), so the two are distinguishable. Matched by
+		// string because os.ProcessState.Signaled/Signal are unix-only
+		// APIs; on Windows this error shape never occurs (production path
+		// is GOOS-gated and terminated children report "exit status N").
+		if strings.HasPrefix(err.Error(), "signal: terminated") {
+			return nil
+		}
+		if ctx.Err() != nil {
+			// Bounded wait expired before a verdict: hung dbus (SIGKILL on
+			// Linux) or a terminated client on Windows - report as a timeout
+			// instead of the raw "signal: killed" / "exit status 1" error.
+			return fmt.Errorf("等待 systemctl 提交结果超时: %w", ctx.Err())
+		}
 		if summary := strings.TrimSpace(string(out)); summary != "" {
 			return fmt.Errorf("%w: %s", err, summary)
 		}
 		return err
 	}
+	// err == nil: the verdict is in (job accepted) - a concurrently expired
+	// context does not change that fact, so no timeout check here.
 	return nil
 }

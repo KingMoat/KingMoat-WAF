@@ -152,6 +152,41 @@ func TestSubmitRestartBounded(t *testing.T) {
 	}
 }
 
+// TestSubmitRestartToleratesCgroupSIGTERM: systemd's stop phase may tear
+// down the unit cgroup (and the systemctl client with it, SIGTERM) after
+// the restart job was accepted - that must count as a successful
+// submission, not a failure. Distinguishing signal: the bounded-wait path
+// kills with SIGKILL. Linux-only: Windows has no SIGTERM for child
+// processes (and the production path is GOOS-gated anyway).
+func TestSubmitRestartToleratesCgroupSIGTERM(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no SIGTERM for child processes on windows")
+	}
+	cmd := exec.Command("sh", "-c", "kill -TERM $$")
+	if err := submitRestart(context.Background(), cmd); err != nil {
+		t.Fatalf("submitRestart(SIGTERM'd client) = %v, want nil (accepted submission)", err)
+	}
+}
+
+// TestSubmitRestartCleanExitBeatsContextExpiry: a verdict (exit 0) reached
+// even when the context has expired stays a success - the job is queued,
+// the expiry only governs how long we wait for the verdict. The command is
+// deliberately NOT context-bound (simulating a verdict that lands after
+// the deadline): submitRestart must classify by the verdict, not the ctx.
+func TestSubmitRestartCleanExitBeatsContextExpiry(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("cmd", "/c", "exit 0")
+	} else {
+		cmd = exec.Command("true")
+	}
+	if err := submitRestart(ctx, cmd); err != nil {
+		t.Fatalf("submitRestart(exit 0, expired ctx) = %v, want nil", err)
+	}
+}
+
 // TestDefaultRestartRequiresIntent: the production restart stage refuses
 // to submit without the intent marker - the self-heal net would be blind
 // (guard fires before any systemctl interaction, so this is deterministic

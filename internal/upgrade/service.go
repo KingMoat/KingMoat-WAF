@@ -100,6 +100,11 @@ type ReplaceFunc func(ctx context.Context, t *Task) error
 // RestartFunc restarts the service fire-and-forget (T-06).
 type RestartFunc func(ctx context.Context, t *Task) error
 
+// ProbeFunc reports whether this deployment can swap the running binaries
+// and restart the service (production: platform, writable binary directory
+// and systemd probe; tests: canned verdicts).
+type ProbeFunc func() error
+
 // Service hosts the self-upgrade pipeline. Upgrading is a process-wide
 // singleton operation, so single-flight is one global slot (unlike
 // certmgr's per-domain keys): a second Start while one task runs returns
@@ -122,6 +127,12 @@ type Service struct {
 	verifyFn   VerifyFunc
 	replaceFn  ReplaceFunc
 	restartFn  RestartFunc
+
+	// Replace capability seams (see replace.go): probeFn overrides the
+	// capability probe; binaryDir pins the directory of the running
+	// binaries (tests; production derives it from os.Executable).
+	probeFn   ProbeFunc
+	binaryDir string
 
 	// Releases feed transport (WithAPIBase/WithHTTPClient test seams).
 	apiBase    string
@@ -156,6 +167,14 @@ func WithReplacer(f ReplaceFunc) Option { return func(s *Service) { s.replaceFn 
 
 // WithRestarter replaces the restart stage (wired by T-06).
 func WithRestarter(f RestartFunc) Option { return func(s *Service) { s.restartFn = f } }
+
+// WithProber replaces the replace-capability probe (tests: forced verdicts;
+// see replace.go for the production probe).
+func WithProber(f ProbeFunc) Option { return func(s *Service) { s.probeFn = f } }
+
+// WithBinaryDir pins the directory holding the running kingmoat binaries
+// (tests: a fake layout; production: derived from os.Executable).
+func WithBinaryDir(dir string) Option { return func(s *Service) { s.binaryDir = dir } }
 
 // WithAPIBase points the releases feed at another origin (tests: httptest).
 func WithAPIBase(base string) Option { return func(s *Service) { s.apiBase = base } }
@@ -198,9 +217,11 @@ func NewService(currentVersion, dataDir string, opts ...Option) *Service {
 	s.checkFn = s.fetchReleases
 	s.downloadFn = s.downloadRelease
 	s.verifyFn = s.verifyDownload
+	s.replaceFn = s.defaultReplace
 	for _, o := range opts {
 		o(s)
 	}
+	s.cleanupWorkspaces() // drop workspaces left over by previous runs/crashes
 	return s
 }
 
@@ -280,6 +301,8 @@ func (s *Service) Start(targetVersion string) (Task, error) {
 	// Mirrors certmgr.
 	snap := *t
 	s.mu.Unlock()
+
+	s.cleanupWorkspaces() // a previous task's workspace is pure residue once a new task starts
 
 	go s.run(t)
 	return snap, nil

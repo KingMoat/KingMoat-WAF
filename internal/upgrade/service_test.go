@@ -416,9 +416,10 @@ func TestCooldownClockSeam(t *testing.T) {
 	waitTask(t, s, t2.ID, TaskFailed)
 }
 
-// TestStartReplaceNotConfigured pins the interim behavior while the
-// replace/restart cards are pending: a task failing at a stage whose hook
-// is not wired reports a clear internal error instead of hanging.
+// TestStartReplaceNotConfigured pins the unconfigured-hook guard: since
+// T-04/T-06 NewService wires the production defaults, so the nil hooks are
+// only reachable via explicit nils (defense in depth) - a task failing at
+// such a stage reports a clear internal error instead of hanging.
 func TestStartReplaceNotConfigured(t *testing.T) {
 	s := NewService("v0.7.8-beta", t.TempDir(),
 		WithChecker(func(ctx context.Context) ([]Release, error) { return testFeed(), nil }),
@@ -427,7 +428,9 @@ func TestStartReplaceNotConfigured(t *testing.T) {
 		}),
 		WithVerifier(func(ctx context.Context, t *Task, rel *Release, archivePath string) (string, error) {
 			return "/fake/artifact", nil
-		}))
+		}),
+		WithReplacer(nil),
+		WithRestarter(nil))
 	t1, err := s.Start("")
 	if err != nil {
 		t.Fatal(err)

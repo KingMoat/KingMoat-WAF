@@ -688,16 +688,18 @@ async function publishForm() {
   } else {
     cfg = JSON.parse(JSON.stringify(form))
     delete cfg._raw
-    // 监听两字段已迁至系统设置页：发布前用最新活跃配置覆写，避免把其他管理员
-    // 刚更新的监听设置用本页旧值覆盖回去（拉取失败时退回 form 初始化值）；
-    // acme_email 属本页工具栏编辑项，保留草稿值随本次发布生效
-    try {
-      const d = await api('/api/config')
-      const latest = d.config || {}
-      cfg.listen_http = latest.listen_http || ''
-      cfg.listen_https = latest.listen_https || ''
-    } catch (e) { /* 拉取失败沿用 form 初始化值 */ }
   }
+  // 防覆盖（图形化/JSON 两分支同源）：监听两字段已迁至系统设置页，发布前用最新
+  // 活跃配置覆写，避免本页 stale/缺失值把其他管理员刚更新的监听设置覆盖回去
+  // （拉取失败时退回各自分支的初始化值）；acme_email 属本页工具栏编辑项，
+  // 保留草稿值随本次发布生效（JSON 模式下同样合入，不再被静默丢弃）
+  try {
+    const d = await api('/api/config')
+    const latest = d.config || {}
+    cfg.listen_http = latest.listen_http || ''
+    cfg.listen_https = latest.listen_https || ''
+  } catch (e) { /* 拉取失败沿用当前分支的初始化值 */ }
+  cfg.acme_email = form.acme_email || ''
   const preErr = validatePublishConfig(cfg)
   if (preErr) return ElMessage.error(preErr)
   publishing.value = true

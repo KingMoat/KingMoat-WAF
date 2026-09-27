@@ -40,6 +40,11 @@ EnvironmentFile=/var/lib/kingmoat/console.env
 #                    (self-signed bootstrap cert; replace from the console settings);
 #                    the port is expanded by systemd from the EnvironmentFile above
 # -console-db        SQLite config store; keep on a LOCAL disk, never on NFS/SMB
+# Self-healing rollback for interrupted online upgrades: compares the
+# running binary against the recorded upgrade intent and restores the
+# backup if the new binary failed to boot. The command itself never
+# fails (exit 0 when no intent / intent satisfied / files missing).
+ExecStartPre=/usr/local/bin/kingmoat-cli upgrade-rollback
 ExecStart=/usr/local/bin/kingmoat -config /etc/kingmoat/config.json -console-addr 127.0.0.1:${CONSOLE_PORT} -console-db /var/lib/kingmoat/kingmoat.db
 Restart=on-failure
 RestartSec=3

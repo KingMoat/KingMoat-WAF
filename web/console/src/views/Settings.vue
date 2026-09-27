@@ -64,7 +64,8 @@
             <div class="km-upg-notes">{{ upgLatest.notes || '（本次更新无说明）' }}</div>
             <div style="margin-top:10px;display:flex;align-items:center;gap:12px">
               <el-button size="small" type="primary" :disabled="!can('admin')" @click="confirmUpgrade">立即升级</el-button>
-              <a v-if="upgLatest.assets_url" :href="upgLatest.assets_url" target="_blank" class="km-dim" style="font-size:12px">手动下载升级包</a>
+              <a v-if="upgAssetsUrl" :href="upgAssetsUrl" target="_blank" rel="noopener noreferrer" class="km-dim" style="font-size:12px">手动下载升级包</a>
+              <span v-else-if="upgLatest.assets_url" class="km-dim" style="font-size:12px">手动下载升级包（链接来源不可信，请到发布页获取）</span>
             </div>
           </el-alert>
           <div v-else-if="upgradeModule && upgLatest && !upgTaskActive" style="margin-top:12px;display:flex;align-items:center;gap:8px">
@@ -859,6 +860,11 @@ let upgLastSeenAt = 0 // 最后一次成功通信时间（task/status 查询成�
 
 const upgDenied = computed(() => !can('admin'))
 const upgTaskActive = computed(() => !!upgTask.value && !['success', 'failed'].includes(upgTask.value.state))
+// assets_url 来自升级 feed（可被篡改），仅信任 Gitee 官方发布页前缀；其余不渲染链接只提示文本
+const upgAssetsUrl = computed(() => {
+  const u = upgLatest.value?.assets_url || ''
+  return u.startsWith('https://gitee.com/') ? u : ''
+})
 const upgStepIdx = computed(() => UPG_STEPS.findIndex(s => s.key === upgTask.value?.state))
 
 async function loadUpgradeStatus() {

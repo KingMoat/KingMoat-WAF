@@ -218,6 +218,7 @@ func NewService(currentVersion, dataDir string, opts ...Option) *Service {
 	s.downloadFn = s.downloadRelease
 	s.verifyFn = s.verifyDownload
 	s.replaceFn = s.defaultReplace
+	s.restartFn = s.defaultRestartStage
 	for _, o := range opts {
 		o(s)
 	}
@@ -432,7 +433,11 @@ func (s *Service) finishTask(t *Task, err error) {
 		return
 	}
 	t.State = TaskSuccess
-	t.Message = "升级完成"
+	// Task-level success means "restart submitted": the running process is
+	// being torn down with the unit cgroup right about now, and the
+	// restart outcome is reconciled by the self-heal net (T-05) and the UI
+	// polling (T-08). The message tells the operator what to expect.
+	t.Message = "升级完成，服务重启中，请稍后刷新页面"
 }
 
 // setState records stage progress on the task.

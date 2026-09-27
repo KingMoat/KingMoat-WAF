@@ -860,10 +860,11 @@ let upgLastSeenAt = 0 // 最后一次成功通信时间（task/status 查询成�
 
 const upgDenied = computed(() => !can('admin'))
 const upgTaskActive = computed(() => !!upgTask.value && !['success', 'failed'].includes(upgTask.value.state))
-// assets_url 来自升级 feed（可被篡改），仅信任 Gitee 官方发布页前缀；其余不渲染链接只提示文本
+// assets_url 来自升级 feed（可被篡改），仅信任本项目官方发布页前缀（收紧到仓库级，
+// 防同域任意第三方仓库附件）；其余不渲染链接只提示文本
 const upgAssetsUrl = computed(() => {
   const u = upgLatest.value?.assets_url || ''
-  return u.startsWith('https://gitee.com/') ? u : ''
+  return u.startsWith('https://gitee.com/kingmoat/KingMoat-WAF/releases') ? u : ''
 })
 const upgStepIdx = computed(() => UPG_STEPS.findIndex(s => s.key === upgTask.value?.state))
 

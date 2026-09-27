@@ -10,6 +10,24 @@ export function parseListenAddr(v) {
     if (end < 0) return { ok: false, msg: 'IPv6 地址需用方括号包裹，如 [::]:443' }
     host = s.slice(1, end)
     if (!host || !host.includes(':') || /:::/.test(host) || (host.match(/::/g) || []).length > 1 || !/^[0-9a-fA-F:.]+$/.test(host)) return { ok: false, msg: '方括号内应为 IPv6 地址，如 [::]' }
+    // IPv6 组结构校验（与 net.ParseIP 规则对齐，防 typo 持久化后数据面 net.Listen
+    // 失败 os.Exit(1)）：每组 1-4 位 hex；无 :: 时必须正好 8 组（[1:2] 非法）；
+    // 有 :: 时有效组数 ≤ 7（[1:2:3:4:5:6:7:8::] 超长非法）；空组仅允许来自
+    // :: 两侧（开头/结尾 1 个、单独 :: 为 2 个）
+    const groups = host.split(':')
+    if (groups.some(g => g && !/^[0-9a-fA-F]{1,4}$/.test(g))) return { ok: false, msg: '方括号内应为 IPv6 地址，如 [::]（每组 1-4 位十六进制）' }
+    const nEmpty = groups.filter(g => g === '').length
+    if (host.includes('::')) {
+      const nValid = groups.length - nEmpty
+      // split(':') 空段语义：'::X'/'X::' 切出 2 空、'::' 自身切出 3 空、
+      // 'X::Y' 切出 1 空；有效组数（:: 展开后）不得超过 7（[1:2:3:4:5:6:7:8::] 非法）
+      const wellFormed = nEmpty === 3 ? host === '::' : nEmpty === 1 || nEmpty === 2
+      if (!wellFormed || (nEmpty < 3 && nValid > 7)) {
+        return { ok: false, msg: '方括号内应为 IPv6 地址，如 [::]（:: 压缩段仅一处）' }
+      }
+    } else if (nEmpty !== 0 || groups.length !== 8) {
+      return { ok: false, msg: '方括号内应为完整 IPv6 地址（8 组，如 [fe80::1] 请写作 [fe80:0:0:0:0:0:0:1] 或含 :: 压缩）' }
+    }
     const rest = s.slice(end + 1)
     if (!rest.startsWith(':')) return { ok: false, msg: '格式应为 [IPv6地址]:端口，如 [::]:443' }
     portStr = rest.slice(1)

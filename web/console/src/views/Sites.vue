@@ -685,6 +685,9 @@ async function publishForm() {
   let cfg
   if (mode.value === 'json') {
     try { cfg = JSON.parse(jsonText.value) } catch (e) { return ElMessage.error('JSON 解析失败：' + e.message) }
+    if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
+      return ElMessage.error('JSON 根节点应为配置对象，如 {"listen_http": "..."}')
+    }
   } else {
     cfg = JSON.parse(JSON.stringify(form))
     delete cfg._raw

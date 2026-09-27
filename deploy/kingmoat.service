@@ -1,6 +1,6 @@
 [Unit]
 Description=KingMoat WAF (all-in-one: data plane + console)
-Documentation=https://github.com/kingmoat/kingmoat
+Documentation=https://github.com/kingmoat/KingMoat-WAF
 After=network-online.target
 Wants=network-online.target
 

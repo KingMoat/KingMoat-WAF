@@ -1,8 +1,11 @@
-# KingMoat 配置参考（v0.3）
+# KingMoat 配置参考
 
 配置以 JSON 表达，来源可以是静态文件（`-config`）或控制台发布的 revision
 （内容结构完全一致）。所有字段校验失败（`Config.Validate`）都会拒绝启动 /
 拒绝发布，线上流量保持旧配置（fail-static）。
+
+> 本文列常用字段与说明；完整字段与最新默认值以仓库根目录
+> [config.example.json](../config.example.json) 与 `internal/config` 源码为准。
 
 # 顶层字段
 
@@ -16,6 +19,9 @@
 | `audit_query` | object | 空 | 日志查询治理：并发上限/超时/紧急降级，见 [AuditQuerySettings](#auditquerysettings)；发布即热生效 |
 | `metrics` | object | 空 | 可选 Prometheus 文本端点（/metrics，控制台认证内），见 [MetricsSettings](#metricssettings)；发布热生效 |
 | `telemetry` | object | 空 | 匿名安装统计（**默认关**）：`{ "enabled": true }` 开启后仅上报随机安装 ID / 版本 / OS 架构 / 安装方式；`DO_NOT_TRACK` 环境变量优先级更高；连续 3 次不可达自动停止；详见 README 遥测声明 |
+| `acme_email` | string | `""` | 全局 ACME 联系邮箱（站点防护页工具栏/设置页配置）；站点启用 `acme` 且未单独配置 email 时使用 |
+| `console` | object | 空 | 管理面访问限制：`allowed_ips`（IP/CIDR 列表，空 = 不限制；对控制台所有请求生效，含登录） |
+| `security` | object | 空 | 控制台安全策略：会话超时/登录防爆破/密码策略，见 [ConsoleSecuritySettings](#consolesecuritysettings) |
 | `webhook` | object | 空 | 告警推送，见 [WebhookSettings](#webhooksettings) |
 | `log_shipper` | object | 空 | 审计日志外发，见 [ShipperSettings](#shippersettings) |
 | `policy` | object | 空 | 全局策略：CRS 阈值 / 自定义 SecLang 规则 / 全局 IP 黑白名单，见 [Policy](#policy) |
@@ -31,12 +37,13 @@
 |---|---|---|---|
 | `domains` | string[] | 必填 | 匹配的域名（Host / SNI，忽略大小写） |
 | `mode` | string | `"intercept"` | `intercept` 拦截 / `monitor` 只记录不拦截（灰度） |
-| `upstream` | object | 必填 | 上游池：`{"nodes":[{"address":"host:port","weight":1}],"algorithm":"wrr"}`；algorithm：`wrr` 加权轮询（默认）/ `least_conn` 最少连接 / `source_ip` 源 IP 会话保持 |
+| `upstream` | object | 必填 | 上游池：`{"nodes":[{"address":"host:port","weight":1}],"algorithm":"wrr"}`；algorithm：`wrr` 加权轮询（默认）/ `least_conn` 最少连接 / `source_ip` 源 IP 会话保持；HTTPS 上游可用 `sni_host` 固定握手 SNI（与 `sni_forward` 互斥）、`verify_tls` 严格校验上游证书（默认关） |
 | `tls_cert` / `tls_key` | string | `""` | 站点 PEM 证书/私钥路径（两者成对必填） |
 | `tls_profile` | string | `"moderate"` | HTTPS 加密套件组：`strong`（仅 AEAD，6 套件）/ `moderate`（默认，AEAD + ECDHE-CBC-SHA1）/ `compatible`（moderate + ECDHE-CBC-SHA256）。全部 TLS 1.2 起步、TLS 1.3 始终可用；套件清单见 tlsprofile.go |
 | `acme` | object | 空 | 自动证书，见 [ACMESettings](#acmesettings) |
 | `health` | object | 空 | 上游健康检查，见 [HealthSettings](#healthsettings) |
 | `redirect_to_https` | bool | `false` | HTTP 监听器对本站返回 308 到 HTTPS（需 TLS 证书或 acme + listen_https）；`/.well-known/` 前缀豁免 |
+| `http2_enabled` | bool | `true` | 站点 TLS 握手的 HTTP/2 协商（缺省/`true` = h2 + HTTP/1.1；`false` = 仅 HTTP/1.1） |
 | `waf` | object | 空 | 见 [WAFSettings](#wafsettings) |
 | `security` | object | 空 | 防护阶段集合，见 [SecuritySettings](#securitysettings) |
 | `real_ip` | object | 空 | 可信代理真实客户端 IP 解析，见 [RealIPSettings](#realipsettings) |
@@ -224,7 +231,9 @@ Host/Content-Length/Transfer-Encoding/Connection 等框架与逐跳头禁止改�
 ```
 
 基于 Let's Encrypt（TLS-ALPN-01 于 HTTPS 监听器，HTTP-01 于 80 端口自动
-短路）。`staging: true` 使用测试 CA。证书缓存在工作目录 `acme-cache/`。
+短路）。`staging: true` 使用测试 CA。正式证书缓存在工作目录 `acme-cache/`；
+自 v0.7.8 起，staging 环境申请的测试证书单独缓存在 `acme-cache-staging/`，
+与正式证书目录隔离、互不混用。
 
 # WebhookSettings（告警推送）
 
@@ -382,8 +391,34 @@ WebSocket/SSE 不受影响）。
 
 | 变量 | 说明 |
 |---|---|
-| `KINGMOAT_ADMIN_HASH` | 控制台管理员 argon2id 哈希；未设置时控制台不认证（会告警） |
+| `KINGMOAT_ADMIN_HASH` | 控制台管理员 argon2id 哈希；未设置时控制台认证**自动武装**（生成随机会话密钥并启用登录），用内置引导账号 `kmadmin / KingMoat@2026` 登录并首次登录强制改密；预设该变量用于把管理凭据锚定为自选强口令 |
 | `KINGMOAT_ADMIN_TOTP` | 可选 base32 TOTP 密钥，启用后登录需动态码 |
+
+# ConsoleSecuritySettings（控制台安全策略）
+
+顶层 `security` 对象（用户管理 → 安全设置页）:
+
+```json
+{
+  "password_min_len": 12,
+  "password_complexity": true,
+  "password_max_age_days": 90,
+  "password_history_count": 3,
+  "session_timeout_min": 240,
+  "login_max_failures": 10,
+  "login_lockout_min": 15
+}
+```
+
+| 字段 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `password_min_len` | int | `8` | 创建用户/改密的最小口令长度（存量口令不受影响） |
+| `password_complexity` | bool | `false` | 要求口令同时包含大写、小写字母与数字 |
+| `password_max_age_days` | int | `0` | 口令最长使用天数，登录时强制改密（0 = 关闭） |
+| `password_history_count` | int | `0` | 禁止复用最近 N 次口令（0 = 关闭，上限 24） |
+| `session_timeout_min` | int | `0` | 控制台会话有效期（分钟，0 = 12h）；启动时快照，修改需重启 |
+| `login_max_failures` | int | `10` | 锁定窗口内同源 IP 登录失败上限（低于 3 按 3 计） |
+| `login_lockout_min` | int | `15` | 登录失败滑动锁定窗口（分钟） |
 
 # 完整示例
 

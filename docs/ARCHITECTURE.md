@@ -4,7 +4,7 @@
 
 | 文档信息 | |
 |---|---|
-| 版本 | v0.7.0-rc1（架构基线：单二进制 All-in-one + SQLite 配置中心 + 内嵌控制台） |
+| 版本 | v0.7.9-beta（架构基线：单二进制 All-in-one + SQLite 配置中心 + 内嵌控制台） |
 | 状态 | 已实现：数据面/控制面/热更新/控制台/语义检测均已落地；集群下发为演进设计目标（社区版不含） |
 | 技术栈 | Go 1.26+ / Coraza v3 / OWASP CRS 4.x / Vue 3 |
 | 社区版范围 | 社区版交付单机 all-in-one 与 static 两种形态；文中涉及独立控制面进程、集群 / Valkey / PostgreSQL 的内容均为演进设计目标，社区版不包含。如需多节点集中管理（节点管理）、界面品牌个性化定制或其他功能性定制，请联系作者 |
@@ -337,7 +337,7 @@ KingMoat/
 ├── pkg/kingmoat/              # 对外公开 Go SDK (库模式 + LogStore/KV 接口)
 ├── rules/                     # vendored CRS 4.x + KingMoat 默认规则集
 ├── web/                       # Vue 3 管理控制台（web/console）
-├── deploy/                    # Dockerfile, docker-compose, Helm
+├── deploy/                    # Dockerfile, docker-compose, install.sh, systemd unit
 └── docs/                      # 本文档 + 运维手册 + 规则编写指南
 ```
 
@@ -374,7 +374,7 @@ http.ListenAndServe(":8080", eng.Handler(yourHandler)) // 包裹业务 Handler
 - 控制面认证：本地账号（argon2id）+ RBAC 三角色；预留 OIDC/LDAP；
 - API 全程 TLS；会话 Cookie `HttpOnly/Secure/SameSite`；
 - 审计：控制面自身操作（改规则、改站点）全量审计；
-- 数据面进程以非 root 运行（cap_net_bind_service 绑定 80/443）；
+- 数据面进程支持以非 root 运行（自定义 unit 模板路径，`kingmoat.service` 仅授予 `CAP_NET_BIND_SERVICE`）；一键部署（install.sh）默认以 root 运行，通过环境变量授予 `CAP_NET_BIND_SERVICE` 绑定 80/443；
 - 供应链：CI 强制 `govulncheck`、依赖固定、镜像 distroless。
 
 ---
@@ -385,7 +385,6 @@ http.ListenAndServe(":8080", eng.Handler(yourHandler)) // 包裹业务 Handler
 |---|---|---|
 | 单机 all-in-one | `docker run kingmoat`（内置 SQLite + localfile 日志 + 内存限流，零外部依赖） | 个人/中小团队 |
 | 集群（设计目标，社区版不含） | 独立控制面 (N=1..3, PG) + 多数据面 + **Valkey**(限流/挑战/会话共享) + 日志后端(OpenSearch/ES/Loki) | 多节点/高可用 |
-| K8s | Helm Chart：数据面 + 控制面 + Valkey + 日志栈（可对接外部托管服务） | 云原生 |
 | SDK | `go get pkg/kingmoat` | 嵌入自有 Go 服务 |
 
 ---
@@ -407,7 +406,7 @@ http.ListenAndServe(":8080", eng.Handler(yourHandler)) // 包裹业务 Handler
 
 | 领域 | 选型 | 理由 |
 |---|---|---|
-| 语言 | Go 1.22+ | 生态、性能、单二进制交付 |
+| 语言 | Go 1.26+ | 生态、性能、单二进制交付 |
 | 检测引擎 | `coraza.tech/coraza/v3` + `coraza-coreruleset` | SecLang 兼容、CRS 官方支持、纯 Go |
 | 规则集 | OWASP CRS 4.x | 行业标准，误报治理资料丰富 |
 | 反代内核 | `net/http` + `httputil.ReverseProxy` | 生产验证，专注检测层创新 |
@@ -420,7 +419,7 @@ http.ListenAndServe(":8080", eng.Handler(yourHandler)) // 包裹业务 Handler
 | 日志 | `log/slog` + LogStore 管道自研 | 结构化、低开销、后端可插拔 |
 | 指标 | Prometheus client | 事实标准 |
 | 前端 | Vue 3 + Element Plus | 暗色科技感控制台，组件精简 |
-| 部署 | Docker + distroless + Helm | 云原生友好 |
+| 部署 | Docker + distroless + systemd（install.sh 一键部署） | 云原生友好 |
 | 质量 | gofuzz（检测引擎模糊测试）+ e2e（恶意样本回放） | 检测正确性回归 |
 | 许可证合规 | `scripts/gen-licenses`（内置依赖准入扫描 + THIRD-PARTY-LICENSES/SBOM 生成） | CI 强制依赖准入门禁（见 §12，已落地） |
 
@@ -445,7 +444,7 @@ http.ListenAndServe(":8080", eng.Handler(yourHandler)) // 包裹业务 Handler
 | gRPC / protobuf-go | Apache-2.0 / BSD-3 | 可商用 |
 | go-redis v9（兼容 Valkey） | BSD 系 | 可商用（CI 扫描清单中核实具体子项） |
 | Prometheus client | Apache-2.0 | 可商用 |
-| React / TypeScript / Ant Design | MIT | 可商用 |
+| Vue 3 / TypeScript / Element Plus | MIT（Vue 3 / Element Plus）；TypeScript 为 Apache-2.0 | 可商用 |
 | go-elasticsearch / opensearch-go | Apache-2.0 | 可商用（仅客户端，服务端外部部署） |
 | twmb/franz-go（Kafka） | MIT | 可商用 |
 | Grafana Loki / ES 服务端 | AGPL / SSPL | **仅外部服务对接，不随 KingMoat 分发，无传染** |

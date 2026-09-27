@@ -35,7 +35,7 @@
 }
 ```
 
-API Key 通过环境变量注入：`export KINGMOAT_AI_API_KEY=sk-...`（`api_key_env` 可改变量名）。
+API Key 通过环境变量注入：`export KINGMOAT_AI_API_KEY=sk-...`（`api_key_env` 可改变量名）；也可在控制台设置页直接保存 Key（加密落盘 `ai-kek.key`，见下方 API 表的 `/api/ai/key`）。
 
 ## LLM 提供商模板
 
@@ -76,13 +76,15 @@ MCP 出边界场景输出同样脱敏，但占位符**不可自动复原**（映
 
 ## MCP 端点
 
-`mcp.enabled` 时在控制面挂载 `POST/GET /mcp`（MCP streamable HTTP），暴露同一只读工具集，位于控制台认证之后。Flocks 等客户端以 remote MCP 接入（Basic Auth / 会话 Cookie 与控制台一致）。
+`mcp.enabled` 时在控制面挂载 `POST/GET /mcp`（MCP streamable HTTP），暴露同一只读工具集，位于控制台认证之后。支持 remote MCP 协议的任意 MCP 客户端均可接入（Basic Auth / 会话 Cookie 与控制台一致）。
 
 ## API
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/ai/config` | 状态 + 模板列表 + 今日用量 |
+| POST | `/api/ai/key` | 保存 AI 提供商 API Key（admin）：body `{"key":"..."}`，以 argon2id 哈希 + KEK 加密副本写入生效配置，明文不落盘不出进程；重复保存同一 Key 为幂等空操作 |
+| DELETE | `/api/ai/key` | 清除已保存的 API Key（admin）；环境变量注入方式继续可用 |
 | POST | `/api/ai/chat` | 聊天（SSE：status/delta/tool/done/error） |
 | GET/DELETE | `/api/ai/sessions[...]` | 会话管理（展示时自动复原占位符） |
 | GET | `/api/ai/reports[/{id}]` | 报告列表/详情 |

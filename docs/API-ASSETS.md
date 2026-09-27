@@ -18,11 +18,11 @@
 - **UA 分类**（内嵌规则表）：good（Googlebot/Baiduspider/bingbot/Sogou/360/Yisou/DuckDuckBot/YandexBot/Applebot…）、bad（python-requests/curl/Go-http-client/okhttp/Java、sqlmap/nuclei/xray/masscan/zgrab、空 UA…）、unknown。
 - **指纹**：`sha256(IP + UA + 头名序列)[:16]`，按指纹统计频率（默认 300 次/60 秒超阈加分）。
 - **评分**：类别基线（good 10 / unknown 30 / bad 70）+ 频率突增 +15 + 缺 Accept-Language/Accept 各 +5，封顶 100。
-- **动作**：`allow` / `observe` / `deny` / `challenge`（challenge 需同站启用 JS 挑战 `bot`，启用滑块验证码的站点退化为 observe）。**v0.4 默认全部 observe**——先观察一周数据，再按站点切 deny。
+- **动作**：`allow` / `observe` / `deny` / `challenge`（challenge 需同站启用 JS 挑战 `bot`，启用滑块验证码的站点退化为 observe）。**当前默认全部 observe**——先观察一周数据，再按站点切 deny。
 - **联动**：`good_bot_bypass_challenge` 让已验证 good bot 跳过 JS 挑战。
 - **审计事件**：`bot_class`/`bot_name`/`bot_score` 字段（omitempty，兼容旧 NDJSON）。
 - **指标**：`bot_requests_total{site,class}`、`bot_denied_total{site}`、`bot_challenged_total{site}`。
-- **诚实边界**：UA 可伪造，v0.1 结果必须带置信度展示；JA3/JA4 TLS 指纹与 rDNS 反查列入 v0.5 演进。
+- **诚实边界**：UA 可伪造，识别结果必须带置信度展示；JA3/JA4 TLS 指纹与 rDNS 反查列入后续演进。
 
 ## 2. API 资产梳理（顶层 `api_assets`）
 

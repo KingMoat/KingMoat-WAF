@@ -6,7 +6,8 @@
 
 <p align="center">
   <a href="https://opensource.org/license/mulanpsl-2-0"><img alt="License" src="https://img.shields.io/badge/license-MulanPSL--2.0-52b100?style=for-the-badge"></a>
-  <a href="https://gitee.com/kingmoat/KingMoat-WAF/releases"><img alt="Release" src="https://img.shields.io/badge/release-v0.7.0--rc1-2f81f7?style=for-the-badge"></a>
+  <!-- 徽章手工维护：发新版时更新此行版本号（当前最新已发布版 v0.7.8-beta） -->
+  <a href="https://gitee.com/kingmoat/KingMoat-WAF/releases"><img alt="Release" src="https://img.shields.io/badge/release-v0.7.8--beta-2f81f7?style=for-the-badge"></a>
   <img alt="Go" src="https://img.shields.io/badge/Go-1.26%2B-00ADD8?style=for-the-badge&logo=go&logoColor=white">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey?style=for-the-badge">
 </p>
@@ -67,7 +68,7 @@ KingMoat 是一个开源、纯 Go 实现的 **All-in-one Web 应用防火墙**�
 - 响应过滤：敏感信息脱敏/阻断（手机号/身份证/密钥预设 + 自定义正则）
 - 动态防护：HTML 响应逐请求 AES-GCM 加密 + WebCrypto 还原（需 HTTPS）
 - 双模式：`intercept` 命中即拦 / `monitor` 只记录不拦截（新站灰度）；上游故障 502 友好页
-- 审计日志：NDJSON 按天滚动 + 内存环实时查询，可选请求快照捕获（脱敏）
+- 审计日志：SQLite 审计库（`logs/audit.db`，按天快照归档）+ 内存环实时查询，可选请求快照捕获（脱敏）
 
 **⚙️ 控制面与可运维性**
 
@@ -75,7 +76,7 @@ KingMoat 是一个开源、纯 Go 实现的 **All-in-one Web 应用防火墙**�
 - Web 控制台（Vue 3）：暗色科技感界面，站点防护图形化配置、攻击日志、证书、API 资产、风险、AI 助手；RBAC 三级（admin/operator/auditor）+ MFA + API Key；构建产物 embed，部署仍是单文件
 - 证书管理：站点 PEM + Let's Encrypt 自动申请续签（ACME，TLS-ALPN-01 + HTTP-01）
 - 告警与外发：webhook 事件推送；Elasticsearch / Loki / Kafka 日志外发
-- Prometheus `/metrics`、REST API 全量管理面（[docs/API.md](docs/API.md)）
+- Prometheus `/metrics`、REST API 参考（核心端点见 [docs/API.md](docs/API.md)，完整清单由控制台 `/openapi.json` 提供）
 
 ## 📸 界面预览
 
@@ -111,15 +112,15 @@ python3 -m http.server 9000
 export KINGMOAT_ADMIN_HASH=$(kingmoat-cli hash-password -password 'YourStrongPassw0rd!')
 # 可选两步验证：export KINGMOAT_ADMIN_TOTP=<base32密钥>
 
-# 3. 启动 KingMoat：数据面 :8080 + 控制台 :8081，配置存入 kingmoat.db（SQLite）
-kingmoat -config config.example.json -console-addr 127.0.0.1:8081
+# 3. 启动 KingMoat：数据面 :80/:443 + 控制台 :8443，配置存入 kingmoat.db（SQLite）
+kingmoat -config config.example.json -console-addr 127.0.0.1:8443
 
 # 4. 验证拦截
-curl -i -H "Host: localhost" "http://127.0.0.1:8080/?id=1 UNION SELECT password FROM users"
+curl -i -H "Host: localhost" "http://127.0.0.1/?id=1 UNION SELECT password FROM users"
 # → 403 拦截（X-Kingmoat-Rule: coraza/rule-949110），事件写入审计日志库 logs/audit.db
 
 # 5. 打开控制台发布/修改配置（热生效，无需重启）
-#    https://127.0.0.1:8081/
+#    https://127.0.0.1:8443/
 ```
 
 > 默认管理员账号：`kmadmin` / `KingMoat@2026`，首次登录强制修改密码。请立即设置强口令；若控制台需绑定到非本机回环地址，务必先用第 2 步的 `KINGMOAT_ADMIN_HASH` 预设强口令，避免已知默认凭据被抢先登录。

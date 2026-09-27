@@ -92,7 +92,7 @@ Windows 推荐：`C:\kingmoat\`（二进制、config.json、kingmoat.db、logs\ 
 
 Docker：单一数据卷挂载到容器 `/data`（本地磁盘目录，勿挂网络盘）。
 
-数据目录运行时会生成/维护：`kingmoat.db`（配置库）、`kingmoat-assets.db` 与 `kingmoat-ai.db`（API 资产学习库 / AI 助手库，由 `-console-db` 文件名派生）、`logs/audit.db` + `logs/archive/`（审计与归档）、`logs/metrics-state.json`（累计请求计数）、`uploads/certs/`（证书库，含控制台自签引导证书）、`ai-kek.key`（AI API Key 加密密钥）、`acme-cache/`（ACME 账户与订单缓存）。**备份必须覆盖整个数据目录**（见 6.1）。
+数据目录运行时会生成/维护：`kingmoat.db`（配置库）、`kingmoat-assets.db` 与 `kingmoat-ai.db`（API 资产学习库 / AI 助手库，由 `-console-db` 文件名派生）、`logs/audit.db` + `logs/archive/`（审计与归档）、`logs/metrics-state.json`（累计请求计数）、`uploads/certs/`（证书库，含控制台自签引导证书）、`ai-kek.key`（AI API Key 加密密钥）、`acme-cache/`（ACME 账户与订单缓存）、`acme-cache-staging/`（staging 环境测试证书缓存，自 v0.7.8 起与正式证书隔离）、`upgrade/`（在线升级任务工作区与升级意图标记）。**备份必须覆盖整个数据目录**（见 6.1）。
 
 ### 1.5 DNS 与证书前置
 
@@ -311,11 +311,15 @@ kingmoat -version
 
 Docker：替换镜像 tag 后 `docker compose up -d`。Windows：停服务 → 替换 `kingmoat.exe` → 起服务。配置库向后兼容自动沿用；升级后打开控制台确认版本号与站点状态即可。
 
+**控制台在线升级**（v0.7.9 起）：系统设置 → 「版本与升级」支持检查更新与一键升级——页面展示阶段进度（检测 → 下载 → 校验 → 替换 → 重启），失败后进入冷却窗口防止反复重试；升级前自动在安装目录留滚动备份并具备自愈回滚（见 6.3）。建议在维护窗口执行；升级完成后服务自动重启。
+
 ### 6.3 回滚（两层）
 
 **配置回滚**（最常用）：控制台「配置版本」页对任意历史 revision 一键回滚（API：`POST /api/revisions/{id}/rollback`）。机制：把所选旧版本的完整配置作为**新 revision 追加发布**（revision 只增不改，审计可追），热生效无需重启。控制台每次发布失败也会自动保留旧配置继续服务（热更新原子生效，失败仅记日志不切换）。
 
 **版本回滚**（二进制降级）：换回旧二进制重启即可（配置库沿用）；但二进制降级可能遇到新版本写入后的数据结构，【待确认：跨版本降级兼容性未在仓库中明确承诺，降级前请先按 6.1 备份，必要时连同 `kingmoat.db` 一起还原到升级前备份】。若只是误发布配置，优先用配置回滚而不是降级。
+
+**在线升级的自动备份与自愈**：在线升级启动前会自动把 `kingmoat` / `kingmoat-cli` 备份到安装目录（`kingmoat.bak-<版本>` / `kingmoat-cli.bak-<版本>`，滚动保留最近 2 份），可直接复制还原；v0.7.9 起一键部署会安装启动前自愈钩子（`kingmoat-cli upgrade-rollback`），新包启动失败时自动回滚到升级前版本。
 
 ### 6.4 日志
 

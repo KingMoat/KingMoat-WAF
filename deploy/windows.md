@@ -85,8 +85,8 @@ nssm start kingmoat
 
 ```powershell
 # 数据面（按需放行 80/443 或自定义端口）
-New-NetFirewallRule -DisplayName "KingMoat HTTP"  -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow
-New-NetFirewallRule -DisplayName "KingMoat HTTPS" -Direction Inbound -Protocol TCP -LocalPort 8443 -Action Allow
+New-NetFirewallRule -DisplayName "KingMoat HTTP"  -Direction Inbound -Protocol TCP -LocalPort 80 -Action Allow
+New-NetFirewallRule -DisplayName "KingMoat HTTPS" -Direction Inbound -Protocol TCP -LocalPort 443 -Action Allow
 # 控制台默认只绑 127.0.0.1；如需远程管理，改为绑内网地址、放行管理网段，
 # 并在控制台「设置」页配置 console.allowed_ips 白名单（IP/CIDR 列表，
 # 对控制台所有请求生效含登录；为空表示不限制）
@@ -111,4 +111,4 @@ revision 追加发布，热生效），而不是降级二进制。
   归档在 `logs\archive\audit-YYYYMMDD.db.gz`（按天压缩，`audit_archive` 开启时）；
   进程日志（JSON 行 stdout）由 WinSW/NSSM 滚动文件承接。
 - **502 友好页**：表示 WAF 正常、上游故障——检查站点 upstream 节点地址/端口与
-  健康状态。更多共性问题（SQLite 网络盘、AI 404 等）见 [README.md](README.md) FAQ。
+  健康状态。更多共性问题（SQLite 网络盘、AI 404 等）见 [README.md](README.md) 第 7 节 FAQ。

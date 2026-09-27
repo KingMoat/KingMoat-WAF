@@ -6,7 +6,8 @@
 
 <p align="center">
   <a href="https://opensource.org/license/mulanpsl-2-0"><img alt="License" src="https://img.shields.io/badge/license-MulanPSL--2.0-52b100?style=for-the-badge"></a>
-  <a href="https://gitee.com/kingmoat/KingMoat-WAF/releases"><img alt="Release" src="https://img.shields.io/badge/release-v0.7.0--rc1-2f81f7?style=for-the-badge"></a>
+  <!-- Release badge is maintained manually: bump the version here on each release (current latest published release: v0.7.8-beta) -->
+  <a href="https://gitee.com/kingmoat/KingMoat-WAF/releases"><img alt="Release" src="https://img.shields.io/badge/release-v0.7.8--beta-2f81f7?style=for-the-badge"></a>
   <img alt="Go" src="https://img.shields.io/badge/Go-1.26%2B-00ADD8?style=for-the-badge&logo=go&logoColor=white">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey?style=for-the-badge">
 </p>
@@ -67,7 +68,7 @@ What small teams actually need is simple: **easy to install, easy to understand,
 - Response filtering: sensitive-data masking/blocking (phone/ID/secret presets + custom regex)
 - Dynamic protection: per-request AES-GCM encryption of HTML responses with WebCrypto restoration (HTTPS required)
 - Dual mode: `intercept` (block on hit) / `monitor` (log only, for new-site canary); friendly 502 upstream-error page
-- Audit log: NDJSON daily rotation + in-memory ring for realtime queries, optional sanitized request snapshots
+- Audit log: SQLite audit DB (`logs/audit.db`, daily snapshot archive) + in-memory ring for realtime queries, optional sanitized request snapshots
 
 **⚙️ Control plane & operability**
 
@@ -98,15 +99,15 @@ python3 -m http.server 9000
 # 2. Generate console admin credentials (optional but recommended)
 export KINGMOAT_ADMIN_HASH=$(kingmoat-cli hash-password -password 'YourStrongPassw0rd!')
 
-# 3. Start KingMoat: data plane :8080 + console :8081, config stored in kingmoat.db (SQLite)
-kingmoat -config config.example.json -console-addr 127.0.0.1:8081
+# 3. Start KingMoat: data plane :80/:443 + console :8443, config stored in kingmoat.db (SQLite)
+kingmoat -config config.example.json -console-addr 127.0.0.1:8443
 
 # 4. Verify blocking
-curl -i -H "Host: localhost" "http://127.0.0.1:8080/?id=1 UNION SELECT password FROM users"
-# → 403 blocked (X-Kingmoat-Rule: coraza/rule-949110), event written to logs/audit-*.ndjson
+curl -i -H "Host: localhost" "http://127.0.0.1/?id=1 UNION SELECT password FROM users"
+# → 403 blocked (X-Kingmoat-Rule: coraza/rule-949110), event written to the SQLite audit DB logs/audit.db
 
 # 5. Open the console to publish/modify config (hot reload, no restart)
-#    https://127.0.0.1:8081/
+#    https://127.0.0.1:8443/
 ```
 
 > Default admin account: `kmadmin` / `KingMoat@2026`, with a forced password change at first login. Set a strong password immediately; if you bind the console to a non-loopback address, preset a strong password via `KINGMOAT_ADMIN_HASH` (step 2) first so the well-known default cannot be claimed by someone else.

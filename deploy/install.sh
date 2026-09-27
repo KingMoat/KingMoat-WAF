@@ -5,7 +5,7 @@
 # Usage:
 #   curl -fsSL https://gitee.com/kingmoat/KingMoat-WAF/raw/main/deploy/install.sh | bash
 #   bash install.sh                       # interactive
-#   bash install.sh --version v0.7.0-rc1  # pin a version
+#   bash install.sh --version v0.7.8-beta  # pin a version
 #   bash install.sh --data-dir /opt/km    # non-interactive data dir
 #   bash install.sh -y --http-port 80 --https-port 443 --console-port 8443
 #   bash install.sh --uninstall           # remove everything

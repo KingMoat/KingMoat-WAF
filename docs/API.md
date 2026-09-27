@@ -2,14 +2,15 @@
 
 控制台 API（WebUI 与 `/api/*` 同源），由 all-in-one 模式（`kingmoat -console-addr`）提供。
 
-- Base URL：`http://<console-host>:<console-port>`（默认 `127.0.0.1:8081`）
+> 本文列核心端点；完整端点清单以控制台 `/openapi.json` 为准。
+
+- Base URL：`http://<console-host>:<console-port>`（端口由 `-console-addr` 指定，一键部署默认 `8443`）
 - 数据格式：请求/响应均为 JSON（UTF-8）
 - 错误格式：`{"error": "<message>"}`，配合标准 HTTP 状态码
 
 ## 认证
 
-设置环境变量 `KINGMOAT_ADMIN_HASH`（argon2id 哈希，`kingmoat-cli hash-password` 生成，支持 `-stdin`）
-后启用认证；未设置时 API 无认证（仅建议绑定回环/内网地址）。
+未设置环境变量 `KINGMOAT_ADMIN_HASH`（argon2id 哈希，`kingmoat-cli hash-password` 生成，支持 `-stdin`）时，控制台认证**自动武装**：首次启动生成随机会话密钥并强制启用登录，使用内置引导账号 `kmadmin / KingMoat@2026`，首次登录强制改密。预设该变量用于把管理凭据锚定为自选强口令，跳过默认凭据窗口期（控制台绑定非回环地址前务必预设）。
 
 两步验证：
 
@@ -26,8 +27,9 @@
 
 登出（吊销全部已签发会话并清 Cookie）：`POST /api/logout`。
 
-未认证访问返回 `401`。`/metrics` 与其余 API 一样需要认证（专用 `-metrics-addr`
-监听器无认证，仅供回环/内网采集）。
+> 开启逐用户或全局 TOTP 的账号经 HTTP Basic 访问会被拒绝（Basic 无动态码通道，失败计入防爆破锁定）；API Key（Bearer）是独立凭证，不受 MFA 影响。
+
+未认证访问返回 `401`。`/metrics` 挂在控制台端口，与其他 API 一样受控制台认证保护；`metrics.enabled` 默认 `false`，关闭时该端点返回 404。
 
 ```bash
 # 登录
@@ -81,7 +83,11 @@ curl -H 'Authorization: Bearer kma1_1a2b3c4d_xxxxxxxxxxxx' http://127.0.0.1:8081
 | GET | `/api/policy/disable-state` | 是 | 当前各站点被禁用的检测模块/CRS 分类快照（微引擎 disable 规则命中后的实时状态，发布重置） |
 | GET | `/api/ipgroups` | 是 | IP 组订阅列表（条目数/预览/最后错误） |
 | POST | `/api/ipgroups/{name}/refresh` | operator | 手动刷新订阅组 |
-| GET | `/metrics` | 是 | Prometheus 指标（用 API Key/Basic 采集；`-metrics-addr` 专用监听器无认证） |
+| GET | `/metrics` | 是 | Prometheus 指标（挂在控制台端口、受控制台认证保护；`metrics.enabled` 默认关闭，关闭时 404） |
+| GET | `/api/upgrade/status` | admin | 在线升级状态：当前版本 + 最新版本（60s 缓存，`?refresh=1` 跳过）+ 进行中任务 + 历史 |
+| POST | `/api/upgrade/check` | admin | 强制版本检查（绕过缓存并以新结果回填） |
+| POST | `/api/upgrade/start` | admin | 启动升级任务（空 `target_version` = 最新；409 任务进行中 / 429 失败冷却） |
+| GET | `/api/upgrade/task?id=` | admin | 查询单个升级任务（404 未知 id） |
 
 ## 角色权限矩阵（RBAC）
 
@@ -96,6 +102,55 @@ curl -H 'Authorization: Bearer kma1_1a2b3c4d_xxxxxxxxxxxx' http://127.0.0.1:8081
 
 ---
 
+## 在线升级（admin）
+
+控制台在线升级（系统设置 → 版本与升级）提供 4 个端点，均要求 admin 角色，由升级管道服务支撑。
+
+### GET /api/upgrade/status
+
+设置页快照：
+
+```json
+{
+  "version": "v0.7.8-beta",
+  "latest": {"version": "v0.7.9-beta", "update_available": true, "notes": "...", "assets_url": "..."},
+  "running_task": null,
+  "history": []
+}
+```
+
+- `version`：当前运行版本；`latest`：最近一次成功检查的结果（`null` 表示尚无成功检查），API 层 60s TTL 缓存，检查失败不缓存（下次调用自动重试）；`?refresh=1` 跳过缓存强制在线检查；
+- `running_task`：进行中的升级任务（空闲为 `null`）；`history`：历史任务。
+
+### POST /api/upgrade/check
+
+强制版本检查（绕过缓存并以新结果回填）。
+
+- `200`：`{"version":"v0.7.9-beta","update_available":true,"notes":"...","assets_url":"..."}`
+- `400`：当前版本号不可用（部署问题）
+- `502`：版本源不可达/检查失败
+
+### POST /api/upgrade/start
+
+启动升级任务。请求体 `{"target_version": ""}`（空 = 最新版本；空 body 亦可）。同一时刻仅允许一个任务。
+
+- `200`：`{"task_id": "..."}`
+- `409`：`{"error":"已有升级任务进行中","task":{...}}`（附进行中的任务，客户端可直接转为轮询该任务）
+- `429`：上一次失败后的冷却窗口内拒绝重试
+- `400`：目标版本非法或不在发布列表中
+
+### GET /api/upgrade/task?id=
+
+轮询单个任务（缺 `id` 返回 400，未知 `id` 返回 404），响应为任务对象。
+
+任务状态机：`detecting → downloading → verifying → replacing → restarting → success`，任一阶段失败即 `failed` 并进入冷却窗口；任务级 `success` 表示「服务重启已提交」，升级完成后服务自动重启，升级前自动在安装目录留滚动备份（见 [deploy/README.md](../deploy/README.md) 6.3）。
+
+### 模块未接线（501）
+
+当前部署形态不支持在线升级（static 模式或构建时未含该模块）时，以上端点统一返回 `501` 并附原因，而非易误导的 404/500。
+
+---
+
 ## POST /api/login
 
 ```json
@@ -107,12 +162,12 @@ curl -H 'Authorization: Bearer kma1_1a2b3c4d_xxxxxxxxxxxx' http://127.0.0.1:8081
 - `200`：`{"ok":true,"role":"admin","username":"admin","totp":false}` + `Set-Cookie: km_session=...`
 - `401`：`{"error":"invalid credentials"}`（密码错误 / 账号禁用 / 未知用户名）或 `{"error":"totp_required"}`（密码正确但缺动态码或动态码错误，同样计入防爆破计数）
 - `429`：`{"error":"too many failed attempts, try again later"}` + `Retry-After`（同一来源 IP 15 分钟内失败达 10 次后触发滑动窗口锁定，成功登录即清零；Basic 认证失败共用同一计数器）
-- `400`：`{"error":"auth is not configured"}`（未设置 ADMIN_HASH 时）
+- `400`：`{"error":"auth is not configured"}`（仅当认证模块未装配时；未设置 `ADMIN_HASH` 不会走到这里——认证会自动武装）
 
 ## GET /api/status
 
 ```json
-{"version":"v0.7.0-rc1","revision":3,"sites":2,"time":"2026-09-15T08:00:00Z"}
+{"version":"v0.7.8-beta","revision":3,"sites":2,"time":"2026-09-15T08:00:00Z"}
 ```
 
 ## GET /api/config

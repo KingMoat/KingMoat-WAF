@@ -72,6 +72,13 @@ func (s *Service) defaultReplace(ctx context.Context, t *Task) error {
 		return err
 	}
 	if err := s.atomicInstall(filepath.Join(t.artifactDir, serverBinaryName), dir, serverBinaryName, t.ID); err != nil {
+		// atomicInstall can fail AFTER the new server binary is already
+		// published (the post-rename chmod): without the restore the
+		// installation would be left half-upgraded (new server, old cli,
+		// no intent marker - the contract above is void). Mirror the cli
+		// path and put the pre-upgrade pair back; a pre-rename failure
+		// only copies identical bytes back, which is harmless.
+		s.restoreFromBackups(dir)
 		return err
 	}
 	if err := s.atomicInstall(filepath.Join(t.artifactDir, cliBinaryName), dir, cliBinaryName, t.ID); err != nil {
@@ -277,7 +284,11 @@ func pruneBackups(dir, name string, keep int) error {
 // renamed over the target, and forced executable. The running process is
 // unaffected by the swap - it keeps executing its old inode until the
 // restart. Any failure before the rename removes the temporary file and
-// leaves the target untouched.
+// leaves the target untouched. A failure AFTER the rename (only the chmod
+// can fail there) leaves the NEW binary published and possibly
+// non-executable: the caller owns the restore - defaultReplace puts the
+// pre-upgrade backups back on error (a crash in the same window is what
+// the L2 ExecStartPre rollback (T-05) recovers from).
 func (s *Service) atomicInstall(src, dir, name, taskID string) error {
 	tmp := filepath.Join(dir, name+".new-"+taskID)
 	if err := copyFile(src, tmp, 0o755, true); err != nil {
@@ -289,10 +300,20 @@ func (s *Service) atomicInstall(src, dir, name, taskID string) error {
 		return fmt.Errorf("替换 %s 失败: %w", name, err)
 	}
 	// Card order: chmod after the rename, so the published binary is
-	// executable regardless of the mode the copy carried. The crash window
-	// between rename and chmod leaves a non-executable binary - exactly
-	// the broken state the L2 ExecStartPre rollback (T-05) recovers from.
-	if err := os.Chmod(filepath.Join(dir, name), 0o755); err != nil {
+	// executable regardless of the mode the copy carried. Between rename
+	// and chmod the published binary is possibly non-executable - a crash
+	// there is the broken state the L2 ExecStartPre rollback (T-05)
+	// recovers from; an error return is handled by the caller, which
+	// restores the pre-upgrade backups (defaultReplace). The chmod is
+	// injectable (chmodFn): a post-rename chmod failure is unreachable
+	// with filesystem tricks (the freshly created file is
+	// process-owned), yet it is exactly the failure that leaves the new
+	// binary published while the stage fails.
+	chmod := s.chmodFn
+	if chmod == nil {
+		chmod = os.Chmod
+	}
+	if err := chmod(filepath.Join(dir, name), 0o755); err != nil {
 		return fmt.Errorf("设置 %s 执行权限失败: %w", name, err)
 	}
 	return nil

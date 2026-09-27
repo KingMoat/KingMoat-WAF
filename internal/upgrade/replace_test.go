@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -419,5 +420,61 @@ func TestProbeRestartCapabilityEuid(t *testing.T) {
 		WithEuidProbe(func() int { return 0 }))
 	if err := sRoot.probeRestartCapability(); err != nil {
 		t.Fatalf("probe as root = %v, want pass", err)
+	}
+}
+
+// TestReplaceRestoresOnChmodFailure: the post-rename chmod failing (the
+// only publish step after the directory entry is swapped) must not leave
+// the new binary published - the pre-upgrade pair is restored and no
+// intent marker is written (the restore-on-failure contract covers the
+// server swap, not just the cli swap). The failure is injected via
+// WithChmod because a post-rename chmod failure is unreachable with
+// filesystem tricks: the freshly created file is process-owned. The
+// injected failure is one-shot so the restore's own chmod succeeds,
+// modeling a transient failure.
+func TestReplaceRestoresOnChmodFailure(t *testing.T) {
+	binDir := t.TempDir()
+	artDir := t.TempDir()
+	writeBinaries(t, binDir, "old-server", "old-cli")
+	if err := os.WriteFile(filepath.Join(artDir, serverBinaryName), []byte("new-server"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(artDir, cliBinaryName), []byte("new-cli"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var serverChmods atomic.Int32
+	s := NewService("v0.7.8-beta", t.TempDir(),
+		WithBinaryDir(binDir),
+		WithProber(func() error { return nil }),
+		WithChmod(func(path string, mode os.FileMode) error {
+			if filepath.Base(path) != serverBinaryName {
+				return os.Chmod(path, mode)
+			}
+			if serverChmods.Add(1) == 1 {
+				return errors.New("设置执行权限失败（模拟）")
+			}
+			return os.Chmod(path, mode)
+		}))
+	task := &Task{ID: "chmodfail1", TargetVersion: "v0.7.9-beta"}
+	task.artifactDir = artDir
+
+	err := s.defaultReplace(context.Background(), task)
+	if err == nil || !strings.Contains(err.Error(), "模拟") {
+		t.Fatalf("defaultReplace = %v, want the injected chmod failure", err)
+	}
+	// The failure happened after the publish (chmod is strictly
+	// post-rename), so without the restore the new binary would still be
+	// in place.
+	if serverChmods.Load() < 1 {
+		t.Fatal("injected chmod never fired for the server binary")
+	}
+	for name, want := range map[string]string{serverBinaryName: "old-server", cliBinaryName: "old-cli"} {
+		got, err := os.ReadFile(filepath.Join(binDir, name))
+		if err != nil || string(got) != want {
+			t.Fatalf("%s after failed chmod = %q, %v; want %q (restored)", name, got, err, want)
+		}
+	}
+	if _, err := os.Stat(s.intentPath()); !os.IsNotExist(err) {
+		t.Fatal("no intent marker may exist after a failed chmod")
 	}
 }

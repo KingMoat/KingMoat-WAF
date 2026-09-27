@@ -135,10 +135,12 @@ type Service struct {
 	// euidProbe reports the effective uid of the running process (nil =
 	// os.Geteuid; tests inject a non-root identity; see
 	// probeRestartCapability and the aligned EuidProbe in
-	// internal/api).
+	// internal/api); chmodFn overrides the post-rename executable-bit
+	// publish (tests: injected chmod failures; see atomicInstall).
 	probeFn   ProbeFunc
 	binaryDir string
 	euidProbe func() int
+	chmodFn   func(path string, mode os.FileMode) error
 
 	// Releases feed transport (WithAPIBase/WithHTTPClient test seams).
 	apiBase    string
@@ -182,6 +184,12 @@ func WithProber(f ProbeFunc) Option { return func(s *Service) { s.probeFn = f } 
 // authorization check (tests: inject a non-root identity; see
 // probeRestartCapability for the production use).
 func WithEuidProbe(f func() int) Option { return func(s *Service) { s.euidProbe = f } }
+
+// WithChmod replaces the post-rename executable-bit publish performed by
+// atomicInstall (tests: injected chmod failures; see replace.go).
+func WithChmod(f func(path string, mode os.FileMode) error) Option {
+	return func(s *Service) { s.chmodFn = f }
+}
 
 // WithBinaryDir pins the directory holding the running kingmoat binaries
 // (tests: a fake layout; production: derived from os.Executable).

@@ -131,6 +131,10 @@ type Service struct {
 	// tests to exercise linux/windows archive paths on one host).
 	goos, goarch string
 
+	// allowedHosts restricts download URLs to the release origin (see
+	// download.go; overridable in tests that serve assets from httptest).
+	allowedHosts []string
+
 	// now is the clock seam used for cooldown arithmetic (tests fast-forward).
 	now func() time.Time
 }
@@ -168,6 +172,12 @@ func WithPlatform(goos, goarch string) Option {
 	return func(s *Service) { s.goos, s.goarch = goos, goarch }
 }
 
+// WithAllowedHosts replaces the download origin allowlist (tests: httptest
+// hosts; see download.go for the production default).
+func WithAllowedHosts(hosts []string) Option {
+	return func(s *Service) { s.allowedHosts = hosts }
+}
+
 // NewService builds the upgrade service on top of the data directory.
 // currentVersion is the running binary's ldflags-injected version; dev
 // builds ("dev") fail every check/start with ErrInvalidCurrent, since
@@ -182,9 +192,12 @@ func NewService(currentVersion, dataDir string, opts ...Option) *Service {
 		httpClient:     &http.Client{}, // deadlines enforced via context
 		goos:           runtime.GOOS,
 		goarch:         runtime.GOARCH,
+		allowedHosts:   defaultAllowedHosts,
 		now:            time.Now,
 	}
 	s.checkFn = s.fetchReleases
+	s.downloadFn = s.downloadRelease
+	s.verifyFn = s.verifyDownload
 	for _, o := range opts {
 		o(s)
 	}

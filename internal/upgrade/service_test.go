@@ -416,12 +416,18 @@ func TestCooldownClockSeam(t *testing.T) {
 	waitTask(t, s, t2.ID, TaskFailed)
 }
 
-// TestStartDownloadsNotConfigured pins the interim behavior while the
+// TestStartReplaceNotConfigured pins the interim behavior while the
 // replace/restart cards are pending: a task failing at a stage whose hook
 // is not wired reports a clear internal error instead of hanging.
-func TestStartDownloadsNotConfigured(t *testing.T) {
+func TestStartReplaceNotConfigured(t *testing.T) {
 	s := NewService("v0.7.8-beta", t.TempDir(),
-		WithChecker(func(ctx context.Context) ([]Release, error) { return testFeed(), nil }))
+		WithChecker(func(ctx context.Context) ([]Release, error) { return testFeed(), nil }),
+		WithDownloader(func(ctx context.Context, t *Task, rel *Release) (string, error) {
+			return "/fake/archive.tar.gz", nil
+		}),
+		WithVerifier(func(ctx context.Context, t *Task, rel *Release, archivePath string) (string, error) {
+			return "/fake/artifact", nil
+		}))
 	t1, err := s.Start("")
 	if err != nil {
 		t.Fatal(err)

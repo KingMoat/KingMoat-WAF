@@ -9,7 +9,7 @@ export function parseListenAddr(v) {
     const end = s.indexOf(']')
     if (end < 0) return { ok: false, msg: 'IPv6 地址需用方括号包裹，如 [::]:443' }
     host = s.slice(1, end)
-    if (!host || !host.includes(':') || !/^[0-9a-fA-F:.]+$/.test(host)) return { ok: false, msg: '方括号内应为 IPv6 地址，如 [::]' }
+    if (!host || !host.includes(':') || /:::/.test(host) || (host.match(/::/g) || []).length > 1 || !/^[0-9a-fA-F:.]+$/.test(host)) return { ok: false, msg: '方括号内应为 IPv6 地址，如 [::]' }
     const rest = s.slice(end + 1)
     if (!rest.startsWith(':')) return { ok: false, msg: '格式应为 [IPv6地址]:端口，如 [::]:443' }
     portStr = rest.slice(1)
@@ -22,12 +22,16 @@ export function parseListenAddr(v) {
       host = s.slice(0, i)
       portStr = s.slice(i + 1)
     }
+    // 非括号分支按 lastIndexOf(':') 切分，`::80`/`abc::80` 一类多冒号输入切出的 host
+    // 必含 ':'，一律拒绝；IPv6 必须走上方 [::]:端口 括号形式，否则数据面 net.Listen 失败
+    if (host.includes(':')) return { ok: false, msg: 'IPv6 地址需用方括号包裹，如 [::]:443' }
   }
   if (!/^\d{1,5}$/.test(portStr)) return { ok: false, msg: '端口须为 1-65535 的数字' }
   const port = Number(portStr)
   if (port < 1 || port > 65535) return { ok: false, msg: '端口须在 1-65535 范围内' }
-  // 含冒号的 host 只可能来自方括号分支（已按 IPv6 字符集校验过），此处只校验 IPv4/主机名；
-  // 修复：原实现把 [::]:443 的 host「::」误判为非法（假拒绝，与提示文案矛盾）
+  // 至此 host 只可能为：空（:80 形式）、方括号内 IPv6（已按字符集与压缩段校验）、
+  // 或非括号分支切出的 IPv4/主机名（多冒号输入已在分支内拒绝）——此处只校验 IPv4/主机名字符集；
+  // 勿对含冒号 host 加豁免：那会重新放行非括号形式的多冒号输入（如 ::80，回归）
   if (host && !host.includes(':') && !/^[0-9a-zA-Z._-]+$/.test(host)) return { ok: false, msg: '地址仅支持 IP 或主机名' }
   return { ok: true, empty: false, port }
 }

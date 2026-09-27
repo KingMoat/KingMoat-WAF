@@ -20,9 +20,9 @@
             <el-tag size="small" effect="plain" class="km-mono">当前 {{ portInfo.port }}</el-tag>
             <div style="flex:1"></div>
             <el-input-number v-model="portForm.port" :min="1" :max="65535" :controls="false" size="small"
-                             :disabled="!portInfo.changeable || !can('admin')" placeholder="新端口"
+                             :disabled="!portInfo.changeable || !can('admin') || upgTaskActive" placeholder="新端口"
                              class="km-mono" style="width:120px" />
-            <el-button size="small" type="primary" :disabled="!portInfo.changeable || !can('admin')"
+            <el-button size="small" type="primary" :disabled="!portInfo.changeable || !can('admin') || upgTaskActive"
                        @click="openPortDlg">更换端口</el-button>
           </div>
           <div class="km-dim" style="font-size:12px;margin-top:8px;line-height:1.8">
@@ -31,6 +31,77 @@
           <el-alert v-if="portResult" type="success" :closable="false" show-icon style="margin-top:12px"
                     :title="`端口变更已提交，服务重启中（约 ${portResult.seconds} 秒）`"
                     :description="`重启完成后请用新地址访问：${portResult.url} —— 当前标签页将失联；若超时未恢复，请按部署文档「控制台端口更换与失联恢复」手工恢复。`" />
+        </el-card>
+
+        <!-- 版本与升级（在线升级：仅 systemd/Linux 形态开放，admin 专属；模块未接线 501 自动降级手动指引） -->
+        <el-card shadow="never" style="margin-bottom:16px">
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <div class="km-title" style="margin:0">版本与升级</div>
+            <div style="flex:1"></div>
+            <el-button v-if="upgradeModule && !upgTaskActive" size="small" :loading="upgChecking"
+                       :disabled="!can('admin')" @click="checkUpgrade">检查更新</el-button>
+          </div>
+          <div style="display:flex;align-items:flex-end;gap:14px;margin-top:12px;flex-wrap:wrap">
+            <div>
+              <div class="km-mono" style="font-size:26px;font-weight:700;line-height:1.15">{{ upgVersion || '—' }}</div>
+              <div class="km-dim" style="font-size:12px;margin-top:2px">当前运行版本</div>
+            </div>
+            <el-tag v-if="upgradeModule && upgLatest?.update_available && !upgTaskActive" size="small" type="warning" effect="plain">
+              可升级到 {{ upgLatest.version }}
+            </el-tag>
+          </div>
+
+          <!-- 降级：非 admin（权限不足）或模块未接线（501，如非 systemd 部署形态） -->
+          <div v-if="upgradeModule === false" class="km-dim" style="font-size:12.5px;margin-top:12px;line-height:2">
+            <template v-if="upgDenied">在线升级仅管理员可用，如需升级请联系管理员处理。</template>
+            <template v-else>当前部署形态不支持在线升级（需 systemd/Linux 一键部署形态），可手动下载升级包完成更新。</template>
+            <a href="https://gitee.com/kingmoat/KingMoat-WAF/releases" target="_blank" style="color:var(--km-cyan)">前往 Release 页手动下载 →</a>
+          </div>
+
+          <!-- 版本检查结果 -->
+          <el-alert v-if="upgradeModule && upgLatest?.update_available && !upgTaskActive" type="warning" :closable="false" show-icon
+                    style="margin-top:12px" :title="`发现新版本 ${upgLatest.version}，建议在维护窗口升级`">
+            <div class="km-upg-notes">{{ upgLatest.notes || '（本次更新无说明）' }}</div>
+            <div style="margin-top:10px;display:flex;align-items:center;gap:12px">
+              <el-button size="small" type="primary" :disabled="!can('admin')" @click="confirmUpgrade">立即升级</el-button>
+              <a v-if="upgLatest.assets_url" :href="upgLatest.assets_url" target="_blank" class="km-dim" style="font-size:12px">手动下载升级包</a>
+            </div>
+          </el-alert>
+          <div v-else-if="upgradeModule && upgLatest && !upgTaskActive" style="margin-top:12px;display:flex;align-items:center;gap:8px">
+            <el-tag size="small" type="success" effect="plain">已是最新</el-tag>
+            <span class="km-dim" style="font-size:12.5px">最新版本 <span class="km-mono">{{ upgLatest.version }}</span>，与当前运行版本一致</span>
+          </div>
+          <div v-else-if="upgradeModule && !upgLatest && upgStatusError && !upgTaskActive" class="km-dim"
+               style="font-size:12.5px;margin-top:12px;color:var(--km-red)">
+            版本信息获取失败：{{ upgStatusError }}（可点击「检查更新」重试）
+          </div>
+
+          <!-- 升级进行中：五阶段进度 + 2s 轮询（重启窗口自动退避重试）；期间禁用本页全部写操作 -->
+          <template v-if="upgTaskActive">
+            <div class="km-upg-steps" style="margin-top:14px">
+              <template v-for="(s, i) in UPG_STEPS" :key="s.key">
+                <span v-if="i > 0" class="km-upg-arrow">→</span>
+                <span class="km-upg-step" :class="{ done: i < upgStepIdx, on: i === upgStepIdx }">
+                  <span class="dot"></span>{{ s.label }}
+                </span>
+              </template>
+            </div>
+            <div class="km-dim" style="font-size:12.5px;margin-top:10px;line-height:1.9">
+              {{ upgTask.message || '升级进行中，请保持本页打开（升级完成后服务将自动重启）' }}
+              <span v-if="upgTask.target_version"> · 目标版本 <span class="km-mono">{{ upgTask.target_version }}</span></span>
+            </div>
+            <div class="km-muted" style="font-size:12px;margin-top:4px">升级期间本页所有保存 / 提交操作已临时禁用</div>
+          </template>
+
+          <!-- 升级结果 -->
+          <el-alert v-if="upgTask?.state === 'success'" type="success" :closable="false" show-icon style="margin-top:14px"
+                    title="升级完成，服务重启中">
+            <div style="font-size:12.5px;line-height:1.9;color:var(--km-txt-2)">约 30 秒后请刷新页面并重新登录（升级后当前会话需重新登录，属预期现象）。</div>
+            <div style="margin-top:8px"><el-button size="small" type="primary" @click="reloadPage">刷新页面</el-button></div>
+          </el-alert>
+          <el-alert v-if="upgTask?.state === 'failed'" type="error" :closable="false" show-icon style="margin-top:14px"
+                    title="升级失败"
+                    :description="(upgTask.error || upgTask.message || '未知原因') + ' —— 任务失败后有冷却期，请稍后再试；也可前往 Release 页手动下载升级包。'" />
         </el-card>
 
         <el-card shadow="never" style="margin-bottom:16px">
@@ -128,8 +199,8 @@
                 <div style="display:flex;gap:8px;align-items:center;width:100%;flex-wrap:wrap">
                   <el-input v-model="aiKeyInput" type="password" show-password autocomplete="new-password"
                             placeholder="粘贴 Key 后保存入库，保存后不可再查看" class="km-mono" style="width:300px" />
-                  <el-button size="small" type="primary" :disabled="!can('admin')" :loading="aiKeySaving" @click="saveAIKey">保存 Key</el-button>
-                  <el-button size="small" type="danger" plain :disabled="!can('admin') || aiKeySaving || aiKeySource !== 'stored'" @click="clearAIKey">清除</el-button>
+                  <el-button size="small" type="primary" :disabled="!can('admin') || upgTaskActive" :loading="aiKeySaving" @click="saveAIKey">保存 Key</el-button>
+                  <el-button size="small" type="danger" plain :disabled="!can('admin') || aiKeySaving || aiKeySource !== 'stored' || upgTaskActive" @click="clearAIKey">清除</el-button>
                   <el-tag size="small" effect="plain" :type="keySourceTag" class="km-tag">{{ keySourceLabel }}</el-tag>
                 </div>
                 <span class="km-dim" style="margin-left:10px;font-size:12px">存入数据库（argon2id 哈希 + KEK 加密），保存后不可再查看；优先于环境变量</span>
@@ -218,7 +289,7 @@
         <el-card shadow="never" style="margin-bottom:16px">
           <div style="display:flex;align-items:center;gap:10px">
             <div class="km-title" style="margin:0">审计日志外发（log_shipper）</div>
-            <el-button size="small" style="margin-left:auto" :loading="testing" @click="testShip">
+            <el-button size="small" style="margin-left:auto" :loading="testing" :disabled="upgTaskActive" @click="testShip">
               <el-icon><Promotion /></el-icon>&nbsp;发送测试事件
             </el-button>
           </div>
@@ -553,7 +624,7 @@
       </template>
 
       <div style="text-align:right">
-        <el-button type="primary" size="large" :loading="saving" :disabled="!can('operator')" @click="save">
+        <el-button type="primary" size="large" :loading="saving" :disabled="!can('operator') || upgTaskActive" @click="save">
           保存并发布（热生效）
         </el-button>
       </div>
@@ -765,6 +836,147 @@ async function submitPort() {
   } finally { portChanging.value = false }
 }
 
+// ===== 版本与升级（在线升级，admin；模块未接线 501 → 降级手动下载指引）=====
+const UPG_STEPS = [
+  { key: 'detecting', label: '环境检测' },
+  { key: 'downloading', label: '下载升级包' },
+  { key: 'verifying', label: '校验完整性' },
+  { key: 'replacing', label: '替换二进制' },
+  { key: 'restarting', label: '重启服务' },
+]
+const UPG_POLL_MS = 2000          // 任务轮询间隔
+const UPG_RETRY_MS = 3000         // 服务重启窗口（接口失联）退避间隔
+const UPG_RESTART_MAX_MS = 180000 // 重启窗口判定上限，超时按失败引导人工排查
+const upgradeModule = ref(null)   // null=探测中 true=可用 false=未接线/无权限
+const upgVersion = ref('')
+const upgLatest = ref(null)      // {version, update_available, notes, assets_url}
+const upgChecking = ref(false)
+const upgTask = ref(null)        // 升级任务对象（轮询态数据源）
+const upgStatusError = ref('')
+let upgPollTimer = null
+let upgPollStart = 0
+
+const upgDenied = computed(() => !can('admin'))
+const upgTaskActive = computed(() => !!upgTask.value && !['success', 'failed'].includes(upgTask.value.state))
+const upgStepIdx = computed(() => UPG_STEPS.findIndex(s => s.key === upgTask.value?.state))
+
+async function loadUpgradeStatus() {
+  if (!can('admin')) { upgradeModule.value = false; loadUpgVersion(); return }
+  try {
+    const d = await api('/api/upgrade/status')
+    upgradeModule.value = true
+    upgStatusError.value = ''
+    if (d.version) upgVersion.value = d.version
+    upgLatest.value = d.latest || null
+    // running_task 恢复：刷新/重开页面自动接上进行中的升级任务
+    if (d.running_task && !upgTask.value) attachUpgradeTask(d.running_task)
+  } catch (e) {
+    if (e.status === 501) { upgradeModule.value = false; loadUpgVersion() }
+    else if (!upgTask.value) upgStatusError.value = e.message
+  }
+}
+
+// 降级态版本号兜底：/api/status 无角色门禁，501/非 admin 场景仍可展示当前版本
+async function loadUpgVersion() {
+  if (upgVersion.value) return
+  try { upgVersion.value = (await api('/api/status')).version || '' } catch (e) { /* 版本未知时展示 — */ }
+}
+
+async function checkUpgrade() {
+  upgChecking.value = true
+  try {
+    const d = await post('/api/upgrade/check', {})
+    upgradeModule.value = true
+    upgLatest.value = d
+    upgStatusError.value = ''
+    ElMessage.success(d.update_available ? '发现新版本：' + d.version : '当前已是最新版本')
+  } catch (e) {
+    if (e.status === 501) { upgradeModule.value = false; loadUpgVersion() }
+    else ElMessage.error(e.message) // 502 feed 失败 / 400 当前版本非法：后端文案原文展示
+  } finally { upgChecking.value = false }
+}
+
+async function confirmUpgrade() {
+  const target = upgLatest.value?.version || '最新版本'
+  try {
+    await ElMessageBox.confirm(
+      `将把控制台从 ${upgVersion.value || '当前版本'} 升级到 ${target}。升级过程服务会自动重启，控制台短暂失联，经反向代理的业务流量将中断数秒至数十秒，建议选择维护窗口执行。确认继续？`,
+      '确认升级', { type: 'warning', confirmButtonText: '立即升级', cancelButtonText: '取消' }
+    )
+  } catch (e) { return }
+  try {
+    const r = await post('/api/upgrade/start', {})
+    upgTask.value = {
+      id: r.task_id, state: 'detecting',
+      current_version: upgVersion.value, target_version: upgLatest.value?.version || '',
+      message: '升级任务已启动', started_at: new Date().toISOString(),
+    }
+    pollUpgradeTask(r.task_id)
+  } catch (e) {
+    if (e.status === 409) {
+      // 已有任务进行中（后端返回现任务）：清本地态后从 status 接上现任务
+      ElMessage.warning(e.message)
+      upgTask.value = null
+      await loadUpgradeStatus()
+    } else {
+      ElMessage.error(e.message) // 429 冷却（后端含剩余分钟）/ 400 目标或当前版本非法
+    }
+  }
+}
+
+function attachUpgradeTask(t) {
+  if (upgTask.value && !['success', 'failed'].includes(upgTask.value.state)) return // 已在跟踪
+  upgTask.value = t
+  if (!['success', 'failed'].includes(t.state)) pollUpgradeTask(t.id)
+}
+
+function pollUpgradeTask(id) {
+  stopUpgradePoll()
+  upgPollStart = Date.now()
+  const schedule = (ms) => { upgPollTimer = setTimeout(tick, ms) }
+  const finish = (t) => {
+    upgTask.value = t
+    if (t.state === 'success' && t.target_version) upgVersion.value = t.target_version
+  }
+  const tick = async () => {
+    upgPollTimer = null
+    try {
+      const t = await api('/api/upgrade/task?id=' + encodeURIComponent(id))
+      if (t.state === 'success' || t.state === 'failed') { finish(t); return }
+      upgTask.value = t
+    } catch (e) {
+      // 服务重启窗口接口失联属预期：改走 /status 判定成败；status 也不可达则退避重试
+      try {
+        const d = await api('/api/upgrade/status')
+        if (d.running_task) { upgTask.value = d.running_task; schedule(UPG_RETRY_MS); return }
+        upgVersion.value = d.version || upgVersion.value
+        const t0 = upgTask.value || {}
+        if (t0.target_version && d.version === t0.target_version) {
+          finish({ ...t0, state: 'success', finished_at: new Date().toISOString() })
+        } else {
+          finish({ ...t0, state: 'failed', error: '升级任务中断' + (e.message ? '（' + e.message + '）' : '') })
+        }
+        return
+      } catch (e2) {
+        if (Date.now() - upgPollStart > UPG_RESTART_MAX_MS) {
+          finish({ ...(upgTask.value || { id }), state: 'failed', error: '升级后服务未在 3 分钟内恢复响应，请登录服务器执行 systemctl status kingmoat 排查，必要时用安装目录 kingmoat.bak-* 备份手动恢复' })
+          return
+        }
+        schedule(UPG_RETRY_MS)
+        return
+      }
+    }
+    schedule(UPG_POLL_MS)
+  }
+  tick()
+}
+
+function stopUpgradePoll() {
+  if (upgPollTimer) { clearTimeout(upgPollTimer); upgPollTimer = null }
+}
+
+function reloadPage() { location.reload() }
+
 // 拦截页定制：可用变量 + 实时预览（示例值替换 + iframe sandbox）
 const bpVars = ['{{request_id}}', '{{rule_id}}', '{{reason}}', '{{client_ip}}', '{{method}}', '{{host}}', '{{url}}', '{{ua}}', '{{timestamp}}']
 const bpPreview = computed(() => {
@@ -913,6 +1125,7 @@ async function load() {
   }
   refreshAIKeyStatus()
   loadConsolePort()
+  loadUpgradeStatus()
 }
 
 // parseReportCron 把日报 cron（分 时 * * dow）解析回时间与星期多选；
@@ -1159,8 +1372,17 @@ async function save() {
 }
 
 onMounted(load)
-onBeforeUnmount(() => { if (portCountdown) clearInterval(portCountdown) })
+onBeforeUnmount(() => { if (portCountdown) clearInterval(portCountdown); stopUpgradePoll() })
 </script>
 
 <style scoped>
+.km-upg-notes { white-space: pre-wrap; font-size: 12.5px; line-height: 1.9; max-height: 200px; overflow-y: auto; color: var(--km-txt-2); }
+.km-upg-steps { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.km-upg-step { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 999px; font-size: 12px; border: 1px solid var(--km-line); background: var(--km-panel-2); color: var(--km-txt-3); }
+.km-upg-step .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .55; }
+.km-upg-step.done { color: var(--km-green); opacity: .9; }
+.km-upg-step.on { background: var(--km-nav-grad); color: var(--km-nav-tx); border-color: transparent; font-weight: 600; }
+.km-upg-step.on .dot { opacity: 1; animation: kmUpgPulse 1.2s infinite; }
+.km-upg-arrow { color: var(--km-txt-3); font-size: 11px; }
+@keyframes kmUpgPulse { 50% { opacity: .35; } }
 </style>

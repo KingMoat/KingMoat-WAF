@@ -46,6 +46,7 @@ import (
 	"github.com/kingmoat/kingmoat/internal/passhash"
 	"github.com/kingmoat/kingmoat/internal/stages"
 	"github.com/kingmoat/kingmoat/internal/store"
+	"github.com/kingmoat/kingmoat/internal/upgrade"
 )
 
 // base64RawStd is the alphabet used by standard argon2 encoded hashes.
@@ -319,6 +320,11 @@ type Options struct {
 	// get their systemctl restart rejected by the default polkit policy.
 	// Test hook.
 	EuidProbe func() int
+	// Upgrade hosts the console self-upgrade pipeline (version check, async
+	// upgrade task; internal/upgrade.Service built by cmd/kingmoat with
+	// production defaults). nil = the /api/upgrade/* endpoints answer 501
+	// (static mode, or deployments without the module wired).
+	Upgrade *upgrade.Service
 }
 
 // euidProbe returns the configured effective-uid probe, defaulting to
@@ -341,6 +347,9 @@ type Server struct {
 	// qInflight counts in-flight audit log queries, bounded by the live
 	// config.AuditQuery policy so console scans stay off the forwarding path.
 	qInflight atomic.Int64
+	// upgCache memoizes the last successful online-upgrade version check
+	// for the status endpoint (60s TTL; see upgrade_api.go).
+	upgCache upgradeCheckCache
 }
 
 // auditQueryGate applies the live audit-query policy (config.AuditQuery):
@@ -436,6 +445,13 @@ func New(opts Options) *Server {
 	// Console port change (settings page; systemd EnvironmentFile + restart).
 	mux.HandleFunc("GET /api/settings/console-port", s.handleConsolePortGet)
 	mux.HandleFunc("POST /api/settings/console-port", s.handleConsolePortSet)
+	// Online self-upgrade (admin): cached version status, forced check,
+	// start/task. Registered unconditionally: without a wired service the
+	// handlers answer 501 instead of vanishing into a 404.
+	mux.HandleFunc("GET /api/upgrade/status", s.handleUpgradeStatus)
+	mux.HandleFunc("POST /api/upgrade/check", s.handleUpgradeCheck)
+	mux.HandleFunc("POST /api/upgrade/start", s.handleUpgradeStart)
+	mux.HandleFunc("GET /api/upgrade/task", s.handleUpgradeTask)
 	if opts.ConsoleTLS != nil {
 		mux.HandleFunc("GET /api/console/tls", s.handleConsoleTLSGet)
 		mux.HandleFunc("POST /api/console/tls", s.handleConsoleTLSApply)

@@ -44,6 +44,7 @@ import (
 	"github.com/kingmoat/kingmoat/internal/redact"
 	"github.com/kingmoat/kingmoat/internal/stages"
 	"github.com/kingmoat/kingmoat/internal/telemetry"
+	"github.com/kingmoat/kingmoat/internal/upgrade"
 	"github.com/kingmoat/kingmoat/internal/webui"
 )
 
@@ -570,6 +571,13 @@ func main() {
 				consolePort = v
 			}
 		}
+		// Online self-upgrade pipeline (settings page): production defaults
+		// (anonymous Gitee feed + download, fire-and-forget replace/restart).
+		// Data directory = the console DB directory (console.env's home, inside
+		// the unit's ReadWritePaths); the binary directory is derived from
+		// os.Executable() at use time (internal/upgrade.currentBinaryDir), so
+		// the swap always targets the running installation.
+		upgSvc := upgrade.NewService(version, cdir)
 		apiSrv := api.New(api.Options{
 			Center:      center,
 			Logs:        auditStore,
@@ -592,6 +600,7 @@ func main() {
 			ACME:           acmeSvc,
 			ConsolePort:    consolePort,
 			ConsoleEnvPath: filepath.Join(cdir, "console.env"),
+			Upgrade:        upgSvc,
 			PProf:          os.Getenv("KINGMOAT_PPROF") != "", // /debug/pprof behind console auth
 			GroupsFn:       func() *ipgroups.Manager { return handler.Groups() },
 			DisableStateFn: func() *stages.StageDisableRegistry { return handler.DisableState() },

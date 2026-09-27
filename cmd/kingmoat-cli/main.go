@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"math/big"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/crypto/argon2"
@@ -20,6 +21,7 @@ import (
 	"github.com/kingmoat/kingmoat/internal/coraza"
 	"github.com/kingmoat/kingmoat/internal/passhash"
 	"github.com/kingmoat/kingmoat/internal/store"
+	"github.com/kingmoat/kingmoat/internal/upgrade"
 )
 
 var version = "dev"
@@ -36,6 +38,8 @@ func main() {
 		runHashPassword(os.Args[2:])
 	case "reset-password":
 		runResetPassword(os.Args[2:])
+	case "upgrade-rollback":
+		runUpgradeRollback(os.Args[2:])
 	case "version":
 		fmt.Println("kingmoat-cli", version)
 	default:
@@ -53,6 +57,10 @@ Usage:
   kingmoat-cli reset-password -db <path> -username <user> [-password <pw> | -generate] [-clear-mfa]
                                          Console password reset (offline rescue): the account is
                                          forced to change the password at its next login.
+  kingmoat-cli upgrade-rollback [-data-dir <path>]   Restore the pre-upgrade binaries from the
+                                         backup recorded in the upgrade intent marker. NEVER fails:
+                                         every outcome exits 0 (the unit's ExecStartPre must not
+                                         block the service start).
   kingmoat-cli version                   Print version
 `, version)
 }
@@ -121,6 +129,43 @@ func runResetPassword(args []string) {
 	if *clearMFA {
 		fmt.Println("MFA enrolment cleared")
 	}
+}
+
+// runUpgradeRollback is the L2 self-heal hook invoked by the unit's
+// ExecStartPre before every start: when the on-disk server binary does not
+// match the upgrade intent marker (the new binary failed to run), the
+// recorded pre-upgrade backup is restored in place. CONTRACT: every branch
+// exits 0 - blocking the unit start would be strictly worse than a failed
+// rollback, so even internal errors only go to stderr. The server binary is
+// looked up next to this cli executable (/opt/kingmoat/kingmoat-cli →
+// /opt/kingmoat/kingmoat); the data dir defaults to the packaged systemd
+// layout (/var/lib/kingmoat) and can be overridden with -data-dir.
+func runUpgradeRollback(args []string) {
+	fs := flag.NewFlagSet("upgrade-rollback", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	dataDir := fs.String("data-dir", "/var/lib/kingmoat", "data directory holding the upgrade intent marker (<data-dir>/upgrade/intent.json)")
+	if err := fs.Parse(args); err != nil {
+		// Misuse (typo'd flag) must not violate the never-fail contract
+		// either; the flag error itself is already on stderr.
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "upgrade-rollback: locating the server binary failed: %v\n", err)
+		return
+	}
+	serverBin := filepath.Join(filepath.Dir(exe), "kingmoat")
+	needed, reason := upgrade.CheckUpgradeIntent(*dataDir, serverBin)
+	if !needed {
+		fmt.Printf("upgrade-rollback: %s\n", reason)
+		return
+	}
+	fmt.Printf("upgrade-rollback: %s\n", reason)
+	if err := upgrade.PerformRollback(*dataDir, serverBin); err != nil {
+		fmt.Fprintf(os.Stderr, "upgrade-rollback: rollback FAILED (service start continues): %v\n", err)
+		return
+	}
+	fmt.Printf("upgrade-rollback: restored the pre-upgrade binaries from the recorded backup; removing the broken copy is safe once the service is healthy\n")
 }
 
 // randomPassword returns a 20-char alphanumeric one-time password.

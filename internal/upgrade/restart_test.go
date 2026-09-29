@@ -122,7 +122,7 @@ func TestSubmitRestartObservesVerdict(t *testing.T) {
 	}
 	// The success case passes the production argument vector; the
 	// recording fake only succeeds for it.
-	if err := submitRestart(context.Background(), exec.Command(path, "--no-block", "restart", "kingmoat")); err != nil {
+	if err := submitRestart(context.Background(), exec.Command(path, "--no-block", "restart", "kingmoatwaf")); err != nil {
 		t.Fatalf("submitRestart(successful systemctl) = %v", err)
 	}
 }
@@ -208,7 +208,7 @@ func TestDefaultRestartRequiresIntent(t *testing.T) {
 func TestRestartSubmissionFailureFailsTask(t *testing.T) {
 	fail, _ := fakeSystemctlScripts()
 	fakeSystemctl(t, fail)
-	archive := buildTarGz(t, map[string][]byte{"kingmoat": []byte(testPayloadA), "kingmoat-cli": []byte(testPayloadB)})
+	archive := buildTarGz(t, map[string][]byte{"kingmoatwaf": []byte(testPayloadA), "kmwafctl": []byte(testPayloadB)})
 	srv := assetServer(t, map[string][]byte{
 		testArchiveNm: archive,
 		checksumsName: []byte(sumsFile(map[string][]byte{testArchiveNm: archive})),
@@ -251,7 +251,7 @@ func TestRestartSubmissionFailureFailsTask(t *testing.T) {
 func TestRestartSubmissionNoBlockContract(t *testing.T) {
 	_, noBlock := fakeSystemctlScripts()
 	argsFile := fakeSystemctl(t, noBlock)
-	archive := buildTarGz(t, map[string][]byte{"kingmoat": []byte(testPayloadA), "kingmoat-cli": []byte(testPayloadB)})
+	archive := buildTarGz(t, map[string][]byte{"kingmoatwaf": []byte(testPayloadA), "kmwafctl": []byte(testPayloadB)})
 	srv := assetServer(t, map[string][]byte{
 		testArchiveNm: archive,
 		checksumsName: []byte(sumsFile(map[string][]byte{testArchiveNm: archive})),
@@ -275,7 +275,7 @@ func TestRestartSubmissionNoBlockContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fake systemctl was never invoked: %v", err)
 	}
-	if got, want := strings.Join(strings.Fields(string(data)), " "), "--no-block restart kingmoat"; got != want {
+	if got, want := strings.Join(strings.Fields(string(data)), " "), "--no-block restart kingmoatwaf"; got != want {
 		t.Fatalf("systemctl invoked as %q, want %q", got, want)
 	}
 }
@@ -284,7 +284,7 @@ func TestRestartSubmissionNoBlockContract(t *testing.T) {
 // task, but the binaries stay swapped and the intent marker survives - the
 // next boot's self-heal (L1 reconcile) still closes the upgrade out.
 func TestRestartFailureKeepsIntent(t *testing.T) {
-	archive := buildTarGz(t, map[string][]byte{"kingmoat": []byte(testPayloadA), "kingmoat-cli": []byte(testPayloadB)})
+	archive := buildTarGz(t, map[string][]byte{"kingmoatwaf": []byte(testPayloadA), "kmwafctl": []byte(testPayloadB)})
 	srv := assetServer(t, map[string][]byte{
 		testArchiveNm: archive,
 		checksumsName: []byte(sumsFile(map[string][]byte{testArchiveNm: archive})),

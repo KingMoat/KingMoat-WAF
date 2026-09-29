@@ -53,7 +53,7 @@ func seedStoreAdmin(t *testing.T, center *configcenter.Center, hash string) {
 }
 
 func TestConsoleLoginSession(t *testing.T) {
-	// hash of "hunter2" generated with kingmoat-cli-compatible parameters
+	// hash of "hunter2" generated with kmwafctl-compatible parameters
 	hash := "$argon2id$v=19$m=65536,t=3,p=4$" +
 		mustB64([]byte("0123456789abcdef")) + "$" + mustArgonHash("hunter2")
 	ts, _ := loginServer(t, hash, "")

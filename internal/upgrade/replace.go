@@ -1,5 +1,5 @@
 // Binary replacement (upgrade card T-04): capability probe, rolling
-// backups, atomic swap of the running kingmoat and kingmoat-cli, and the
+// backups, atomic swap of the running kingmoatwaf and kmwafctl, and the
 // upgrade intent marker consumed by the self-heal net (T-05). The running
 // process is never disturbed - the swap only re-points directory entries,
 // so the old binary keeps serving until the restart stage (T-06) takes
@@ -20,6 +20,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"github.com/kingmoat/kingmoat/internal/naming"
 )
 
 const (
@@ -149,7 +151,7 @@ func (s *Service) probeReplaceCapability() error {
 //  2. systemctl exists: the restart stage submits the unit restart through
 //     it; without it the upgrade could replace binaries but never hand
 //     over to the new ones;
-//  3. the process runs as root: a non-root `systemctl restart kingmoat`
+//  3. the process runs as root: a non-root `systemctl restart kingmoatwaf`
 //     is rejected by the default polkit policy (auth_admin_keep) - the
 //     same verdict the console port change gates on (consolePortChangeable,
 //     internal/api/console_port.go, and its EuidProbe). Probing it here
@@ -167,7 +169,7 @@ func (s *Service) probeRestartCapability() error {
 		return fmt.Errorf("未找到 systemctl，无法自动重启服务（非 systemd 部署）")
 	}
 	if s.euidProbe() != 0 {
-		return errors.New("当前进程非 root 运行，polkit 默认拒绝其重启 kingmoat 服务（需要 root 或 polkit 授权重启服务）")
+		return errors.New("当前进程非 root 运行，polkit 默认拒绝其重启 " + naming.ServiceName + " 服务（需要 root 或 polkit 授权重启服务）")
 	}
 	return nil
 }
@@ -185,7 +187,7 @@ func probeDirWritable(dir string) error {
 	if !fi.IsDir() {
 		return fmt.Errorf("%s 不是目录", dir)
 	}
-	f, err := os.CreateTemp(dir, ".kingmoat-upgrade-probe-*")
+	f, err := os.CreateTemp(dir, ".kingmoatwaf-upgrade-probe-*")
 	if err != nil {
 		return err
 	}
@@ -200,8 +202,8 @@ func probeDirWritable(dir string) error {
 
 // currentBinaryDir resolves the directory holding the running binaries.
 // Production derives it from this process's own executable path
-// (/opt/kingmoat/kingmoat → /opt/kingmoat), so the swap always targets
-// exactly the installation that is running; kingmoat-cli lives beside it.
+// (/opt/kingmoatwaf/kingmoatwaf → /opt/kingmoatwaf), so the swap always targets
+// exactly the installation that is running; kmwafctl lives beside it.
 // Tests pin the directory explicitly.
 func (s *Service) currentBinaryDir() (string, error) {
 	if s.binaryDir != "" {
@@ -214,7 +216,7 @@ func (s *Service) currentBinaryDir() (string, error) {
 	return filepath.Dir(exe), nil
 }
 
-// backupCurrentBinaries copies the running kingmoat and kingmoat-cli next
+// backupCurrentBinaries copies the running kingmoatwaf and kmwafctl next
 // to themselves as <name>.bak-<current version> (same directory as the
 // binaries, so a manual `cp` back needs no path hunting) and prunes each
 // name's backups to the backupKeep newest by file name. Returns the server

@@ -1,11 +1,11 @@
 // Self-heal rollback (upgrade card T-05): the decision core shared by the
 // L1 in-process startup reconcile (wired by the server's own boot path) and
-// the L2 systemd ExecStartPre hook (kingmoat-cli upgrade-rollback, invoked
+// the L2 systemd ExecStartPre hook (kmwafctl upgrade-rollback, invoked
 // before every unit start). Both consumers compare the on-disk state against
 // the upgrade intent marker left by the replace stage (replace.go) and
 // restore the recorded pre-upgrade backups when the new binaries did not
 // make it. These are package-level functions on purpose: the L2 consumer is
-// the standalone kingmoat-cli binary, which has no Service instance.
+// the standalone kmwafctl binary, which has no Service instance.
 package upgrade
 
 import (
@@ -92,7 +92,7 @@ func CheckUpgradeIntent(dataDir, currentBinaryPath string) (bool, string) {
 //  2. the recorded server backup is published back over the binary path
 //     (temp file in the same directory, fsync, atomic rename, chmod 0755);
 //  3. the cli is treated the same way, deriving its backup path from the
-//     server backup's sibling name (<dir>/kingmoat-cli.bak-<version>) - a
+//     server backup's sibling name (<dir>/kmwafctl.bak-<version>) - a
 //     missing cli backup is tolerated and never blocks the server restore;
 //  4. the intent marker is deleted so the net does not loop (the restore
 //     itself is idempotent, so even a failed marker removal on the next
@@ -204,7 +204,7 @@ func publishFile(src, dst string) error {
 // siblingBackupPath derives the backup path of the named binary from the
 // server backup recorded in the intent marker: both backups were created
 // beside the binaries with the same version tag
-// (<dir>/kingmoat.bak-<version> → <dir>/kingmoat-cli.bak-<version>). An
+// (<dir>/kingmoatwaf.bak-<version> → <dir>/kmwafctl.bak-<version>). An
 // unrecognized server backup name yields "" (the caller skips that
 // restore instead of guessing a path).
 func siblingBackupPath(serverBak, name string) string {

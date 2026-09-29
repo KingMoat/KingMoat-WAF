@@ -32,8 +32,8 @@ const (
 	checksumsName = "checksums.txt"
 	// serverBinaryName / cliBinaryName are the payload files inside the
 	// release archives; both must be present for the replace card.
-	serverBinaryName = "kingmoat"
-	cliBinaryName    = "kingmoat-cli"
+	serverBinaryName = "kingmoatwaf"
+	cliBinaryName    = "kmwafctl"
 )
 
 // defaultAllowedHosts restricts download URLs to the release origin. URLs

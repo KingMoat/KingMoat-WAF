@@ -72,7 +72,7 @@ type Auth struct {
 }
 
 // NewAuth builds the authenticator from an argon2id encoded hash
-// (generated via `kingmoat-cli hash-password`).
+// (generated via `kmwafctl hash-password`).
 func NewAuth(passwordHash string) *Auth {
 	hash := strings.TrimSpace(passwordHash)
 	a := &Auth{hash: hash, cookieName: sessionCookie}
@@ -309,7 +309,7 @@ type Options struct {
 	PortProbe func(port int) error
 	// Restart applies the console-port change by submitting the service
 	// restart to systemd WITHOUT waiting for it (nil = fire-and-forget
-	// `systemctl restart kingmoat`; see defaultRestart for why blocking is
+	// `systemctl restart kingmoatwaf`; see defaultRestart for why blocking is
 	// unsafe). Test hook.
 	Restart func() error
 	// RestartDelay defers the restart so the change response reaches the
@@ -321,7 +321,7 @@ type Options struct {
 	// Test hook.
 	EuidProbe func() int
 	// Upgrade hosts the console self-upgrade pipeline (version check, async
-	// upgrade task; internal/upgrade.Service built by cmd/kingmoat with
+	// upgrade task; internal/upgrade.Service built by cmd/kingmoatwaf with
 	// production defaults). nil = the /api/upgrade/* endpoints answer 501
 	// (static mode, or deployments without the module wired).
 	Upgrade *upgrade.Service

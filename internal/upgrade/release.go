@@ -18,7 +18,7 @@ import (
 // verified in T-00:
 //   - the feed ordering is NOT newest-first (a per_page=2 query returned
 //     old releases), so a full page is fetched and sorted locally;
-//   - release assets follow kingmoat_v<ver>_<os>_<arch>.(tar.gz|zip) plus
+//   - release assets follow kingmoatwaf_v<ver>_<os>_<arch>.(tar.gz|zip) plus
 //     checksums.txt; Gitee also auto-attaches source archives, which are
 //     never matched.
 const (
@@ -26,6 +26,10 @@ const (
 	giteeOwner      = "kingmoat"
 	giteeRepo       = "kingmoat"
 	releasesPerPage = 20 // one page covers the release count for the foreseeable future
+	// assetNamePrefix is the release-asset filename prefix (followed by
+	// <version>_<os>_<arch>). It must match the release packaging exactly or
+	// upgrades can never find an asset for the running platform.
+	assetNamePrefix = "kingmoatwaf_"
 )
 
 // Release is the subset of the Gitee release object this package consumes.
@@ -146,7 +150,7 @@ func truncateNotes(body string) string {
 }
 
 // AssetForPlatform finds the release attachment matching the given platform
-// (T-00 naming). Only assets following the kingmoat_ naming convention are
+// (T-00 naming). Only assets following the kingmoatwaf_ naming convention are
 // matched, so Gitee's auto-generated source archives can never be picked.
 func AssetForPlatform(rel *Release, goos, goarch string) (*Asset, error) {
 	name, ok := platformArchiveName(normalizeVersion(rel.TagName), goos, goarch)
@@ -166,11 +170,11 @@ func AssetForPlatform(rel *Release, goos, goarch string) (*Asset, error) {
 func platformArchiveName(version, goos, goarch string) (string, bool) {
 	switch {
 	case goos == "linux" && goarch == "amd64":
-		return "kingmoat_" + version + "_linux_amd64.tar.gz", true
+		return assetNamePrefix + version + "_linux_amd64.tar.gz", true
 	case goos == "linux" && goarch == "arm64":
-		return "kingmoat_" + version + "_linux_arm64.tar.gz", true
+		return assetNamePrefix + version + "_linux_arm64.tar.gz", true
 	case goos == "windows" && goarch == "amd64":
-		return "kingmoat_" + version + "_windows_amd64.zip", true
+		return assetNamePrefix + version + "_windows_amd64.zip", true
 	default:
 		return "", false
 	}

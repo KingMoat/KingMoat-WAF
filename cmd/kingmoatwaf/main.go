@@ -1,4 +1,4 @@
-// Command kingmoat runs the KingMoat WAF: a detection-pipeline fronted
+// Command kingmoatwaf runs the KingMoat WAF: a detection-pipeline fronted
 // reverse proxy with the embedded OWASP CRS, in two modes:
 //
 //   - static:        -config file only, no console (M1 behavior)
@@ -65,7 +65,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Println("kingmoat", version)
+		fmt.Println("kingmoatwaf", version)
 		return
 	}
 

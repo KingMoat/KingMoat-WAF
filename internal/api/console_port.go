@@ -7,7 +7,7 @@
 // ProtectSystem=strict keeps the unit file in /etc/systemd/system read-only
 // for the service while the data directory stays writable (ReadWritePaths).
 // The change flow: validate → rewrite console.env atomically → submit
-// `systemctl restart kingmoat` (fire-and-forget) → answer the client
+// `systemctl restart kingmoatwaf` (fire-and-forget) → answer the client
 // immediately (the restart tears the process down ~2s later; the new process
 // binds the new port). The flow is only offered when it can actually work:
 // the EnvironmentFile is wired AND exists AND the process runs under systemd
@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kingmoat/kingmoat/internal/naming"
 	"github.com/kingmoat/kingmoat/internal/store"
 )
 
@@ -55,7 +56,7 @@ func defaultPortProbe(port int) error {
 // defaultRestart applies the console-port change by SUBMITTING the unit
 // restart to systemd, deliberately without waiting for it.
 //
-// Waiting here is self-kill: `systemctl restart kingmoat` is a dbus IPC call
+// Waiting here is self-kill: `systemctl restart kingmoatwaf` is a dbus IPC call
 // to PID 1, and the restart's stop phase SIGTERMs every process in the unit's
 // cgroup - the default KillMode=control-group includes this very systemctl
 // client. Blocking on it (CombinedOutput/Wait) therefore surfaces
@@ -69,9 +70,9 @@ func defaultPortProbe(port int) error {
 // submission losing that race, switch to `systemd-run --on-active=...`
 // (transient timer outside the unit's cgroup).
 func defaultRestart() error {
-	cmd := exec.Command("systemctl", "restart", "kingmoat")
+	cmd := exec.Command("systemctl", "restart", naming.ServiceName)
 	if err := submitRestart(cmd); err != nil {
-		return fmt.Errorf("systemctl restart kingmoat: %w", err)
+		return fmt.Errorf("systemctl restart %s: %w", naming.ServiceName, err)
 	}
 	return nil
 }
@@ -210,7 +211,7 @@ func (s *Server) handleConsolePortSet(w http.ResponseWriter, r *http.Request) {
 	time.AfterFunc(delay, func() {
 		if err := restart(); err != nil {
 			// console.env is already written: a manual `systemctl restart
-			// kingmoat` still applies the new port. With the fire-and-forget
+			// kingmoatwaf` still applies the new port. With the fire-and-forget
 			// submit this only fires when the systemctl exec itself failed.
 			slog.Error("console port change: restart request submission failed", "port", req.Port, "err", err)
 		}

@@ -191,7 +191,7 @@ func WithChmod(f func(path string, mode os.FileMode) error) Option {
 	return func(s *Service) { s.chmodFn = f }
 }
 
-// WithBinaryDir pins the directory holding the running kingmoat binaries
+// WithBinaryDir pins the directory holding the running kingmoatwaf binaries
 // (tests: a fake layout; production: derived from os.Executable).
 func WithBinaryDir(dir string) Option { return func(s *Service) { s.binaryDir = dir } }
 

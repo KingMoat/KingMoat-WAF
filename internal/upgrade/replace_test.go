@@ -84,7 +84,7 @@ func TestBackupRolling(t *testing.T) {
 // keep survive.
 func TestPruneBackups(t *testing.T) {
 	dir := t.TempDir()
-	for _, n := range []string{"kingmoat.bak-a", "kingmoat.bak-b", "kingmoat.bak-c", "kingmoat-cli.bak-a"} {
+	for _, n := range []string{"kingmoatwaf.bak-a", "kingmoatwaf.bak-b", "kingmoatwaf.bak-c", "kmwafctl.bak-a"} {
 		if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -92,7 +92,7 @@ func TestPruneBackups(t *testing.T) {
 	if err := pruneBackups(dir, serverBinaryName, 2); err != nil {
 		t.Fatal(err)
 	}
-	if got := namesWithPrefix(t, dir, serverBinaryName+backupSuffix); strings.Join(got, ",") != "kingmoat.bak-b,kingmoat.bak-c" {
+	if got := namesWithPrefix(t, dir, serverBinaryName+backupSuffix); strings.Join(got, ",") != "kingmoatwaf.bak-b,kingmoatwaf.bak-c" {
 		t.Fatalf("after prune = %v, want the 2 newest", got)
 	}
 	// Other names' backups are untouched.
@@ -294,7 +294,7 @@ func TestCleanupWorkspacesAtConstruction(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(up, "deadtask01", "nested"), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(up, "deadtask01", "kingmoat"), []byte("residue"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(up, "deadtask01", "kingmoatwaf"), []byte("residue"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(up, "deadtask01", "nested", "x"), []byte("x"), 0o600); err != nil {
@@ -348,7 +348,7 @@ func TestStartCleansOldWorkspaces(t *testing.T) {
 // installation directory) with a fake restart hook: the full pipeline must
 // swap both binaries, back the old ones up and record the intent marker.
 func TestTaskEndToEndReplace(t *testing.T) {
-	archive := buildTarGz(t, map[string][]byte{"kingmoat": []byte(testPayloadA), "kingmoat-cli": []byte(testPayloadB)})
+	archive := buildTarGz(t, map[string][]byte{"kingmoatwaf": []byte(testPayloadA), "kmwafctl": []byte(testPayloadB)})
 	srv := assetServer(t, map[string][]byte{
 		testArchiveNm: archive,
 		checksumsName: []byte(sumsFile(map[string][]byte{testArchiveNm: archive})),

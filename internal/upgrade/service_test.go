@@ -21,9 +21,9 @@ func testFeed() []Release {
 		{TagName: "release-2026", Draft: false, Body: "not semver"},
 		{TagName: "v0.7.8-beta", Body: "older release"},
 		{TagName: "v0.7.10-beta", Body: "newest release", Assets: []Asset{
-			{Name: "kingmoat_v0.7.10-beta_linux_amd64.tar.gz", BrowserDownloadURL: "https://gitee.com/a/b/releases/download/v0.7.10-beta/kingmoat_v0.7.10-beta_linux_amd64.tar.gz"},
-			{Name: "kingmoat_v0.7.10-beta_linux_arm64.tar.gz", BrowserDownloadURL: "https://gitee.com/a/b/kingmoat_v0.7.10-beta_linux_arm64.tar.gz"},
-			{Name: "kingmoat_v0.7.10-beta_windows_amd64.zip", BrowserDownloadURL: "https://gitee.com/a/b/kingmoat_v0.7.10-beta_windows_amd64.zip"},
+			{Name: "kingmoatwaf_v0.7.10-beta_linux_amd64.tar.gz", BrowserDownloadURL: "https://gitee.com/a/b/releases/download/v0.7.10-beta/kingmoatwaf_v0.7.10-beta_linux_amd64.tar.gz"},
+			{Name: "kingmoatwaf_v0.7.10-beta_linux_arm64.tar.gz", BrowserDownloadURL: "https://gitee.com/a/b/kingmoatwaf_v0.7.10-beta_linux_arm64.tar.gz"},
+			{Name: "kingmoatwaf_v0.7.10-beta_windows_amd64.zip", BrowserDownloadURL: "https://gitee.com/a/b/kingmoatwaf_v0.7.10-beta_windows_amd64.zip"},
 			{Name: "checksums.txt", BrowserDownloadURL: "https://gitee.com/a/b/checksums.txt"},
 			{Name: "v0.7.10-beta.tar.gz", BrowserDownloadURL: "https://gitee.com/a/b/v0.7.10-beta.tar.gz"}, // Gitee source archive: must never match
 		}},
@@ -137,8 +137,8 @@ func TestCheckUpdateAvailable(t *testing.T) {
 	if res.Notes != "newest release" {
 		t.Fatalf("notes = %q", res.Notes)
 	}
-	if res.AssetsURL == "" || !strings.Contains(res.AssetsURL, "kingmoat_v0.7.10-beta_") {
-		t.Fatalf("assets URL = %q, want the platform kingmoat asset (never the Gitee source archive)", res.AssetsURL)
+	if res.AssetsURL == "" || !strings.Contains(res.AssetsURL, "kingmoatwaf_v0.7.10-beta_") {
+		t.Fatalf("assets URL = %q, want the platform kingmoatwaf asset (never the Gitee source archive)", res.AssetsURL)
 	}
 
 	// Up to date: no upgrade suggested.

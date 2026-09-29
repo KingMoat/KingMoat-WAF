@@ -18,6 +18,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/kingmoat/kingmoat/internal/naming"
 )
 
 // restartSubmitTimeout bounds one `systemctl --no-block` submission.
@@ -39,7 +41,7 @@ func (s *Service) defaultRestartStage(ctx context.Context, t *Task) error {
 		return errors.New("升级意图标记缺失，拒绝重启（内部错误）")
 	}
 	if err := defaultRestarter(ctx); err != nil {
-		return fmt.Errorf("提交服务重启失败: %w（可手动执行 systemctl restart kingmoat 完成重启，升级意图已记录，下次启动系统会自动核对）", err)
+		return fmt.Errorf("提交服务重启失败: %w（可手动执行 systemctl restart %s 完成重启，升级意图已记录，下次启动系统会自动核对）", err, naming.ServiceName)
 	}
 	// Deliberately no post-restart tracking: this process is about to be
 	// torn down with the unit cgroup. The restart outcome is settled by
@@ -49,13 +51,13 @@ func (s *Service) defaultRestartStage(ctx context.Context, t *Task) error {
 	return nil
 }
 
-// defaultRestarter SUBMITS the kingmoat unit restart to systemd and
+// defaultRestarter SUBMITS the kingmoatwaf unit restart to systemd and
 // observes the submission verdict without waiting for the restart itself.
 //
 // The original shape - `systemctl restart` + fire-and-forget Start - was
 // a trade between two failure modes and lost on both ends:
 //
-//   - Blocking is self-kill: `systemctl restart kingmoat` is a dbus IPC
+//   - Blocking is self-kill: `systemctl restart kingmoatwaf` is a dbus IPC
 //     call to PID 1, and the restart's stop phase SIGTERMs every process
 //     in the unit's cgroup - the default KillMode=control-group includes
 //     this very systemctl client. Waiting on a plain restart
@@ -85,9 +87,9 @@ func (s *Service) defaultRestartStage(ctx context.Context, t *Task) error {
 func defaultRestarter(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, restartSubmitTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "systemctl", "--no-block", "restart", "kingmoat")
+	cmd := exec.CommandContext(ctx, "systemctl", "--no-block", "restart", naming.ServiceName)
 	if err := submitRestart(ctx, cmd); err != nil {
-		return fmt.Errorf("systemctl --no-block restart kingmoat: %w", err)
+		return fmt.Errorf("systemctl --no-block restart %s: %w", naming.ServiceName, err)
 	}
 	return nil
 }

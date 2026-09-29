@@ -22,9 +22,9 @@ import (
 
 const (
 	testVersion   = "v0.7.9-beta"
-	testPayloadA  = "KINGMOAT-SERVER-BYTES"
-	testPayloadB  = "kingmoat-cli-bytes"
-	testArchiveNm = "kingmoat_" + testVersion + "_linux_amd64.tar.gz"
+	testPayloadA  = "KINGMOATWAF-SERVER-BYTES"
+	testPayloadB  = "kmwafctl-bytes"
+	testArchiveNm = "kingmoatwaf_" + testVersion + "_linux_amd64.tar.gz"
 )
 
 // sha256Hex returns the lowercase hex digest used in checksums files.
@@ -148,17 +148,17 @@ func dirExists(path string) bool {
 // refusal for platforms without self-upgrade packages.
 func TestAssetForPlatform(t *testing.T) {
 	rel := &Release{TagName: testVersion, Assets: []Asset{
-		{Name: "kingmoat_" + testVersion + "_linux_amd64.tar.gz"},
-		{Name: "kingmoat_" + testVersion + "_linux_arm64.tar.gz"},
-		{Name: "kingmoat_" + testVersion + "_windows_amd64.zip"},
+		{Name: "kingmoatwaf_" + testVersion + "_linux_amd64.tar.gz"},
+		{Name: "kingmoatwaf_" + testVersion + "_linux_arm64.tar.gz"},
+		{Name: "kingmoatwaf_" + testVersion + "_windows_amd64.zip"},
 		{Name: testVersion + ".tar.gz"}, // Gitee source archive
 	}}
 	cases := []struct {
 		goos, goarch, want string
 	}{
-		{"linux", "amd64", "kingmoat_" + testVersion + "_linux_amd64.tar.gz"},
-		{"linux", "arm64", "kingmoat_" + testVersion + "_linux_arm64.tar.gz"},
-		{"windows", "amd64", "kingmoat_" + testVersion + "_windows_amd64.zip"},
+		{"linux", "amd64", "kingmoatwaf_" + testVersion + "_linux_amd64.tar.gz"},
+		{"linux", "arm64", "kingmoatwaf_" + testVersion + "_linux_arm64.tar.gz"},
+		{"windows", "amd64", "kingmoatwaf_" + testVersion + "_windows_amd64.zip"},
 	}
 	for _, tc := range cases {
 		asset, err := AssetForPlatform(rel, tc.goos, tc.goarch)
@@ -180,8 +180,8 @@ func TestAssetForPlatform(t *testing.T) {
 // layout unpacked to the two payload binaries, tolerant sums formatting.
 func TestDownloadAndVerifyTarGz(t *testing.T) {
 	archive := buildTarGz(t, map[string][]byte{
-		"kingmoat_" + testVersion + "/kingmoat":     []byte(testPayloadA),
-		"kingmoat_" + testVersion + "/kingmoat-cli": []byte(testPayloadB),
+		"kingmoatwaf_" + testVersion + "/kingmoatwaf": []byte(testPayloadA),
+		"kingmoatwaf_" + testVersion + "/kmwafctl":   []byte(testPayloadB),
 	})
 	// CRLF + single-space + a comment line: all tolerated.
 	sums := "# sha256 sums\r\n" + sha256Hex(archive) + " " + testArchiveNm + "\r\n"
@@ -203,7 +203,7 @@ func TestDownloadAndVerifyTarGz(t *testing.T) {
 	if dir != s.taskDir(task.ID) {
 		t.Fatalf("artifact dir = %s, want %s", dir, s.taskDir(task.ID))
 	}
-	for name, want := range map[string]string{"kingmoat": testPayloadA, "kingmoat-cli": testPayloadB} {
+	for name, want := range map[string]string{"kingmoatwaf": testPayloadA, "kmwafctl": testPayloadB} {
 		got, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil || string(got) != want {
 			t.Fatalf("payload %s = %q, %v; want %q", name, got, err, want)
@@ -218,8 +218,8 @@ func TestDownloadAndVerifyTarGz(t *testing.T) {
 
 // TestDownloadAndVerifyZip covers the windows zip package format.
 func TestDownloadAndVerifyZip(t *testing.T) {
-	zipName := "kingmoat_" + testVersion + "_windows_amd64.zip"
-	archive := buildZip(t, map[string][]byte{"kingmoat": []byte(testPayloadA), "kingmoat-cli": []byte(testPayloadB)})
+	zipName := "kingmoatwaf_" + testVersion + "_windows_amd64.zip"
+	archive := buildZip(t, map[string][]byte{"kingmoatwaf": []byte(testPayloadA), "kmwafctl": []byte(testPayloadB)})
 	sums := sumsFile(map[string][]byte{zipName: archive})
 	srv := assetServer(t, map[string][]byte{zipName: archive, checksumsName: []byte(sums)})
 	s := NewService("v0.7.8-beta", t.TempDir(),
@@ -241,7 +241,7 @@ func TestDownloadAndVerifyZip(t *testing.T) {
 // TestChecksumMismatch: a wrong digest fails verification and wipes the
 // workspace — nothing survives for the replace stage.
 func TestChecksumMismatch(t *testing.T) {
-	archive := buildTarGz(t, map[string][]byte{"kingmoat": []byte(testPayloadA), "kingmoat-cli": []byte(testPayloadB)})
+	archive := buildTarGz(t, map[string][]byte{"kingmoatwaf": []byte(testPayloadA), "kmwafctl": []byte(testPayloadB)})
 	// A sums file listing the right name with the wrong digest: SHA256
 	// mismatch, fail-closed, workspace wiped.
 	badSums := sumsFile(map[string][]byte{testArchiveNm: []byte("not the archive bytes")})
@@ -265,7 +265,7 @@ func TestChecksumMismatch(t *testing.T) {
 // TestChecksumMissingEntry: a sums file without the asset's entry is
 // fail-closed.
 func TestChecksumMissingEntry(t *testing.T) {
-	archive := buildTarGz(t, map[string][]byte{"kingmoat": []byte(testPayloadA), "kingmoat-cli": []byte(testPayloadB)})
+	archive := buildTarGz(t, map[string][]byte{"kingmoatwaf": []byte(testPayloadA), "kmwafctl": []byte(testPayloadB)})
 	srv := assetServer(t, map[string][]byte{testArchiveNm: archive, checksumsName: []byte("")})
 	s := NewService("v0.7.8-beta", t.TempDir(), testServiceOptions(srv)...)
 
@@ -286,7 +286,7 @@ func TestChecksumMissingEntry(t *testing.T) {
 // TestChecksumsFileMissing: a release without checksums.txt is refused
 // before anything is fetched (verification is mandatory).
 func TestChecksumsFileMissing(t *testing.T) {
-	archive := buildTarGz(t, map[string][]byte{"kingmoat": []byte(testPayloadA), "kingmoat-cli": []byte(testPayloadB)})
+	archive := buildTarGz(t, map[string][]byte{"kingmoatwaf": []byte(testPayloadA), "kmwafctl": []byte(testPayloadB)})
 	srv := assetServer(t, map[string][]byte{testArchiveNm: archive})
 	s := NewService("v0.7.8-beta", t.TempDir(), testServiceOptions(srv)...)
 
@@ -302,7 +302,7 @@ func TestChecksumsFileMissing(t *testing.T) {
 // TestExtractMissingPayload: an archive without both binaries fails and
 // cleans up.
 func TestExtractMissingPayload(t *testing.T) {
-	archive := buildTarGz(t, map[string][]byte{"kingmoat": []byte(testPayloadA)})
+	archive := buildTarGz(t, map[string][]byte{"kingmoatwaf": []byte(testPayloadA)})
 	srv := assetServer(t, map[string][]byte{
 		testArchiveNm: archive,
 		checksumsName: []byte(sumsFile(map[string][]byte{testArchiveNm: archive})),
@@ -328,14 +328,14 @@ func TestExtractMissingPayload(t *testing.T) {
 func TestExtractTarTraversal(t *testing.T) {
 	dir := t.TempDir()
 	archive := buildTarGz(t, map[string][]byte{
-		"../evil.txt":  []byte("nope"),
-		"kingmoat":     []byte(testPayloadA),
-		"kingmoat-cli": []byte(testPayloadB),
+		"../evil.txt":    []byte("nope"),
+		"kingmoatwaf":    []byte(testPayloadA),
+		"kmwafctl":       []byte(testPayloadB),
 	})
 	if err := extractArchiveBytes(t, archive, dir); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"kingmoat", "kingmoat-cli"} {
+	for _, name := range []string{"kingmoatwaf", "kmwafctl"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Fatalf("payload %s missing: %v", name, err)
 		}
@@ -526,9 +526,9 @@ func TestParseChecksumsFormats(t *testing.T) {
 // TestSanitizeFileName pins the last-resort filename guard.
 func TestSanitizeFileName(t *testing.T) {
 	cases := map[string]string{
-		"kingmoat.tar.gz":      "kingmoat.tar.gz",
-		"dir/kingmoat.tar.gz":  "kingmoat.tar.gz",
-		"dir\\kingmoat.tar.gz": "kingmoat.tar.gz",
+		"kingmoatwaf.tar.gz":      "kingmoatwaf.tar.gz",
+		"dir/kingmoatwaf.tar.gz":  "kingmoatwaf.tar.gz",
+		"dir\\kingmoatwaf.tar.gz": "kingmoatwaf.tar.gz",
 		"../../evil":           "evil",
 		"..":                   "",
 	}
@@ -543,7 +543,7 @@ func TestSanitizeFileName(t *testing.T) {
 // download and verify defaults, and fake replace/restart hooks: the task
 // must traverse into success with the payloads on disk.
 func TestTaskEndToEndDownload(t *testing.T) {
-	archive := buildTarGz(t, map[string][]byte{"kingmoat": []byte(testPayloadA), "kingmoat-cli": []byte(testPayloadB)})
+	archive := buildTarGz(t, map[string][]byte{"kingmoatwaf": []byte(testPayloadA), "kmwafctl": []byte(testPayloadB)})
 	srv := assetServer(t, map[string][]byte{
 		testArchiveNm: archive,
 		checksumsName: []byte(sumsFile(map[string][]byte{testArchiveNm: archive})),
@@ -577,7 +577,7 @@ func TestTaskEndToEndDownload(t *testing.T) {
 	if artifactDir == "" {
 		t.Fatal("replace stage never saw the artifact dir")
 	}
-	for _, name := range []string{"kingmoat", "kingmoat-cli"} {
+	for _, name := range []string{"kingmoatwaf", "kmwafctl"} {
 		if _, err := os.Stat(filepath.Join(artifactDir, name)); err != nil {
 			t.Fatalf("payload %s missing after end-to-end run: %v", name, err)
 		}

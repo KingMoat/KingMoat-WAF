@@ -15,7 +15,7 @@
 
 ### 1.1 一句话定位
 
-**KingMoat 是一个开源、云原生、纯 Go 实现的 Web 应用防火墙**：自研 L7 反向代理承载流量，以 Coraza（ModSecurity SecLang 兼容引擎）为签名检测核心， WAF 的产品体验，以「单二进制、可嵌入、全链路可扩展」为核心差异化。
+**KingMoat WAF 是一个开源、云原生、纯 Go 实现的 Web 应用防火墙**：自研 L7 反向代理承载流量，以 Coraza（ModSecurity SecLang 兼容引擎）为签名检测核心， WAF 的产品体验，以「单二进制、可嵌入、全链路可扩展」为核心差异化。
 
 ### 1.2 设计原则
 
@@ -72,11 +72,11 @@
 
 | 平面 | 进程/包 | 职责 | 规模 |
 |---|---|---|---|
-| **数据面** `kingmoat` | `cmd/kingmoat` | TLS 终止、L7 反代、检测流水线、拦截、审计 | 单节点可扛万级 QPS（目标） |
-| **控制台**（内嵌） | `cmd/kingmoat -console-addr` | 站点/规则/证书管理、日志检索、配置发布 | 单进程内嵌 SQLite |
+| **数据面** `kingmoatwaf` | `cmd/kingmoatwaf` | TLS 终止、L7 反代、检测流水线、拦截、审计 | 单节点可扛万级 QPS（目标） |
+| **控制台**（内嵌） | `cmd/kingmoatwaf -console-addr` | 站点/规则/证书管理、日志检索、配置发布 | 单进程内嵌 SQLite |
 | **观测面**（内嵌导出器） | `internal/logstore`, `internal/metrics` | 日志管道、LogStore 后端、指标 | 可对接 OpenSearch/ES/Loki/Kafka + Prometheus |
 
-> **All-in-One 模式**：`kingmoat -console-addr` 时控制面以 goroutine 内嵌于数据面进程，共享 SQLite，单二进制单进程即可交付全部能力。
+> **All-in-One 模式**：`kingmoatwaf -console-addr` 时控制面以 goroutine 内嵌于数据面进程，共享 SQLite，单二进制单进程即可交付全部能力。
 
 ---
 
@@ -132,7 +132,7 @@ accept
 - 转发内核基于 `httputil.ReverseProxy`（Go 1.20+ 已支持 WebSocket/Upgrade 透传），通过 `Rewrite` 注入检测逻辑，`ModifyResponse` 挂接响应流水线，`ErrorHandler` 统一上游故障页；
 - 自定义 `http.Transport`：连接池调优（`MaxIdleConnsPerHost`、`ForceAttemptHTTP2`）、上游 TLS 指纹可配、`DialContext` 绑定健康检查结果。
 
-> 为什么不全自写 TCP 层转发？——HTTP/2、WebSocket、h2c、hop-by-hop 头处理在标准库中已被大量生产验证；KingMoat 的创新点在检测流水线而不是重新实现 HTTP 语义。预留 `proxy.Engine` 接口，未来可替换。
+> 为什么不全自写 TCP 层转发？——HTTP/2、WebSocket、h2c、hop-by-hop 头处理在标准库中已被大量生产验证；KingMoat WAF 的创新点在检测流水线而不是重新实现 HTTP 语义。预留 `proxy.Engine` 接口，未来可替换。
 
 ### 3.3 Coraza 集成设计
 
@@ -253,7 +253,7 @@ WebUI ──保存──▶ Console API ──写入──▶ SQLite(revision N+
 
 ### 5.1 统一事件模型（Canonical Event Schema）
 
-访问日志与攻击事件在 KingMoat 内部只有一份规范事件结构，所有存储后端做投影（projection）：
+访问日志与攻击事件在 KingMoat WAF 内部只有一份规范事件结构，所有存储后端做投影（projection）：
 
 ```json
 {
@@ -304,7 +304,7 @@ type LogStore interface {
 | Kafka（中转） | 客户端 MIT | produce | 不支持 | 不支持 | 大集群解耦，consumer 再落 ES/OS |
 | Webhook / SIEM | — | POST JSON | 不支持 | 不支持 | 对接企业 SOC |
 
-> **许可证边界**：KingMoat 只通过 HTTP/gRPC 协议对接后端，**不分发任何后端代码**——ES（SSPL）、Loki（AGPL）以独立服务部署均无许可证传染问题。
+> **许可证边界**：KingMoat WAF 只通过 HTTP/gRPC 协议对接后端，**不分发任何后端代码**——ES（SSPL）、Loki（AGPL）以独立服务部署均无许可证传染问题。
 
 **能力降级**：控制台按 `Capabilities()` 自适应——Loki 后端的仪表盘统计降级为标签聚合；Kafka/Webhook 后端的查询回落 `sqlite` 本地缓冲；未接入任何外部存储时，日志页展示“仅本机存储”风险提醒（`GET /api/logs/storage`）。
 
@@ -319,8 +319,8 @@ Prometheus 原生 `/metrics`：QPS、延迟分位数、各 Stage 命中数、Cor
 ```
 KingMoat/
 ├── cmd/
-│   ├── kingmoat/              # 入口（all-in-one 内嵌控制台 / static 两模式）
-│   └── kingmoat-cli/          # 规则测试/配置校验工具
+│   ├── kingmoatwaf/            # 入口（all-in-one 内嵌控制台 / static 两模式）
+│   └── kmwafctl/               # 规则测试/配置校验/服务管理工具
 ├── internal/
 │   ├── proxy/                 # 反代内核: listener, sni, rewriter, upstream, lb, health
 │   ├── pipeline/              # 检测流水线编排: stage 接口 + 默认编排
@@ -344,7 +344,7 @@ KingMoat/
 **库模式（差异化卖点）**：
 
 ```go
-// 把 KingMoat 作为库嵌入任意 Go 服务
+// 把 KingMoat WAF 作为库嵌入任意 Go 服务
 eng, _ := kingmoat.New(kingmoat.Options{
     Rules: kingmoat.EmbeddedCRS,           // 内置 CRS
     Mode:  kingmoat.Monitor,               // 先观察
@@ -374,7 +374,7 @@ http.ListenAndServe(":8080", eng.Handler(yourHandler)) // 包裹业务 Handler
 - 控制面认证：本地账号（argon2id）+ RBAC 三角色；预留 OIDC/LDAP；
 - API 全程 TLS；会话 Cookie `HttpOnly/Secure/SameSite`；
 - 审计：控制面自身操作（改规则、改站点）全量审计；
-- 数据面进程支持以非 root 运行（自定义 unit 模板路径，`kingmoat.service` 仅授予 `CAP_NET_BIND_SERVICE`）；一键部署（install.sh）默认以 root 运行，通过环境变量授予 `CAP_NET_BIND_SERVICE` 绑定 80/443；
+- 数据面进程支持以非 root 运行（自定义 unit 模板路径，`kingmoatwaf.service` 仅授予 `CAP_NET_BIND_SERVICE`）；一键部署（install.sh）默认以 root 运行，通过环境变量授予 `CAP_NET_BIND_SERVICE` 绑定 80/443；
 - 供应链：CI 强制 `govulncheck`、依赖固定、镜像 distroless。
 
 ---
@@ -383,7 +383,7 @@ http.ListenAndServe(":8080", eng.Handler(yourHandler)) // 包裹业务 Handler
 
 | 形态 | 命令/产物 | 适用 |
 |---|---|---|
-| 单机 all-in-one | `docker run kingmoat`（内置 SQLite + localfile 日志 + 内存限流，零外部依赖） | 个人/中小团队 |
+| 单机 all-in-one | `docker run kingmoatwaf`（内置 SQLite + localfile 日志 + 内存限流，零外部依赖） | 个人/中小团队 |
 | 集群（设计目标，社区版不含） | 独立控制面 (N=1..3, PG) + 多数据面 + **Valkey**(限流/挑战/会话共享) + 日志后端(OpenSearch/ES/Loki) | 多节点/高可用 |
 | SDK | `go get pkg/kingmoat` | 嵌入自有 Go 服务 |
 
@@ -447,11 +447,11 @@ http.ListenAndServe(":8080", eng.Handler(yourHandler)) // 包裹业务 Handler
 | Vue 3 / TypeScript / Element Plus | MIT（Vue 3 / Element Plus）；TypeScript 为 Apache-2.0 | 可商用 |
 | go-elasticsearch / opensearch-go | Apache-2.0 | 可商用（仅客户端，服务端外部部署） |
 | twmb/franz-go（Kafka） | MIT | 可商用 |
-| Grafana Loki / ES 服务端 | AGPL / SSPL | **仅外部服务对接，不随 KingMoat 分发，无传染** |
+| Grafana Loki / ES 服务端 | AGPL / SSPL | **仅外部服务对接，不随 KingMoat WAF 分发，无传染** |
 | Redis 7.4+ 服务端 | RSALv2/SSPLv1 | 不捆绑分发；默认推荐 Valkey（BSD-3） |
 | MaxMind GeoLite2 | 专属 EULA | **禁止随安装包再分发数据库**：构建为用户自填 license key 运行时下载，或内置可再分发的开放许可（CC0/CC-BY）国家级简表 |
 
-### 12.2 KingMoat 自身的许可策略（Open Core）
+### 12.2 KingMoat WAF 自身的许可策略（Open Core）
 
 - **核心引擎木兰宽松许可证 v2（Mulan PSL v2）**：OSI 认证的中英双语宽松许可，含明确专利授权条款，企业集成无顾虑；与 Apache-2.0 双向组合兼容，中文文本为准降低国内合规解释成本；无商标授权（KingMoat 商标另行主张）；
 - **上游组件原许可保留**：Apache-2.0/MIT/BSD 组件按其原许可分发（§12.1 清单与 THIRD-PARTY-LICENSES），Apache-2.0 组件（Coraza/CRS）的 NOTICE 义务随包履行；

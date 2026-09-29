@@ -1,4 +1,4 @@
-# KingMoat 部署指南（Deployment Guide）
+# KingMoat WAF 部署指南（Deployment Guide）
 
 本目录收录 KingMoat WAF 社区版的部署物料。**新用户请从本文档开始**，按「部署前置 → 三条部署路径任选其一 → 首次上线检查单」的顺序操作即可完成上线；日常备份、升级、回滚见第 6 节。
 
@@ -18,17 +18,17 @@ curl -fsSL https://gitee.com/kingmoat/KingMoat-WAF/raw/main/deploy/install.sh | 
 | **`install.sh`** | **一键部署脚本（Linux，推荐新用户使用）** |
 | `Dockerfile` | All-in-one 镜像构建（distroless，非 root 运行） |
 | `docker-compose.yml` | Docker Compose 编排示例（端口、卷、健康检查） |
-| `kingmoat.service` | Linux systemd 单元（非 root + 仅授予绑低端口能力） |
+| `kingmoatwaf.service` | Linux systemd 单元（非 root + 仅授予绑低端口能力） |
 | `windows.md` | Windows Server 部署与服务化（WinSW / NSSM） |
 
 ## 0. 部署形态（Deployment Modes）
 
-KingMoat 是**纯 Go 单二进制**：数据面（反向代理 + WAF）与控制台（Web UI + REST API + SQLite 配置库）在同一进程内。
+KingMoat WAF 是**纯 Go 单二进制**：数据面（反向代理 + WAF）与控制台（Web UI + REST API + SQLite 配置库）在同一进程内。
 
-- **all-in-one（推荐）**：`kingmoat -config config.json -console-addr :8443`。`-console-addr` 一旦指定即启用内嵌控制台，配置持久化到 SQLite（`-console-db`，默认工作目录下 `kingmoat.db`），控制台发布配置热生效、无需重启。
+- **all-in-one（推荐）**：`kingmoatwaf -config config.json -console-addr :8443`。`-console-addr` 一旦指定即启用内嵌控制台，配置持久化到 SQLite（`-console-db`，默认工作目录下 `kingmoat.db`），控制台发布配置热生效、无需重启。
 - **static（静态配置文件模式）**：只给 `-config`、不给 `-console-addr`。无控制台、无热更新，配置即 `config.json` 本身。适合嵌入式/极简场景，本文不再展开。
 
-> 本文档默认 all-in-one。二进制与 `kingmoat-cli` 工具从 [Releases](https://gitee.com/kingmoat/KingMoat-WAF/releases) 下载，或按仓库根 README 自行构建。
+> 本文档默认 all-in-one。二进制 `kingmoatwaf` 与管理工具 `kmwafctl` 从 [Releases](https://gitee.com/kingmoat/KingMoat-WAF/releases) 下载，或按仓库根 README 自行构建。
 
 ## 1. 部署前置（Prerequisites）
 
@@ -80,15 +80,15 @@ firewall-cmd --reload
 
 **`kingmoat.db`、审计日志等数据目录必须位于本地磁盘，禁止放在 NFS/SMB/网盘（含各类网盘同步目录、云盘挂载）上。** SQLite 依赖本地文件锁与 fsync 语义，在网络文件系统上会出现 `disk I/O error`、库损坏或进程卡死（见 FAQ #2）。
 
-Linux 推荐（与 `kingmoat.service` 对应）：
+Linux 推荐（与 `kingmoatwaf.service` 对应）：
 
 ```text
-/etc/kingmoat/            # config.json（首次种子配置）、env（KINGMOAT_ADMIN_HASH）
-/usr/local/bin/kingmoat*  # 二进制
-/var/lib/kingmoat/        # 数据目录（本地磁盘）：kingmoat.db、logs/、uploads/certs/、acme-cache/
+/etc/kingmoatwaf/            # config.json（首次种子配置）、env（KINGMOAT_ADMIN_HASH）
+/usr/local/bin/kingmoatwaf、kmwafctl  # 二进制与管理工具
+/var/lib/kingmoatwaf/        # 数据目录（本地磁盘）：kingmoat.db、logs/、uploads/certs/、acme-cache/
 ```
 
-Windows 推荐：`C:\kingmoat\`（二进制、config.json、kingmoat.db、logs\ 同目录，详见 windows.md）。
+Windows 推荐：`C:\kingmoatwaf\`（二进制、config.json、kingmoat.db、logs\ 同目录，详见 windows.md）。
 
 Docker：单一数据卷挂载到容器 `/data`（本地磁盘目录，勿挂网络盘）。
 
@@ -120,7 +120,7 @@ docker compose -f deploy/docker-compose.yml up -d --build
 
 # 3. verify
 docker compose -f deploy/docker-compose.yml ps
-docker logs kingmoat --tail 50          # process logs (JSON lines on stdout)
+docker logs kingmoatwaf --tail 50         # process logs (JSON lines on stdout)
 curl -k https://127.0.0.1:8081/api/status
 ```
 
@@ -129,11 +129,11 @@ curl -k https://127.0.0.1:8081/api/status
 不用 Compose 的等价 `docker run`：
 
 ```bash
-docker run -d --name kingmoat \
+docker run -d --name kingmoatwaf \
   -p 80:8080 -p 443:8443 -p 127.0.0.1:8081:8081 \
-  -v /opt/kingmoat/data:/data \
+  -v /opt/kingmoatwaf/data:/data \
   --restart unless-stopped \
-  kingmoat:local \
+  kingmoatwaf:local \
   -config /data/config.json -console-addr :8081 -console-db /data/kingmoat.db
 # config.json must use listen_http :8080 / listen_https :8443 (non-root inside
 # the container cannot bind 80/443; host-side 80/443 is provided by the mapping)
@@ -143,8 +143,8 @@ docker run -d --name kingmoat \
 
 - 基础镜像 `gcr.io/distroless/static-debian12:nonroot`：无 shell、非 root（uid 65532）运行；容器内排障用 `docker logs` 与控制台 API，不要指望 `docker exec sh`。
 - 镜像默认参数：`-config /data/config.json -console-addr :8081 -console-db /data/kingmoat.db`，可在 `docker run` 末尾覆盖。
-- 管理员口令预设（可选）：先 `kingmoat-cli hash-password -password 'YourStrongPassw0rd!'` 生成哈希，写入 compose 的 `KINGMOAT_ADMIN_HASH` 环境变量（见 docker-compose.yml 注释）。
-- 健康检查：distroless 里没有 shell/curl，`docker-compose.yml` 的 healthcheck 用 `/kingmoat-cli version` 仅验证二进制可执行；业务级探活建议外部探测控制台 `/api/status` 或数据面端口。
+- 管理员口令预设（可选）：先 `kmwafctl hash-password -password 'YourStrongPassw0rd!'` 生成哈希，写入 compose 的 `KINGMOAT_ADMIN_HASH` 环境变量（见 docker-compose.yml 注释）。
+- 健康检查：distroless 里没有 shell/curl，`docker-compose.yml` 的 healthcheck 用 `/kmwafctl version` 仅验证二进制可执行；业务级探活建议外部探测控制台 `/api/status` 或数据面端口。
 
 ## 3. 路径 B：Linux systemd（Path B: Linux systemd, non-root）
 
@@ -154,36 +154,36 @@ docker run -d --name kingmoat \
 
 ```bash
 # 1. install binaries (adjust version/platform to your download)
-sudo install -m 0755 kingmoat      /usr/local/bin/kingmoat
-sudo install -m 0755 kingmoat-cli  /usr/local/bin/kingmoat-cli
+sudo install -m 0755 kingmoatwaf    /usr/local/bin/kingmoatwaf
+sudo install -m 0755 kmwafctl       /usr/local/bin/kmwafctl
 
 # 2. create a system user and local-disk data dir
-sudo useradd --system --home-dir /var/lib/kingmoat --shell /usr/sbin/nologin kingmoat
-sudo mkdir -p /etc/kingmoat /var/lib/kingmoat
-sudo chown kingmoat:kingmoat /var/lib/kingmoat
+sudo useradd --system --home-dir /var/lib/kingmoatwaf --shell /usr/sbin/nologin kingmoat
+sudo mkdir -p /etc/kingmoatwaf /var/lib/kingmoatwaf
+sudo chown kingmoat:kingmoat /var/lib/kingmoatwaf
 
 # 3. seed config (copy from the repo root; edit listen_http/listen_https/sites)
-sudo install -m 0640 config.example.json /etc/kingmoat/config.json
+sudo install -m 0640 config.example.json /etc/kingmoatwaf/config.json
 
 # 4. seed the console port env file (read by the unit's EnvironmentFile; the
 #    in-console port change rewrites this file and restarts the service)
-echo CONSOLE_PORT=8443 | sudo tee /var/lib/kingmoat/console.env >/dev/null
-sudo chmod 600 /var/lib/kingmoat/console.env
+echo CONSOLE_PORT=8443 | sudo tee /var/lib/kingmoatwaf/console.env >/dev/null
+sudo chmod 600 /var/lib/kingmoatwaf/console.env
 
 # 5. validate before first start (dry-runs WAF compilation too)
-sudo -u kingmoat kingmoat-cli validate -config /etc/kingmoat/config.json
+sudo -u kingmoat kmwafctl validate -config /etc/kingmoatwaf/config.json
 ```
 
 ### 3.2 预设控制台管理员口令（可选但建议）
 
 ```bash
 # generate an argon2id hash; -stdin avoids shell history / process list exposure
-kingmoat-cli hash-password -stdin <<< 'YourStrongPassw0rd!'
+kmwafctl hash-password -stdin <<< 'YourStrongPassw0rd!'
 
 # drop the hash into the env file read by the unit (EnvironmentFile)
-sudo install -m 0600 /dev/null /etc/kingmoat/env
-echo "KINGMOAT_ADMIN_HASH=<粘贴哈希>" | sudo tee /etc/kingmoat/env >/dev/null
-sudo chmod 600 /etc/kingmoat/env
+sudo install -m 0600 /dev/null /etc/kingmoatwaf/env
+echo "KINGMOAT_ADMIN_HASH=<粘贴哈希>" | sudo tee /etc/kingmoatwaf/env >/dev/null
+sudo chmod 600 /etc/kingmoatwaf/env
 ```
 
 未设置 `KINGMOAT_ADMIN_HASH` 也能安全启动：控制台认证会自动武装，首次用内置引导账号 `kmadmin / KingMoat@2026` 登录并被强制改密。预设哈希的意义是把管理凭据锚定为你自选的强口令，跳过默认凭据窗口期（公网暴露控制台前**务必**预设，见根 README 安全提示）。
@@ -191,25 +191,25 @@ sudo chmod 600 /etc/kingmoat/env
 ### 3.3 安装 systemd 单元并启动
 
 ```bash
-sudo install -m 0644 deploy/kingmoat.service /etc/systemd/system/kingmoat.service
+sudo install -m 0644 deploy/kingmoatwaf.service /etc/systemd/system/kingmoatwaf.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now kingmoat    # start now + enable at boot
-systemctl status kingmoat
+sudo systemctl enable --now kingmoatwaf    # start now + enable at boot
+systemctl status kingmoatwaf
 ```
 
-单元要点（与 `kingmoat.service` 对应）：
+单元要点（与 `kingmoatwaf.service` 对应）：
 
 - **非 root 运行**：`User=kingmoat` + `AmbientCapabilities=CAP_NET_BIND_SERVICE`，只授予绑定 80/443 低端口的能力，其余能力全无。
 - **在线改端口仅限 root unit**：控制台「管理界面端口」依赖服务进程向 systemd 提交重启自身 unit；一键部署（install.sh）生成的单元以 root 运行可以做到，本模板以 `User=kingmoat` 非 root 运行，systemd/polkit 默认拒绝服务进程管理 unit——**非 root systemd unit 或非 systemd 部署不支持在线改端口（polkit 限制），需手工改 unit/重启**（控制台端口卡片会如实显示不可修改及原因）。
-- 沙箱加固：`NoNewPrivileges` / `ProtectSystem=strict` / `ProtectHome` / `PrivateTmp`；数据目录 `/var/lib/kingmoat` 通过 `StateDirectory`/`ReadWritePaths` 保持可写（配置库、审计日志、证书库都在这里写）。
-- 环境变量从 `/etc/kingmoat/env` 读入（`KINGMOAT_ADMIN_HASH`、可选 `KINGMOAT_ADMIN_TOTP`、`KINGMOAT_AI_API_KEY`）；控制台端口从数据目录 `console.env` 读入（`CONSOLE_PORT`，见 3.1，控制台设置页改端口时由服务自动改写并重启）。
-- 启动参数：`-config /etc/kingmoat/config.json -console-addr 127.0.0.1:${CONSOLE_PORT} -console-db /var/lib/kingmoat/kingmoat.db`（端口由 systemd 从 EnvironmentFile 展开）。
+- 沙箱加固：`NoNewPrivileges` / `ProtectSystem=strict` / `ProtectHome` / `PrivateTmp`；数据目录 `/var/lib/kingmoatwaf` 通过 `StateDirectory`/`ReadWritePaths` 保持可写（配置库、审计日志、证书库都在这里写）。
+- 环境变量从 `/etc/kingmoatwaf/env` 读入（`KINGMOAT_ADMIN_HASH`、可选 `KINGMOAT_ADMIN_TOTP`、`KINGMOAT_AI_API_KEY`）；控制台端口从数据目录 `console.env` 读入（`CONSOLE_PORT`，见 3.1，控制台设置页改端口时由服务自动改写并重启）。
+- 启动参数：`-config /etc/kingmoatwaf/config.json -console-addr 127.0.0.1:${CONSOLE_PORT} -console-db /var/lib/kingmoatwaf/kingmoat.db`（端口由 systemd 从 EnvironmentFile 展开）。
 
 ```bash
 # console reachable?
 curl -k https://127.0.0.1:8443/api/status
 # process logs go to journald (JSON lines)
-journalctl -u kingmoat -f
+journalctl -u kingmoatwaf -f
 ```
 
 > 默认单元把控制台绑在 `127.0.0.1:8443`（仅本机可访问）。需要远程管理时，把 `-console-addr` 改为内网管理地址（如 `198.51.100.10:8443`，RFC 5737 示例），同步放行防火墙，并在控制台「设置」里配置 `console.allowed_ips` 白名单（见 5.3）。
@@ -219,13 +219,13 @@ journalctl -u kingmoat -f
 完整步骤（目录规划、WinSW/NSSM 服务化、防火墙、升级）见 [windows.md](windows.md)。速览：
 
 ```powershell
-# 1. layout: C:\kingmoat\{kingmoat.exe, kingmoat-cli.exe, config.json, logs\}
-cd C:\kingmoat
+# 1. layout: C:\kingmoatwaf\{kingmoatwaf.exe, kmwafctl.exe, config.json, logs\}
+cd C:\kingmoatwaf
 # 2. manual smoke test (console is HTTPS on the -console-addr port)
-.\kingmoat-cli.exe validate -config config.json
-.\kingmoat.exe -config config.json -console-addr 127.0.0.1:8443 -console-db C:\kingmoat\kingmoat.db
+.\kmwafctl.exe validate -config config.json
+.\kingmoatwaf.exe -config config.json -console-addr 127.0.0.1:8443 -console-db C:\kingmoatwaf\kingmoat.db
 # 3. register as a service with WinSW (recommended) or NSSM, then:
-.\kingmoat-service.exe install ; .\kingmoat-service.exe start
+.\kingmoatwaf-service.exe install ; .\kingmoatwaf-service.exe start
 # 4. open firewall for the data plane (and console from admin networks only)
 New-NetFirewallRule -DisplayName "KingMoat HTTP" -Direction Inbound -Protocol TCP -LocalPort 80,443 -Action Allow
 ```
@@ -279,16 +279,16 @@ curl -i -H "Host: example.com" "http://<数据面地址>:80/?id=1 UNION SELECT p
 | `ai-kek.key` | AI 提供商 API Key 的加密密钥（丢失则 AI 设置里已存的 Key 无法解密，需重新录入） |
 | `uploads/certs/` | 证书库（站点证书 + 控制台证书） |
 | `logs/`（audit.db、archive/、metrics-state.json） | 审计数据与累计计数 |
-| `/etc/kingmoat/`（Linux）或 `C:\kingmoat\config.json`（Windows） | 种子配置与 env |
+| `/etc/kingmoatwaf/`（Linux）或 `C:\kingmoatwaf\config.json`（Windows） | 种子配置与 env |
 
 ```bash
 # cold backup (simplest & safest): stop, copy, start
-sudo systemctl stop kingmoat
-sudo tar czf /backup/kingmoat-$(date +%F).tar.gz /var/lib/kingmoat /etc/kingmoat
-sudo systemctl start kingmoat
+sudo systemctl stop kingmoatwaf
+sudo tar czf /backup/kingmoatwaf-$(date +%F).tar.gz /var/lib/kingmoatwaf /etc/kingmoatwaf
+sudo systemctl start kingmoatwaf
 
 # online backup of the config DB only (SQLite hot backup; requires sqlite3 CLI)
-sqlite3 /var/lib/kingmoat/kingmoat.db ".backup '/backup/kingmoat-online.db'"
+sqlite3 /var/lib/kingmoatwaf/kingmoat.db ".backup '/backup/kingmoatwaf-online.db'"
 ```
 
 建议 cron/计划任务每日冷备或 `.backup`，保留 N 份异地。恢复 = 停服 → 还原文件 → 起服。
@@ -299,29 +299,34 @@ sqlite3 /var/lib/kingmoat/kingmoat.db ".backup '/backup/kingmoat-online.db'"
 
 > **⚡ 一键升级**：重新运行一键部署脚本即可——`curl -fsSL https://gitee.com/kingmoat/KingMoat-WAF/raw/main/deploy/install.sh | bash`。脚本会替换二进制但保留已有 config.json 与 kingmoat.db（升级 = 重跑 install.sh）。
 
+**v0.7.9 → v0.7.10 命名迁移（存量实例必读）**：自 v0.7.10 起二进制 `kingmoat` 更名为 `kingmoatwaf`、管理工具 `kingmoat-cli` 更名为 `kmwafctl`，服务名与安装布局同步更名（`kingmoatwaf.service`、`/opt/kingmoatwaf`、`/var/lib/kingmoatwaf`、`/etc/kingmoatwaf`、安装记录 `/etc/kingmoatwaf-install.conf`）。两件事必须知道：
+
+1. **v0.7.9 及更早实例的控制台在线升级会失败**：在线升级按 Release 附件名匹配下载，新版本附件已更名为 `kingmoatwaf_v<版本>_<os>_<arch>`，v0.7.9 的在线升级模块找不到新附件。存量实例升级到 v0.7.10 请**重跑一键部署脚本**（推荐，自动完成迁移）或手动替换二进制；自 v0.7.10 起在线升级恢复正常互升。
+2. **重跑 install.sh 自动迁移**：脚本检测到旧安装（`/etc/kingmoat-install.conf`、`kingmoat.service`、`/opt/kingmoat`、`/var/lib/kingmoat`）后自动完成——停旧服务并卸载旧 unit → 旧数据目录 `cp -a` 复制到新位置并做文件数/字节双重校验（复制阶段旧安装完好，失败/中断后可随时手动重启旧服务回退）→ **无条件清除数据目录 `upgrade/intent.json`**（防止迁移后被自愈机制误判为「升级失败」而自动回滚到旧二进制）→ 部署新布局并启动验证；新服务确认运行后，旧数据目录/旧安装目录/旧安装记录一律**改名留存**（`*.migrated-<时间戳>`），全程不物理删除任何数据。注意：手动安装布局下 `/etc/kingmoat/env` 的 `KINGMOAT_ADMIN_HASH` 不会自动带入（该 env 属旧 unit），迁移后如需固定口令请按 3.2 重新写入 `/etc/kingmoatwaf/env`。
+
 ```bash
 # 1. backup first (see 6.1)
 # 2. replace the binary
-sudo install -m 0755 kingmoat.new /usr/local/bin/kingmoat
+sudo install -m 0755 kingmoatwaf.new /usr/local/bin/kingmoatwaf
 # 3. restart; the existing config DB is picked up automatically
-sudo systemctl restart kingmoat
+sudo systemctl restart kingmoatwaf
 # 4. verify version (and console /api/status shows it too)
-kingmoat -version
+kingmoatwaf -version
 ```
 
-Docker：替换镜像 tag 后 `docker compose up -d`。Windows：停服务 → 替换 `kingmoat.exe` → 起服务。配置库向后兼容自动沿用；升级后打开控制台确认版本号与站点状态即可。
+Docker：替换镜像 tag 后 `docker compose up -d`。Windows：停服务 → 替换 `kingmoatwaf.exe` → 起服务。配置库向后兼容自动沿用；升级后打开控制台确认版本号与站点状态即可。
 
 **控制台在线升级**（v0.7.9 起）：系统设置 → 「版本与升级」支持检查更新与一键升级——页面展示阶段进度（检测 → 下载 → 校验 → 替换 → 重启），失败后进入冷却窗口防止反复重试；升级前自动在安装目录留滚动备份并具备自愈回滚（见 6.3）。建议在维护窗口执行；升级完成后服务自动重启。
 
 **ACME 账号重置（本次升级必做，未使用 ACME 可跳过）**：本版本重构了 ACME 签发链路（详见仓库 CHANGELOG）。此前签发失败会在 Let's Encrypt 侧留下被停用（deactivated）的授权并绑定在旧 ACME 账号上——不重置账号，同域名的重试会持续失败。升级到本版本后执行一次：
 
 ```bash
-sudo systemctl stop kingmoat
-sudo rm -f /var/lib/kingmoat/acme-cache/acme_account+key /var/lib/kingmoat/acme-cache-staging/acme_account+key
-sudo systemctl start kingmoat
+sudo systemctl stop kingmoatwaf
+sudo rm -f /var/lib/kingmoatwaf/acme-cache/acme_account+key /var/lib/kingmoatwaf/acme-cache-staging/acme_account+key
+sudo systemctl start kingmoatwaf
 ```
 
-数据目录按实际安装路径调整（一键部署默认 `/var/lib/kingmoat`）。两个缓存目录使用相互独立的 ACME 账号，两个账号文件都要删除；重启后首次签发会自动注册新账号。已缓存的有效证书不受影响，后续续期改用新账号进行。
+数据目录按实际安装路径调整（一键部署默认 `/var/lib/kingmoatwaf`）。两个缓存目录使用相互独立的 ACME 账号，两个账号文件都要删除；重启后首次签发会自动注册新账号。已缓存的有效证书不受影响，后续续期改用新账号进行。
 
 ### 6.3 回滚（两层）
 
@@ -329,13 +334,13 @@ sudo systemctl start kingmoat
 
 **版本回滚**（二进制降级）：换回旧二进制重启即可（配置库沿用）；但二进制降级可能遇到新版本写入后的数据结构，【待确认：跨版本降级兼容性未在仓库中明确承诺，降级前请先按 6.1 备份，必要时连同 `kingmoat.db` 一起还原到升级前备份】。若只是误发布配置，优先用配置回滚而不是降级。
 
-**在线升级的自动备份与自愈**：在线升级启动前会自动把 `kingmoat` / `kingmoat-cli` 备份到安装目录（`kingmoat.bak-<版本>` / `kingmoat-cli.bak-<版本>`，滚动保留最近 2 份），可直接复制还原；v0.7.9 起一键部署会安装启动前自愈钩子（`kingmoat-cli upgrade-rollback`），新包启动失败时自动回滚到升级前版本。
+**在线升级的自动备份与自愈**：在线升级启动前会自动把 `kingmoatwaf` / `kmwafctl` 备份到安装目录（`kingmoatwaf.bak-<版本>` / `kmwafctl.bak-<版本>`，滚动保留最近 2 份），可直接复制还原；v0.7.9 起一键部署会安装启动前自愈钩子（`kmwafctl upgrade-rollback`），新包启动失败时自动回滚到升级前版本。
 
 ### 6.4 日志
 
 | 类型 | 位置 | 说明 |
 |---|---|---|
-| 进程日志（JSON 行，stdout） | systemd: `journalctl -u kingmoat`；Docker: `docker logs kingmoat`；Windows: WinSW 滚动日志文件 | 启动、热更新、错误 |
+| 进程日志（JSON 行，stdout） | systemd: `journalctl -u kingmoatwaf`；Docker: `docker logs kingmoatwaf`；Windows: WinSW 滚动日志文件 | 启动、热更新、错误 |
 | 审计/攻击事件 | 数据目录 `logs/audit.db`（SQLite FTS5） | 控制台「攻击日志」页查询、导出 NDJSON |
 | 审计归档 | `logs/archive/audit-YYYYMMDD.db.gz` | 按天归档压缩（`audit_archive` 开启时） |
 | 访问日志外发 | Elasticsearch / Loki / Kafka / S3（`log_shipper` 配置） | 全量访问日志走外部存储 |
@@ -361,18 +366,42 @@ sudo systemctl start kingmoat
 **失联恢复**（改完端口后控制台打不开时的手工恢复路径）：
 
 ```bash
-# 1. 查看当前控制台端口（一键部署默认数据目录 /var/lib/kingmoat；
+# 1. 查看当前控制台端口（一键部署默认数据目录 /var/lib/kingmoatwaf；
 #    自定义 --data-dir 安装的按实际路径）
-cat /var/lib/kingmoat/console.env
+cat /var/lib/kingmoatwaf/console.env
 
 # 2. 改回可用端口
-sudo vim /var/lib/kingmoat/console.env      # CONSOLE_PORT=8443
+sudo vim /var/lib/kingmoatwaf/console.env      # CONSOLE_PORT=8443
 
 # 3. 重启服务生效
-sudo systemctl restart kingmoat
+sudo systemctl restart kingmoatwaf
 ```
 
 若 `console.env` 丢失，手工重建同格式文件（`CONSOLE_PORT=<端口>`，权限 600）后重启即可；unit 文件无需改动。
+
+### 6.7 kmwafctl 服务管理 CLI
+
+`kmwafctl` 是随主程序一并安装的管理工具，把日常系统管理收拢到一条命令：服务启停/状态/只读配置速览 + 既有配置工具（`validate` / `hash-password` / `reset-password`）+ 升级自愈钩子（`upgrade-rollback`）。`status` / `start` / `stop` / `restart` / `config` 仅支持 systemd 部署形态（一键部署或手动安装 unit）；Windows 或静态配置模式执行会得到明确提示，Windows 服务化见 [windows.md](windows.md)。
+
+| 子命令 | 作用 |
+|---|---|
+| `kmwafctl status` | 服务运行/开机自启状态、版本、数据目录、控制台端口（读数据目录 `console.env`）与控制台访问地址 |
+| `sudo kmwafctl start / stop / restart` | systemd 服务启停（封装 `systemctl`，服务名 `kingmoatwaf`） |
+| `kmwafctl config` | 只读展示当前生效配置速览：数据目录、控制台端口、站点清单摘要（只读查询配置库；不可用时降级为「在控制台查看」提示，不影响其它字段展示） |
+| `kmwafctl validate -config <path>` | 配置文件校验（含 WAF 规则编译 dry-run） |
+| `kmwafctl hash-password` | 生成 argon2id 口令哈希（预设 `KINGMOAT_ADMIN_HASH` 用，`-stdin` 避免进 shell 历史） |
+| `kmwafctl reset-password -db <path> -username <user> [-password <pw> \| -generate] [-clear-mfa]` | 离线救援：重置管理员口令，`-clear-mfa` 同时清除两步验证（MFA 设备丢失时用） |
+| `kmwafctl upgrade-rollback [-data-dir <path>]` | 启动前自愈钩子（unit `ExecStartPre` 自动调用，一般无需手动执行） |
+| `kmwafctl version` | 打印版本 |
+
+```bash
+# 常用示例
+kmwafctl status                      # 查看服务状态与控制台地址
+sudo kmwafctl restart                # 非 root 执行 start/stop/restart 会提示加 sudo
+kmwafctl config                      # 只读速览数据目录/端口/站点摘要
+```
+
+> 权限与路径说明：`status` / `config` 为只读，但数据目录文件属 root（一键部署默认权限收紧）时普通用户可能读不到控制台端口等字段，提示以 `sudo` 重试即可；`start` / `stop` / `restart` 直接操作 systemd，需要 root。数据目录与安装记录的定位优先读取安装记录 `/etc/kingmoatwaf-install.conf`（一键部署写入），手动安装按默认布局推导；非 systemd 环境下 systemctl 类子命令会明确提示不受支持。
 
 ## 7. 常见问题（FAQ）
 
@@ -386,7 +415,7 @@ sudo systemctl restart kingmoat
 预期行为：控制台首次启动自动生成 10 年期自签引导证书（HTTPS）。可导入信任，或在控制台「设置」页上传正式证书热替换。数据面的站点证书与此无关，按 5.3 配置。
 
 **Q4：AI 助手对话/日报报 404？**
-自定义接入时 `base_url` 必须写到 OpenAI 兼容网关的**版本路径**（如 `https://api.example.com/v1`、通义为 `.../compatible-mode/v1`、智谱为 `.../api/paas/v4`）。KingMoat 按 `base_url + /chat/completions` 直接拼接发起请求，`base_url` 漏掉 `/v1` 就会 404。使用内置模板（DeepSeek/OpenAI/Kimi 等）时已带正确路径，无需手填。
+自定义接入时 `base_url` 必须写到 OpenAI 兼容网关的**版本路径**（如 `https://api.example.com/v1`、通义为 `.../compatible-mode/v1`、智谱为 `.../api/paas/v4`）。KingMoat WAF 按 `base_url + /chat/completions` 直接拼接发起请求，`base_url` 漏掉 `/v1` 就会 404。使用内置模板（DeepSeek/OpenAI/Kimi 等）时已带正确路径，无需手填。
 
 **Q5：站点返回 502 友好提示页？**
 该页表示 **WAF 本身正常、上游故障**：上游地址不可达、端口不对、或上游健康检查失败被剔除。检查站点的 upstream 节点地址/协议/端口、上游服务状态与健康检查配置。若上游就是本机服务，注意容器部署时 `127.0.0.1` 指向容器自身，应改用宿主机地址或容器网络名。

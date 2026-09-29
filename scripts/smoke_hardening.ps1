@@ -68,10 +68,10 @@ try {
 
     Push-Location $repo
     $go = "$env:USERPROFILE\go-sdk\go\bin\go.exe"
-    & $go build -tags no_fs_access -o (Join-Path $WorkDir 'kingmoat.exe') ./cmd/kingmoat
+    & $go build -tags no_fs_access -o (Join-Path $WorkDir 'kingmoatwaf.exe') ./cmd/kingmoatwaf
     $buildOk = ($LASTEXITCODE -eq 0)
     Pop-Location
-    Check 'build kingmoat.exe' $buildOk ("go build exit " + $LASTEXITCODE)
+    Check 'build kingmoatwaf.exe' $buildOk ("go build exit " + $LASTEXITCODE)
     if (-not $buildOk) { throw 'build failed' }
 
     $uv = (Get-Command uv).Source
@@ -80,12 +80,12 @@ try {
         -WorkingDirectory $WorkDir -PassThru -WindowStyle Hidden
     $procs += $up
 
-    $kmLog = Join-Path $WorkDir 'kingmoat.out.log'
+    $kmLog = Join-Path $WorkDir 'kingmoatwaf.out.log'
     $env:KINGMOAT_LOG_SAMPLE_PER_SEC = "2"
-    $km = Start-Process -FilePath (Join-Path $WorkDir 'kingmoat.exe') `
+    $km = Start-Process -FilePath (Join-Path $WorkDir 'kingmoatwaf.exe') `
         -ArgumentList @('-config', 'seed.json', '-console-addr', "127.0.0.1:$ConsolePort", '-console-db', 'hardening.db') `
         -WorkingDirectory $WorkDir -PassThru -WindowStyle Hidden `
-        -RedirectStandardOutput $kmLog -RedirectStandardError (Join-Path $WorkDir 'kingmoat.err.log')
+        -RedirectStandardOutput $kmLog -RedirectStandardError (Join-Path $WorkDir 'kingmoatwaf.err.log')
     $procs += $km
 
     $ready = $false
@@ -140,7 +140,7 @@ try {
     $cfg2 = HttpGet $client "http://127.0.0.1:$ConsolePort/api/config" $null
     Check 'config now has 2 sites (bad not merged)' ($cfg2.Body -match '"c.local"' -and -not ($cfg2.Body -match '"bad.local"')) 'isolation broken'
 
-    Check 'process alive after all checks' (-not $km.HasExited) 'kingmoat exited'
+    Check 'process alive after all checks' (-not $km.HasExited) 'kingmoatwaf exited'
 }
 catch {
     Write-Host ("EXCEPTION: " + $_.Exception.Message) -ForegroundColor Red

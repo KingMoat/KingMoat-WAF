@@ -1,6 +1,6 @@
-# KingMoat on Windows Server
+# KingMoat WAF on Windows Server
 
-KingMoat 支持 **all-in-one** 单二进制部署：数据面（反向代理 + WAF）与
+KingMoat WAF 支持 **all-in-one** 单二进制部署：数据面（反向代理 + WAF）与
 控制台（Web UI + REST API + SQLite 配置库）在同一进程内。
 
 ## 1. 目录规划

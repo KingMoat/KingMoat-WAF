@@ -1,4 +1,4 @@
-# KingMoat AI 助手（内嵌，只读）
+# KingMoat WAF AI 助手（内嵌，只读）
 
 控制台内嵌 AI 安全分析师：读取配置与攻击日志、分析态势、给出建议。**只读**——工具表硬编码为 6 个查询类函数，无任何写路径，AI 不持有可写凭证。
 
@@ -54,7 +54,7 @@ API Key 通过环境变量注入：`export KINGMOAT_AI_API_KEY=sk-...`（`api_ke
 | `[SEC-n]` | 密码/Token/JWT/私钥 | 启用 |
 | 攻击源公网 IP | 分析要素 | **保留**（`mask_public_ip: true` 可开） |
 
-MCP 出边界场景输出同样脱敏，但占位符**不可自动复原**（映射不出 KingMoat 进程）。
+MCP 出边界场景输出同样脱敏，但占位符**不可自动复原**（映射不出 KingMoat WAF 进程）。
 
 ## 只读保障（三层）
 

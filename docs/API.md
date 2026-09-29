@@ -1,6 +1,6 @@
-# KingMoat REST API 参考
+# KingMoat WAF REST API 参考
 
-控制台 API（WebUI 与 `/api/*` 同源），由 all-in-one 模式（`kingmoat -console-addr`）提供。
+控制台 API（WebUI 与 `/api/*` 同源），由 all-in-one 模式（`kingmoatwaf -console-addr`）提供。
 
 > 本文列核心端点；完整端点清单以控制台 `/openapi.json` 为准。
 
@@ -10,7 +10,7 @@
 
 ## 认证
 
-未设置环境变量 `KINGMOAT_ADMIN_HASH`（argon2id 哈希，`kingmoat-cli hash-password` 生成，支持 `-stdin`）时，控制台认证**自动武装**：首次启动生成随机会话密钥并强制启用登录，使用内置引导账号 `kmadmin / KingMoat@2026`，首次登录强制改密。预设该变量用于把管理凭据锚定为自选强口令，跳过默认凭据窗口期（控制台绑定非回环地址前务必预设）。
+未设置环境变量 `KINGMOAT_ADMIN_HASH`（argon2id 哈希，`kmwafctl hash-password` 生成，支持 `-stdin`）时，控制台认证**自动武装**：首次启动生成随机会话密钥并强制启用登录，使用内置引导账号 `kmadmin / KingMoat@2026`，首次登录强制改密。预设该变量用于把管理凭据锚定为自选强口令，跳过默认凭据窗口期（控制台绑定非回环地址前务必预设）。
 
 两步验证：
 

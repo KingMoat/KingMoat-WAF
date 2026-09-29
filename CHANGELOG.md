@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### 新增
+
+- **kmwafctl 服务管理子命令**：管理工具 kmwafctl（原 kingmoat-cli）新增 `status` / `start` / `stop` / `restart` / `config` 五个系统管理子命令，日常启停、状态查看与改密不再需要手工拼接 systemctl 命令与路径——`status` 展示服务运行/开机自启状态、版本、数据目录、控制台端口（读数据目录 console.env）与控制台访问地址；`start` / `stop` / `restart` 封装 systemctl 操作 kingmoatwaf 服务，非 root 执行给出 `sudo kmwafctl ...` 提示而非报错栈；`config` 只读展示数据目录、控制台端口与站点清单摘要（只读查询配置库，不可用时降级为「在控制台查看」提示，不影响其它字段展示）。systemctl 类子命令仅支持 systemd 部署形态，Windows 与静态配置模式下执行给出明确提示；既有 `validate` / `hash-password` / `reset-password` / `upgrade-rollback` / `version` 子命令原样平移。用法详见 deploy/README.md「kmwafctl 服务管理 CLI」
+
+### 变更
+
+- **二进制、服务名与安装布局全面更名（存量安装重跑 install.sh 自动迁移）**：主程序 `kingmoat` → `kingmoatwaf`、管理工具 `kingmoat-cli` → `kmwafctl`、systemd 服务 `kingmoat.service` → `kingmoatwaf.service`；安装布局同步更名：`/opt/kingmoatwaf`（安装目录）、`/var/lib/kingmoatwaf`（数据目录）、`/etc/kingmoatwaf`（配置目录）、`/etc/kingmoatwaf-install.conf`（安装记录）；Release 附件更名为 `kingmoatwaf_v<版本>_<os>_<arch>`。`kingmoat.db` 数据文件名、`KINGMOAT_*` 环境变量、Go module 与 Gitee org/repo 等品牌语境保持不变。存量 v0.7.9 及更早安装重跑 install.sh 时自动迁移：检测旧布局 → 停旧服务并卸载旧 unit → 数据目录 `cp -a` 复制到新位置并做文件数/字节双重校验（复制阶段旧安装完好，失败/中断后可随时手动重启旧服务回退）→ 清除数据目录 `upgrade/intent.json`（防止迁移被自愈机制误判为「升级失败」而自动回滚到旧二进制）→ 新布局启动验证通过后旧目录/旧安装记录一律改名留存（`*.migrated-<时间戳>`），全程不物理删除任何数据；手动安装布局下 `/etc/kingmoat/env` 的 `KINGMOAT_ADMIN_HASH` 不自动带入，迁移后如需固定口令需重新写入 `/etc/kingmoatwaf/env`（详见 deploy/README.md 6.2）
+- **兼容断点：v0.7.9 及更早实例的控制台在线升级不可用**：在线升级按 Release 附件名匹配下载，附件更名后 v0.7.9 的在线升级模块无法找到新版本附件——存量实例升级到 v0.7.10 必须重跑 install.sh（推荐，自动完成改名迁移）或手动替换二进制；自 v0.7.10 起在线升级恢复正常互升
+- **控制台关于页精简**：「关于KingMoat WAF」页仅保留产品名称、版本、检测内核、开源许可、源码仓库与 OpenAPI 入口；移除上游发布、运行时、GeoIP 库、slogan 与发布者/联系人等杂糅信息；策略页「引擎与规则版本」面板同步精简为检测引擎、规则集、控制台版本三项（移除「上游发布」子行、运行时项与 GeoIP 库项）
+
 ### 修复
 
 - **手动列表（members）IP 组保存 / 发布被误拒**：IP 组支持订阅 URL / 本地文件 / 手动列表三种来源，但发布校验只认 URL / 文件二选一，控制台用默认「手动列表」模式新建 IP 组后发布配置必然被 `exactly one of url / file is required` 拒绝。现校验改为三种来源恰好一个：手动列表成员非空即视为有效来源，可正常保存与发布；混合来源（如同时填订阅 URL 与手动成员，运行时本就静默忽略手动成员）改为显式拒绝，错误文案同步更新为 `exactly one of url / file / members is required`

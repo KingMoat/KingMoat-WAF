@@ -17,7 +17,7 @@
   <a href="README_EN.md"><img alt="English" src="https://img.shields.io/badge/lang-English-555555?style=for-the-badge"></a>
 </p>
 
-KingMoat 是一个开源、纯 Go 实现的 **All-in-one Web 应用防火墙**：自研 L7 反向代理承载流量，Coraza（ModSecurity SecLang 兼容引擎）+ OWASP CRS 4.x 作为签名检测核心，单二进制运行，配置默认存 SQLite，开箱即用。
+KingMoat WAF 是一个开源、纯 Go 实现的 **All-in-one Web 应用防火墙**：自研 L7 反向代理承载流量，Coraza（ModSecurity SecLang 兼容引擎）+ OWASP CRS 4.x 作为签名检测核心，单二进制运行，配置默认存 SQLite，开箱即用。
 
 > **⚠️ AI 生成声明**：本项目代码**绝大部分由 AI 辅助生成**，经人工审查与自动化测试/安全评审迭代后发布。我们选择公开这一事实：它证明了 AI 编程在中小规模安全产品上的可用性，也意味着它比典型人工项目更需要社区 Review——发现任何问题请直接提 Issue，我们认真对待每一条。
 
@@ -34,7 +34,7 @@ KingMoat 是一个开源、纯 Go 实现的 **All-in-one Web 应用防火墙**�
 
 来源：[SafeLine 官方文档](https://help.waf-ce.chaitin.cn/)、[SafeLine GitHub](https://github.com/chaitin/SafeLine)、[社区版站点限制变更解析](https://blog.gitcode.com/0afe30162fd57701b513c6ed6fab6093.html)、[BunkerWeb GitHub](https://github.com/bunkerity/bunkerweb)、[BunkerWeb 定价页](https://www.bunkerweb.io/pricing-plan/)。
 
-小团队的真实诉求很朴素：**装得上、看得懂、管得过来**。KingMoat 据此选择了一条不同的路线：不设站点与并发配额、规则内嵌权威上游、单文件部署、图形化控制台，欢迎个人站长与中小规模团队使用。
+小团队的真实诉求很朴素：**装得上、看得懂、管得过来**。KingMoat WAF 据此选择了一条不同的路线：不设站点与并发配额、规则内嵌权威上游、单文件部署、图形化控制台，欢迎个人站长与中小规模团队使用。
 
 ## ✨ 核心特性
 
@@ -109,11 +109,11 @@ curl -fsSL https://gitee.com/kingmoat/KingMoat-WAF/raw/main/deploy/install.sh | 
 python3 -m http.server 9000
 
 # 2. 生成控制台管理员凭证（可选但建议）
-export KINGMOAT_ADMIN_HASH=$(kingmoat-cli hash-password -password 'YourStrongPassw0rd!')
+export KINGMOAT_ADMIN_HASH=$(kmwafctl hash-password -password 'YourStrongPassw0rd!')
 # 可选两步验证：export KINGMOAT_ADMIN_TOTP=<base32密钥>
 
-# 3. 启动 KingMoat：数据面 :80/:443 + 控制台 :8443，配置存入 kingmoat.db（SQLite）
-kingmoat -config config.example.json -console-addr 127.0.0.1:8443
+# 3. 启动 KingMoat WAF：数据面 :80/:443 + 控制台 :8443，配置存入 kingmoat.db（SQLite）
+kingmoatwaf -config config.example.json -console-addr 127.0.0.1:8443
 
 # 4. 验证拦截
 curl -i -H "Host: localhost" "http://127.0.0.1/?id=1 UNION SELECT password FROM users"
@@ -125,7 +125,7 @@ curl -i -H "Host: localhost" "http://127.0.0.1/?id=1 UNION SELECT password FROM 
 
 > 默认管理员账号：`kmadmin` / `KingMoat@2026`，首次登录强制修改密码。请立即设置强口令；若控制台需绑定到非本机回环地址，务必先用第 2 步的 `KINGMOAT_ADMIN_HASH` 预设强口令，避免已知默认凭据被抢先登录。
 
-Docker / systemd / Windows 服务化等部署方式见 [deploy/README.md](deploy/README.md)（部署总览、前置规划与上线检查单；同目录含 distroless Dockerfile、docker-compose、kingmoat.service、windows.md）。
+Docker / systemd / Windows 服务化等部署方式见 [deploy/README.md](deploy/README.md)（部署总览、前置规划与上线检查单；同目录含 distroless Dockerfile、docker-compose、kingmoatwaf.service、windows.md）。
 
 ## 🧰 从源码构建
 

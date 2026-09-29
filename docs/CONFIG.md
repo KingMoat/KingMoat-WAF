@@ -1,4 +1,4 @@
-# KingMoat 配置参考
+# KingMoat WAF 配置参考
 
 配置以 JSON 表达，来源可以是静态文件（`-config`）或控制台发布的 revision
 （内容结构完全一致）。所有字段校验失败（`Config.Validate`）都会拒绝启动 /
@@ -143,7 +143,7 @@ HMAC 签名通行 Cookie。校验端点固定为 `/.well-known/km-captcha/verify
 
 - 整站 HTTP Basic 认证（401 + `WWW-Authenticate`），防未授权访问。
 - 每用户 `password`（明文，内网快捷）与 `password_hash`（argon2id，
-  `kingmoat-cli hash-password` 生成）二选一。
+  `kmwafctl hash-password` 生成）二选一。
 
 ## semantic（SemanticSettings，轻量语义检测）
 
@@ -381,7 +381,7 @@ WebSocket/SSE 不受影响）。
 
 ```json
 [{"name": "threat-feed", "url": "https://feeds.example.com/bad-ips.txt", "interval_min": 60},
- {"name": "corp-nets", "file": "/etc/kingmoat/corp.txt"}]
+ {"name": "corp-nets", "file": "/etc/kingmoatwaf/corp.txt"}]
 ```
 
 列表格式：每行一个 IP/CIDR，`#` 注释。ACL 中以 `"group:<name>"` 引用；

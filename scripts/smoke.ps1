@@ -92,10 +92,10 @@ try {
 
     # 1. build
     Push-Location $repo
-    & $go build -tags no_fs_access -o (Join-Path $WorkDir 'kingmoat.exe') ./cmd/kingmoat
+    & $go build -tags no_fs_access -o (Join-Path $WorkDir 'kingmoatwaf.exe') ./cmd/kingmoatwaf
     $buildOk = ($LASTEXITCODE -eq 0)
     Pop-Location
-    Check 'build kingmoat.exe' $buildOk ("go build exit " + $LASTEXITCODE)
+    Check 'build kingmoatwaf.exe' $buildOk ("go build exit " + $LASTEXITCODE)
     if (-not $buildOk) { throw 'build failed, aborting smoke test' }
 
     # 2. upstream (python http.server)
@@ -105,12 +105,12 @@ try {
         -WorkingDirectory $WorkDir -PassThru -WindowStyle Hidden
     $procs += $up
 
-    # 3. kingmoat all-in-one
-    $kmLog = Join-Path $WorkDir 'kingmoat.out.log'
-    $km = Start-Process -FilePath (Join-Path $WorkDir 'kingmoat.exe') `
+    # 3. kingmoatwaf all-in-one
+    $kmLog = Join-Path $WorkDir 'kingmoatwaf.out.log'
+    $km = Start-Process -FilePath (Join-Path $WorkDir 'kingmoatwaf.exe') `
         -ArgumentList @('-config', 'seed.json', '-console-addr', "127.0.0.1:$ConsolePort", '-console-db', 'smoke.db') `
         -WorkingDirectory $WorkDir -PassThru -WindowStyle Hidden `
-        -RedirectStandardOutput $kmLog -RedirectStandardError (Join-Path $WorkDir 'kingmoat.err.log')
+        -RedirectStandardOutput $kmLog -RedirectStandardError (Join-Path $WorkDir 'kingmoatwaf.err.log')
     $procs += $km
 
     # 4. readiness
@@ -279,7 +279,7 @@ try {
     }
     $client.Dispose()
     if ($script:failed.Count -gt 0 -and $kmLog -and (Test-Path $kmLog)) {
-        Write-Host '--- kingmoat.log tail ---' -ForegroundColor Yellow
+        Write-Host '--- kingmoatwaf.log tail ---' -ForegroundColor Yellow
         Get-Content $kmLog -Tail 30 | ForEach-Object { Write-Host $_ }
     }
     Write-Host ("smoke workdir: " + $WorkDir)

@@ -17,11 +17,11 @@
   <a href="README.md"><img alt="中文" src="https://img.shields.io/badge/lang-%E4%B8%AD%E6%96%87-555555?style=for-the-badge"></a>
 </p>
 
-KingMoat is an open-source **All-in-one Web Application Firewall** written in pure Go: an in-house L7 reverse proxy carrying the traffic, Coraza (a ModSecurity SecLang-compatible engine) + OWASP CRS 4.x as the signature detection core. It runs as a single binary, stores its configuration in SQLite by default, and works out of the box.
+KingMoat WAF is an open-source **All-in-one Web Application Firewall** written in pure Go: an in-house L7 reverse proxy carrying the traffic, Coraza (a ModSecurity SecLang-compatible engine) + OWASP CRS 4.x as the signature detection core. It runs as a single binary, stores its configuration in SQLite by default, and works out of the box.
 
 > **⚠️ AI-generated disclosure**: the vast majority of this codebase was **written with AI assistance**, reviewed by humans and iterated with automated tests and security audits before release. We state this openly: it demonstrates what AI-assisted engineering can deliver for a small-scale security product — and it means this project needs community review more than a typical one. Found anything? Open an issue; we take every report seriously.
 
-## 💡 Why KingMoat
+## 💡 Why KingMoat WAF
 
 Mainstream open-source WAFs are not friendly to personal webmasters and small teams — either they limit the number of sites, or the deployment is heavy (facts as of 2026-09, sources linked):
 
@@ -34,7 +34,7 @@ Mainstream open-source WAFs are not friendly to personal webmasters and small te
 
 Sources: [SafeLine docs](https://help.waf-ce.chaitin.cn/), [SafeLine GitHub](https://github.com/chaitin/SafeLine), [community-edition site limit analysis](https://blog.gitcode.com/0afe30162fd57701b513c6ed6fab6093.html), [BunkerWeb GitHub](https://github.com/bunkerity/bunkerweb), [BunkerWeb pricing](https://www.bunkerweb.io/pricing-plan/).
 
-What small teams actually need is simple: **easy to install, easy to understand, easy to operate.** KingMoat takes a different route: no site or concurrency quotas, authoritative upstream rules embedded, single-file deployment, and a graphical console. Individual webmasters and small-to-medium teams are welcome to use it, file issues, and suggest improvements.
+What small teams actually need is simple: **easy to install, easy to understand, easy to operate.** KingMoat WAF takes a different route: no site or concurrency quotas, authoritative upstream rules embedded, single-file deployment, and a graphical console. Individual webmasters and small-to-medium teams are welcome to use it, file issues, and suggest improvements.
 
 ## ✨ Key Features
 
@@ -97,10 +97,10 @@ Or manual deployment (macOS / Windows / any platform):
 python3 -m http.server 9000
 
 # 2. Generate console admin credentials (optional but recommended)
-export KINGMOAT_ADMIN_HASH=$(kingmoat-cli hash-password -password 'YourStrongPassw0rd!')
+export KINGMOAT_ADMIN_HASH=$(kmwafctl hash-password -password 'YourStrongPassw0rd!')
 
-# 3. Start KingMoat: data plane :80/:443 + console :8443, config stored in kingmoat.db (SQLite)
-kingmoat -config config.example.json -console-addr 127.0.0.1:8443
+# 3. Start KingMoat WAF: data plane :80/:443 + console :8443, config stored in kingmoat.db (SQLite)
+kingmoatwaf -config config.example.json -console-addr 127.0.0.1:8443
 
 # 4. Verify blocking
 curl -i -H "Host: localhost" "http://127.0.0.1/?id=1 UNION SELECT password FROM users"
@@ -112,7 +112,7 @@ curl -i -H "Host: localhost" "http://127.0.0.1/?id=1 UNION SELECT password FROM 
 
 > Default admin account: `kmadmin` / `KingMoat@2026`, with a forced password change at first login. Set a strong password immediately; if you bind the console to a non-loopback address, preset a strong password via `KINGMOAT_ADMIN_HASH` (step 2) first so the well-known default cannot be claimed by someone else.
 
-For Docker / systemd / Windows service deployment see [deploy/README.md](deploy/README.md) (deployment overview, prerequisites and the go-live checklist; the same directory ships the distroless Dockerfile, docker-compose, kingmoat.service and windows.md).
+For Docker / systemd / Windows service deployment see [deploy/README.md](deploy/README.md) (deployment overview, prerequisites and the go-live checklist; the same directory ships the distroless Dockerfile, docker-compose, kingmoatwaf.service and windows.md).
 
 ## 🧰 Build from Source
 

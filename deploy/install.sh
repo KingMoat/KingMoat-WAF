@@ -412,7 +412,10 @@ if ! curl -fSL --max-time 30 -o "$TMPDIR_INSTALL/checksums.txt" "${_cs_urls[0]}"
         err "checksums.txt not available for $RELEASE_TAG - refusing to install unverified binaries"
     fi
 fi
-EXPECTED=$(grep -E "(^|[[:space:]])${ASSET_FILE}([[:space:]]|$)" "$TMPDIR_INSTALL/checksums.txt" | awk '{print $1}' | head -1)
+# Escape regex metacharacters in the (self-produced) asset name so the
+# pattern matches literally instead of interpreting dots as wildcards.
+ESCAPED_ASSET=$(printf '%s' "${ASSET_FILE}" | sed 's/[][\.|^$()*+?{}]/\\&/g')
+EXPECTED=$(grep -E "(^|[[:space:]])${ESCAPED_ASSET}([[:space:]]|$)" "$TMPDIR_INSTALL/checksums.txt" | awk '{print $1}' | head -1)
 ACTUAL=$(sha256sum "$TMPDIR_INSTALL/$ASSET_FILE" | awk '{print $1}')
 if [[ -z "$EXPECTED" ]]; then
     err "$ASSET_FILE not listed in checksums.txt"
@@ -974,6 +977,9 @@ WorkingDirectory=${DATA_DIR}
 # rewrite the file + systemctl restart; the unit file itself stays read-only
 # under ProtectSystem=strict).
 EnvironmentFile=${DATA_DIR}/console.env
+# Optional admin-password anchor (KINGMOAT_ADMIN_HASH), written by admins to
+# /etc/kingmoatwaf/env; leading "-" keeps startup tolerant when absent.
+EnvironmentFile=-/etc/kingmoatwaf/env
 # Self-healing rollback for interrupted online upgrades: compares the
 # running binary against the recorded upgrade intent and restores the
 # backup if the new binary failed to boot. The command itself never

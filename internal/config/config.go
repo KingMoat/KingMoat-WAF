@@ -815,7 +815,13 @@ func (c *Config) Validate() error {
 		if g.File != "" {
 			nSources++
 		}
-		if len(g.Members) > 0 {
+		nMembers := 0
+		for _, m := range g.Members {
+			if strings.TrimSpace(m) != "" {
+				nMembers++
+			}
+		}
+		if nMembers > 0 {
 			nSources++
 		}
 		if nSources != 1 {

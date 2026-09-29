@@ -400,7 +400,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { api, can, post } from '../api'
+import { api, applyNotice, can, post } from '../api'
 import { fmtTime } from '../timefmt'
 import { parseListenAddr } from '../listen'
 
@@ -708,7 +708,7 @@ async function publishForm() {
   publishing.value = true
   try {
     const d = await post('/api/config/publish', { note: 'console publish', config: cfg })
-    ElMessage.success('发布成功，版本 ' + d.revision + '，已热生效')
+    applyNotice(d, '发布成功，版本 ' + d.revision + '，已热生效')
     await load()
   } catch (e) {
     if (e && e.code === 'no_changes') {
@@ -725,12 +725,12 @@ async function publishForm() {
 async function rollbackPrev() {
   if (revs.value.length < 2) return ElMessage.warning('没有可回滚的历史版本')
   const d = await post(`/api/revisions/${revs.value[1].id}/rollback`)
-  ElMessage.success('已回滚至版本 ' + revs.value[1].id + '，发布为 v' + d.revision)
+  applyNotice(d, '已回滚至版本 ' + revs.value[1].id + '，发布为 v' + d.revision)
   await load()
 }
 async function rollbackTo(id) {
   const d = await post(`/api/revisions/${id}/rollback`)
-  ElMessage.success('已回滚至版本 ' + id + '，发布为 v' + d.revision)
+  applyNotice(d, '已回滚至版本 ' + id + '，发布为 v' + d.revision)
   await load()
 }
 
@@ -953,7 +953,7 @@ async function saveAndPublishSite() {
       note: 'console site publish: ' + ((s.domains && s.domains[0]) || ''),
       site: s,
     })
-    ElMessage.success('站点已发布，版本 ' + d.revision + '，已热生效')
+    applyNotice(d, '站点已发布，版本 ' + d.revision + '，已热生效')
   } catch (e) {
     // Roll the draft back so the stale entry is not mistaken for live config.
     form.sites = JSON.parse(before)

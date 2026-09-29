@@ -82,7 +82,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*Stage, error) {
 		if !s.WAF.IsEnabled() {
 			continue
 		}
-		waf, err := buildWAF(s, cfg.Policy)
+		waf, err := buildWAF(s, cfg.Policy, logger)
 		if err != nil {
 			return nil, fmt.Errorf("coraza: site %d (%s): %w", i, strings.Join(s.Domains, ","), err)
 		}
@@ -104,7 +104,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*Stage, error) {
 					variants[key] = sw
 					continue
 				}
-				vw, err := buildVariantWAFFn(s, cfg.Policy, ex)
+				vw, err := buildVariantWAFFn(s, cfg.Policy, ex, logger)
 				if err != nil {
 					logger.Error("coraza: variant engine build failed, scope falls back to the main engine",
 						"site", strings.Join(s.Domains, ","), "excluded", key, "err", err)
@@ -124,7 +124,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*Stage, error) {
 // buildWAF compiles one site's WAF: embedded CRS 4.x + optional custom rules.
 // The site body limit is mirrored into Coraza's request body limits so the
 // proxy buffer and the engine never disagree.
-func buildWAF(s *config.Site, policy *config.Policy) (coraza.WAF, error) {
+func buildWAF(s *config.Site, policy *config.Policy, logger *slog.Logger) (coraza.WAF, error) {
 	// Build the CRS include list: always-on infrastructure files + per-site
 	// category files. When s.WAF.Categories is nil, the global default
 	// (policy.WAFCategories) applies when configured, otherwise all
@@ -163,7 +163,10 @@ func buildWAF(s *config.Site, policy *config.Policy) (coraza.WAF, error) {
 		`SecRule ARGS_GET "@rx \x60[^\x60\n]{0,512}\x60" "id:1000001,phase:2,deny,log,t:none,msg:'KingMoat built-in: command substitution via backticks'"`,
 	}, "\n")
 	if s.WAF != nil && s.WAF.CustomRulesFile != "" {
-		b, err := os.ReadFile(s.WAF.CustomRulesFile)
+		// Compat: resolve a pre-rename data-directory path to the current
+		// layout when the file exists there (migration straggler); warn-once.
+		rulesPath := config.ResolveLegacyDataPath(s.WAF.CustomRulesFile, logger)
+		b, err := os.ReadFile(rulesPath)
 		if err != nil {
 			return nil, fmt.Errorf("read custom rules: %w", err)
 		}
@@ -599,7 +602,7 @@ func siteCategoryExclusions(policy *config.Policy, domains []string) ([]map[stri
 // (site waf.categories vs global default stacking and the REQUEST-999
 // dangling-update filtering apply unchanged — disable scoping can only
 // narrow the loaded set).
-func buildVariantWAF(s *config.Site, policy *config.Policy, exclude map[string]bool) (coraza.WAF, error) {
+func buildVariantWAF(s *config.Site, policy *config.Policy, exclude map[string]bool, logger *slog.Logger) (coraza.WAF, error) {
 	clone := *s
 	ws := config.WAFSettings{}
 	if s.WAF != nil {
@@ -607,7 +610,7 @@ func buildVariantWAF(s *config.Site, policy *config.Policy, exclude map[string]b
 	}
 	ws.Categories = variantCategories(s, policy, exclude)
 	clone.WAF = &ws
-	return buildWAF(&clone, policy)
+	return buildWAF(&clone, policy, logger)
 }
 
 // variantCategories computes the variant's effective detection categories:

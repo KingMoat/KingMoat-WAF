@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/kingmoat/kingmoat/internal/config"
+	"github.com/kingmoat/kingmoat/internal/naming"
 	"github.com/kingmoat/kingmoat/internal/store"
 )
 
@@ -165,11 +166,16 @@ func (s *Server) handleCertUploadDelete(w http.ResponseWriter, r *http.Request) 
 }
 
 // pathWithin reports whether p is the directory dir or a path under it.
+// Both sides are compared in normalized form (internal/naming.NormalizePath:
+// trim, "/" separators, legacy data-dir remap) so a site path still spelled
+// with the pre-rename data directory matches entries under the current
+// uploads root — the reference judgment must survive the v0.7.10 rename.
 func pathWithin(dir, p string) bool {
-	if p == "" {
+	dir, p = naming.NormalizePath(dir), naming.NormalizePath(p)
+	if dir == "" || p == "" {
 		return false
 	}
-	return p == dir || strings.HasPrefix(p, dir+string(filepath.Separator))
+	return p == dir || strings.HasPrefix(p, dir+"/")
 }
 
 // certRefSites returns the primary domains of every active site whose

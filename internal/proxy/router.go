@@ -174,7 +174,7 @@ func buildRouter(cfg *config.Config, prev *SiteRouter, logger *slog.Logger, resp
 		sr := &siteRuntime{cfg: s, hdr: compileHeaderRewrite(s.Headers)}
 
 		if prev != nil {
-			if old := prev.byDomain[site]; old != nil && siteUnchanged(old, s) {
+			if old := prev.byDomain[site]; old != nil && siteUnchanged(old, s, logger) {
 				// Adopt the existing pool/transport; the ReverseProxy is
 				// rebuilt below so its closures stay current.
 				pool, tr = old.pool, old.tr
@@ -194,15 +194,21 @@ func buildRouter(cfg *config.Config, prev *SiteRouter, logger *slog.Logger, resp
 			}
 			tr = newUpstreamTransport(s.Upstream)
 			if s.TLSCert != "" {
-				certPEM, err := os.ReadFile(s.TLSCert)
+				// Compat: a path still under the pre-rename data directory is
+				// remapped to the current layout when the file exists there
+				// (a v0.7.10 data-dir migration straggler); each stale path is
+				// warned about once per process lifetime.
+				certPath := config.ResolveLegacyDataPath(s.TLSCert, logger)
+				keyPath := config.ResolveLegacyDataPath(s.TLSKey, logger)
+				certPEM, err := os.ReadFile(certPath)
 				if err != nil {
 					router.Close()
-					return nil, fmt.Errorf("site router: read tls_cert: %w", err)
+					return nil, fmt.Errorf("site router: read tls_cert: %w%s", err, config.LegacyPathHint(certPath))
 				}
-				keyPEM, err := os.ReadFile(s.TLSKey)
+				keyPEM, err := os.ReadFile(keyPath)
 				if err != nil {
 					router.Close()
-					return nil, fmt.Errorf("site router: read tls_key: %w", err)
+					return nil, fmt.Errorf("site router: read tls_key: %w%s", err, config.LegacyPathHint(keyPath))
 				}
 				cert, err := tls.X509KeyPair(certPEM, keyPEM)
 				if err != nil {
@@ -210,7 +216,7 @@ func buildRouter(cfg *config.Config, prev *SiteRouter, logger *slog.Logger, resp
 					return nil, fmt.Errorf("site router: parse keypair: %w", err)
 				}
 				sr.cert = &cert
-				sr.certStamp = certFileStamp(s.TLSCert)
+				sr.certStamp = certFileStamp(certPath)
 			}
 		}
 		router.pools = append(router.pools, pool)
@@ -239,8 +245,10 @@ func buildRouter(cfg *config.Config, prev *SiteRouter, logger *slog.Logger, resp
 
 // siteUnchanged reports whether the existing runtime can be adopted for the
 // new site definition: byte-identical config and an unchanged certificate
-// file stamp (path + size + mtime).
-func siteUnchanged(old *siteRuntime, s *config.Site) bool {
+// file stamp (path + size + mtime). The certificate path is resolved through
+// the legacy data-dir compat layer so a remapped path fingerprints the file
+// the router actually reads.
+func siteUnchanged(old *siteRuntime, s *config.Site, logger *slog.Logger) bool {
 	if old == nil || old.cfg == nil || old.pool == nil || old.tr == nil {
 		return false
 	}
@@ -249,7 +257,7 @@ func siteUnchanged(old *siteRuntime, s *config.Site) bool {
 	if errA != nil || errB != nil || string(a) != string(b) {
 		return false
 	}
-	return certFileStamp(old.cfg.TLSCert) == old.certStamp
+	return certFileStamp(config.ResolveLegacyDataPath(old.cfg.TLSCert, logger)) == old.certStamp
 }
 
 // certFileStamp fingerprints a certificate file so content swaps (same path)

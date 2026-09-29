@@ -65,7 +65,7 @@ func TestIncrementalReloadAdoptsUnchangedSites(t *testing.T) {
 	}
 
 	// 1. identical reload: both pools must be adopted (pointer-identical).
-	if err := h.Reload(deepCopyCfg(h.CurrentConfig())); err != nil {
+	if err := h.Reload(deepCopyCfg(h.CurrentConfig()), 2); err != nil {
 		t.Fatalf("identical Reload: %v", err)
 	}
 	if pA1 := poolOf(h, "a.local"); pA1 != pA0 {
@@ -78,7 +78,7 @@ func TestIncrementalReloadAdoptsUnchangedSites(t *testing.T) {
 	// 2. change only b.local: a.local stays adopted, b.local is rebuilt.
 	next := deepCopyCfg(h.CurrentConfig())
 	next.Sites[1].Upstream.Nodes[0].Address = "127.0.0.1:1"
-	if err := h.Reload(next); err != nil {
+	if err := h.Reload(next, 3); err != nil {
 		t.Fatalf("partial Reload: %v", err)
 	}
 	if pA2 := poolOf(h, "a.local"); pA2 != pA0 {
@@ -95,7 +95,7 @@ func TestIncrementalReloadAdoptsUnchangedSites(t *testing.T) {
 	bad.Sites[0].Security = &config.SecuritySettings{
 		ACL: &config.ACLSettings{Whitelist: []string{"not-an-ip"}},
 	}
-	if err := h.Reload(bad); err == nil {
+	if err := h.Reload(bad, 4); err == nil {
 		t.Fatal("expected runtime build error for bad site config")
 	}
 	if pA3 := poolOf(h, "a.local"); pA3 != pA0 {

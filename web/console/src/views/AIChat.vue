@@ -81,7 +81,7 @@
 <script setup>
 import { nextTick, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { api, can, post } from '../api'
+import { api, applyNotice, can, post } from '../api'
 import { mdToHtml } from '../md'
 
 const props = defineProps({ inline: { type: Boolean, default: false }, embedded: { type: Boolean, default: false } })
@@ -122,7 +122,7 @@ async function saveModel() {
     cfg.ai = { ...(cfg.ai || {}), enabled: true }
     cfg.ai.provider = { ...(cfg.ai?.provider || {}), model: md.model.trim(), temperature: Number(md.temperature) || 0.2, timeout_sec: md.timeout }
     const r = await post('/api/config/publish', { note: 'ai model change from chat', config: cfg })
-    ElMessage.success('模型已更新并热生效（版本 ' + r.revision + '）')
+    applyNotice(r, '模型已更新并热生效（版本 ' + r.revision + '）')
     model.value = md.model.trim()
     modelDlg.value = false
   } catch (e) {

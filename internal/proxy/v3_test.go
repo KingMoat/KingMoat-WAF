@@ -208,7 +208,7 @@ func TestV3GroupACLSubscription(t *testing.T) {
 	defer list2.Close()
 	cfg2 := *cfg
 	cfg2.IPGroups = []config.IPGroupSettings{{Name: "blocked-nets", URL: list2.URL}}
-	if err := h.Reload(&cfg2); err != nil {
+	if err := h.Reload(&cfg2, 2); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(50 * time.Millisecond)

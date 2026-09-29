@@ -125,7 +125,7 @@ func TestCertSelectorFollowsRebuild(t *testing.T) {
 	// Publish an ACME site: data plane reload + holder rebuild, as the
 	// hot-reload consumer performs them.
 	cfgACME := &config.Config{Sites: []config.Site{mainTestSite("nossl.local"), acmeSite("acme.local")}}
-	if err := handler.Reload(cfgACME); err != nil {
+	if err := handler.Reload(cfgACME, 2); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
 	if prod, staging := holder.Rebuild(cfgACME, ""); prod == nil && staging == nil {
@@ -137,7 +137,7 @@ func TestCertSelectorFollowsRebuild(t *testing.T) {
 	}
 
 	// Publish the removal: back to the plain site-certificate path.
-	if err := handler.Reload(cfgNoACME); err != nil {
+	if err := handler.Reload(cfgNoACME, 3); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
 	if prod, staging := holder.Rebuild(cfgNoACME, ""); prod != nil || staging != nil {

@@ -36,6 +36,11 @@ import (
 // state and swap the pointer; in-flight requests keep their old state.
 type planeState struct {
 	cfg        *config.Config
+	// revision is the config-center revision this state was built from
+	// (0 = unknown, e.g. static mode / plain New). Surfaced read-only via
+	// Handler.RunningRevision so /api/status can compare it against the
+	// latest published revision and warn on engine/config divergence.
+	revision   int64
 	router     *SiteRouter
 	pipe       *pipeline.Pipeline
 	respFilter *stages.RespFilter
@@ -129,7 +134,7 @@ func New(cfg *config.Config, pipe *pipeline.Pipeline, audit logstore.Store, logg
 		return nil, err
 	}
 	h := &Handler{audit: audit, logger: logger, logSampler: newLogSampler(logSampleLimitFromEnv())}
-	h.state.Store(&planeState{cfg: cfg, router: router, pipe: pipe})
+	h.state.Store(&planeState{cfg: cfg, revision: 0, router: router, pipe: pipe})
 	return h, nil
 }
 
@@ -152,7 +157,7 @@ func NewReloadableObserved(cfg *config.Config, audit logstore.Store, observer ap
 	}
 	h := &Handler{audit: audit, logger: logger, observer: observer, logSampler: newLogSampler(logSampleLimitFromEnv())}
 	groups := h.ensureGroups(cfg)
-	state, err := buildState(cfg, groups, observer, logger, nil)
+	state, err := buildState(cfg, 0, groups, observer, logger, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -164,8 +169,8 @@ func NewReloadableObserved(cfg *config.Config, audit logstore.Store, observer ap
 // buildState materializes the whole runtime from a configuration. Any error
 // (bad CIDR, bad regex, WAF compile failure) aborts before anything is
 // published 鈥?the caller keeps the previous state (fail-static).
-func buildState(cfg *config.Config, groups ipgroups.Provider, observer apiasset.TickSink, logger *slog.Logger, prevRouter *SiteRouter) (*planeState, error) {
-	state := &planeState{cfg: cfg}
+func buildState(cfg *config.Config, rev int64, groups ipgroups.Provider, observer apiasset.TickSink, logger *slog.Logger, prevRouter *SiteRouter) (*planeState, error) {
+	state := &planeState{cfg: cfg, revision: rev}
 
 	acl, err := stages.NewACL(cfg, groups, logger)
 	if err != nil {
@@ -302,14 +307,16 @@ func penaltyPolicy(cfg *config.Config) config.PenaltySettings {
 }
 
 // Reload hot-swaps to a new configuration. On any build error the current
-// state is kept untouched and the error is returned.
-func (h *Handler) Reload(cfg *config.Config) error {
+// state is kept untouched and the error is returned. rev is the config-center
+// revision the configuration belongs to (0 = unknown); it is recorded in the
+// swapped-in state and surfaced via RunningRevision.
+func (h *Handler) Reload(cfg *config.Config, rev int64) error {
 	groups := h.ensureGroups(cfg)
 	var prevRouter *SiteRouter
 	if old := h.state.Load(); old != nil && old.router != nil {
 		prevRouter = old.router // enable incremental adoption of unchanged sites
 	}
-	state, err := buildState(cfg, groups, h.observer, h.logger, prevRouter)
+	state, err := buildState(cfg, rev, groups, h.observer, h.logger, prevRouter)
 	if err != nil {
 		metrics.Reloads.Inc("failed")
 		return err
@@ -321,8 +328,30 @@ func (h *Handler) Reload(cfg *config.Config) error {
 	}
 	metrics.Reloads.Inc("ok")
 	h.logger.Info("configuration reloaded",
-		"sites", len(cfg.Sites), "revision_sites_prev", len(old.cfg.Sites))
+		"sites", len(cfg.Sites), "revision", rev, "revision_sites_prev", len(old.cfg.Sites))
 	return nil
+}
+
+// SetRunningRevision stamps the boot state with the config-center revision it
+// was built from (all-in-one boot: the active revision at process start).
+// Reload-carried revisions supersede it on every later swap.
+func (h *Handler) SetRunningRevision(rev int64) {
+	if rev <= 0 {
+		return
+	}
+	st := h.state.Load()
+	if st == nil || st.revision == rev {
+		return
+	}
+	next := *st
+	next.revision = rev
+	h.state.Store(&next)
+}
+
+// RunningRevision returns the config-center revision the CURRENT data-plane
+// state was built from (0 = unknown, e.g. static mode).
+func (h *Handler) RunningRevision() int64 {
+	return h.state.Load().revision
 }
 
 // CurrentConfig returns the active configuration snapshot (for the API).
@@ -653,6 +682,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				ev.Reason = "disable rule hit: switched off " + stagesOff + " for site (applies to subsequent requests until republish)"
 			} else {
 				ev.Reason = "matched custom rule: " + name
+			}
+			h.audit.Write(h.newEvent(r, site, ev, "monitor", bodyBytes, rc))
+		}
+		// Geo engine-missing audit (allow path, same bypass pattern as
+		// matcher_rule above): the geo stage flags requests to a site whose
+		// config declares geo but the running engine has no mapping for it —
+		// the stale-engine signature of a failed hot-reload. The request is
+		// allowed (alerting only, no false positives); each fired flag leaves
+		// one non-blocking audit event so the silent fail-open cannot hide.
+		// The flag follows the stage's warn rate limit (one per domain per
+		// minute), so this cannot flood the audit store.
+		if _, missing := rc.Values["geo_engine_missing"]; missing {
+			ev := pipeline.Verdict{
+				Action: pipeline.ActionAllow,
+				Rule:   "geo/engine_missing",
+				Reason: "geo engine missing for a configured site: the running engine predates the configuration (check hot-reload failures); request allowed without geo evaluation",
 			}
 			h.audit.Write(h.newEvent(r, site, ev, "monitor", bodyBytes, rc))
 		}

@@ -143,7 +143,7 @@ func TestVariantEnginesCompilePerCategory(t *testing.T) {
 	s := &config.Site{Domains: []string{"variant5.local"}, WAF: &config.WAFSettings{}}
 	policy := &config.Policy{}
 	for _, cat := range config.WAFDetectionCategories {
-		if _, err := buildVariantWAF(s, policy, map[string]bool{cat: true}); err != nil {
+		if _, err := buildVariantWAF(s, policy, map[string]bool{cat: true}, nil); err != nil {
 			t.Fatalf("variant excluding %q must compile: %v", cat, err)
 		}
 	}
@@ -303,7 +303,7 @@ func variantKeys(sw *siteWAF) []string {
 // into exit-on-startup.
 func TestNewDegradesWhenVariantBuildFails(t *testing.T) {
 	orig := buildVariantWAFFn
-	buildVariantWAFFn = func(s *config.Site, p *config.Policy, ex map[string]bool) (coraza.WAF, error) {
+	buildVariantWAFFn = func(s *config.Site, p *config.Policy, ex map[string]bool, logger *slog.Logger) (coraza.WAF, error) {
 		return nil, fmt.Errorf("simulated variant build failure")
 	}
 	defer func() { buildVariantWAFFn = orig }()

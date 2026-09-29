@@ -97,11 +97,15 @@ type CaptchaSettings struct {
 	Tolerance  int    `json:"tolerance,omitempty"`   // accepted drag offset in px, default 8
 }
 
-// GeoSettings configures GeoIP country access control using a MaxMind
-// mmdb database (user-supplied file, e.g. GeoLite2-Country.mmdb).
+// GeoSettings configures GeoIP country access control. db_path empty uses
+// the embedded DB-IP Country Lite country database (built in, works out of
+// the box); a non-empty path points at a user-supplied mmdb (e.g.
+// GeoLite2-Country.mmdb) that must exist — a missing/unreadable file fails
+// the build (fail-static, publish reports the reason), never a silent
+// fallback.
 type GeoSettings struct {
 	Enabled          bool     `json:"enabled"`
-	DBPath           string   `json:"db_path"`             // path to the .mmdb file
+	DBPath           string   `json:"db_path"`             // path to the .mmdb file; empty = embedded DB-IP Country Lite
 	Blacklist        []string `json:"blacklist,omitempty"` // ISO 3166-1 alpha-2 codes
 	Whitelist        []string `json:"whitelist,omitempty"`
 	WhitelistTrusted bool     `json:"whitelist_trusted,omitempty"` // whitelist hit skips later stages

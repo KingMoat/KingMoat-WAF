@@ -47,7 +47,7 @@ func TestReloadHotSwap(t *testing.T) {
 	}
 
 	// Hot-swap to a rate-limited config: second request must be throttled.
-	if err := h.Reload(reloadTestCfg(addr, true)); err != nil {
+	if err := h.Reload(reloadTestCfg(addr, true), 2); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
 	rec2 := httptest.NewRecorder()
@@ -64,7 +64,7 @@ func TestReloadHotSwap(t *testing.T) {
 	// Failed reload must keep the current state intact.
 	bad := reloadTestCfg(addr, true)
 	bad.Sites[0].Security.ACL = &config.ACLSettings{Blacklist: []string{"not-a-cidr"}}
-	if err := h.Reload(bad); err == nil {
+	if err := h.Reload(bad, 3); err == nil {
 		t.Fatal("invalid config must fail the reload")
 	}
 	rec4 := httptest.NewRecorder()
@@ -91,6 +91,43 @@ func BenchmarkProxyForward(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
+	}
+}
+
+// TestRunningRevisionTracking: the running revision follows successful
+// reloads (Reload-carried and boot-stamped) and stays pinned to the live
+// state when a reload fails (fail-static).
+func TestRunningRevisionTracking(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "ok")
+	}))
+	defer up.Close()
+
+	h, err := NewReloadable(reloadTestCfg(strings.TrimPrefix(up.URL, "http://"), false), nil, testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := h.RunningRevision(); got != 0 {
+		t.Fatalf("boot revision = %d, want 0 (unknown until stamped)", got)
+	}
+	h.SetRunningRevision(1)
+	if got := h.RunningRevision(); got != 1 {
+		t.Fatalf("stamped revision = %d, want 1", got)
+	}
+	if err := h.Reload(reloadTestCfg(strings.TrimPrefix(up.URL, "http://"), true), 7); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if got := h.RunningRevision(); got != 7 {
+		t.Fatalf("revision after reload = %d, want 7", got)
+	}
+	// Failed reload: state (and its revision) stay untouched.
+	bad := reloadTestCfg(strings.TrimPrefix(up.URL, "http://"), true)
+	bad.Sites[0].Security.ACL = &config.ACLSettings{Blacklist: []string{"not-a-cidr"}}
+	if err := h.Reload(bad, 8); err == nil {
+		t.Fatal("invalid config must fail the reload")
+	}
+	if got := h.RunningRevision(); got != 7 {
+		t.Fatalf("revision after failed reload = %d, want 7 (fail-static)", got)
 	}
 }
 

@@ -452,7 +452,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { api, can, del, post } from '../api'
+import { api, applyNotice, can, del, post } from '../api'
 
 const router = useRouter()
 
@@ -792,23 +792,7 @@ async function delGroup(name) {
 
 // ---- 按 tab 粒度的保存函数：读全量 config → 只改本块字段 → publish，
 // spread 保留其余块字段，未展示块字段不丢 ----
-// 发布响应的 apply 状态三态：applied = 引擎已加载；failed = 配置已保存
-// （修订落库）但引擎加载失败（fail-static，旧配置继续生效），需醒目提示
-// 避免"显示成功实际未生效"；pending = 引擎应用结果待确认（无订阅者或等待
-// 超时），不能宣称"已热生效"。返回是否可按成功处理。
-function applyNotice(r, okMsg) {
-  const st = r.apply && r.apply.status
-  if (st === 'failed') {
-    ElMessage.warning('配置已保存（版本 ' + r.revision + '）但引擎加载失败，旧配置继续生效：' + (r.apply.error || '未知原因'))
-    return false
-  }
-  if (st === 'pending') {
-    ElMessage.info('配置已保存（版本 ' + r.revision + '），引擎应用结果待确认，可在发布记录中核对')
-    return false
-  }
-  ElMessage.success(okMsg)
-  return true
-}
+// apply 三态提示已抽为共享 applyNotice（../api），各发布入口统一使用
 
 async function publish(cfg, note) {
   const r = await post('/api/config/publish', { note, config: cfg })

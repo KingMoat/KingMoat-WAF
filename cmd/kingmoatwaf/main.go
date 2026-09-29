@@ -125,8 +125,9 @@ func main() {
 	// Retention/archive settings snapshot the effective config at boot;
 	// hot reloads do not recreate the store (restart to apply).
 	activeCfg := seed
+	bootRev := int64(0)
 	if center != nil {
-		_, activeCfg = center.Current()
+		bootRev, activeCfg = center.Current()
 	}
 
 	auditStore, err := logstore.NewSQLiteStore(filepath.Join(auditDir, "audit.db"), logger)
@@ -389,6 +390,10 @@ func main() {
 		logger.Error("build data plane failed", "err", err)
 		os.Exit(1)
 	}
+	// The boot state was built from the active revision; stamp it so
+	// /api/status can compare engine vs. config-center revisions from the
+	// first request on (0 would read as a permanent mismatch).
+	handler.SetRunningRevision(bootRev)
 	if accessSink != nil {
 		handler.SetAccessSink(accessSink)
 	}
@@ -446,26 +451,29 @@ func main() {
 				select {
 				case <-ctx.Done():
 					return
-				case rev := <-ch:
-					_, cfg := center.Current()
-					applyErr := handler.Reload(cfg)
-					center.SetApplyStatus(rev, applyErr) // surface reload outcome to publish callers
+				case ev := <-ch:
+					// Apply the snapshot that belongs to THIS event's revision:
+					// center.Current() may already be a newer revision when a
+					// burst of publishes queues up, which would mispair the
+					// reload result reported for ev.Rev.
+					applyErr := handler.Reload(ev.Config, ev.Rev)
+					center.SetApplyStatus(ev.Rev, applyErr) // surface reload outcome to publish callers
 					if applyErr != nil {
-						logger.Error("hot reload failed, keeping previous config", "revision", rev, "err", applyErr)
+						logger.Error("hot reload failed, keeping previous config", "revision", ev.Rev, "err", applyErr)
 					} else {
-						logger.Info("hot reload applied", "revision", rev)
-						rebuildACME(cfg) // ACME sites hot-apply on publish
+						logger.Info("hot reload applied", "revision", ev.Rev)
+						rebuildACME(ev.Config) // ACME sites hot-apply on publish
 					}
 					if aiBuilder != nil {
-						aiBuilder(cfg) // ai toggle hot-applies (close+rebuild)
+						aiBuilder(ev.Config) // ai toggle hot-applies (close+rebuild)
 					}
 					telMu.Lock()
 					bt := buildTelemetry
 					telMu.Unlock()
 					if bt != nil {
-						bt(cfg) // telemetry switch hot-applies
+						bt(ev.Config) // telemetry switch hot-applies
 					}
-					buildEngines(cfg) // alerts + risks toggle hot-applies
+					buildEngines(ev.Config) // alerts + risks toggle hot-applies
 				}
 			}
 		}()
@@ -636,6 +644,7 @@ func main() {
 			PProf:          os.Getenv("KINGMOAT_PPROF") != "", // /debug/pprof behind console auth
 			GroupsFn:       func() *ipgroups.Manager { return handler.Groups() },
 			DisableStateFn: func() *stages.StageDisableRegistry { return handler.DisableState() },
+			RunningRevisionFn: func() int64 { return handler.RunningRevision() },
 			GeoDBFn:        geoDBPath(center),
 		})
 		mux.Handle("/", apiSrv.Handler())

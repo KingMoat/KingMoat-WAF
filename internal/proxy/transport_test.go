@@ -104,7 +104,7 @@ func TestReloadClosesIdleUpstreamConnections(t *testing.T) {
 		t.Fatalf("pre-reload status = %d", rec.Code)
 	}
 
-	if err := h.Reload(reloadTestCfg(addr, true)); err != nil {
+	if err := h.Reload(reloadTestCfg(addr, true), 2); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
 

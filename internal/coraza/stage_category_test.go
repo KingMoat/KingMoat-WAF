@@ -228,15 +228,15 @@ func TestBuildWAFCompilesWithExcludedCategories(t *testing.T) {
 		Domains: []string{"cats-test.local"},
 		WAF:     &config.WAFSettings{Categories: []string{"xss"}},
 	}
-	if _, err := buildWAF(s, &config.Policy{}); err != nil {
+	if _, err := buildWAF(s, &config.Policy{}, nil); err != nil {
 		t.Fatalf("buildWAF with excluded categories must compile: %v", err)
 	}
 	s.WAF = &config.WAFSettings{Categories: []string{}}
-	if _, err := buildWAF(s, &config.Policy{}); err != nil {
+	if _, err := buildWAF(s, &config.Policy{}, nil); err != nil {
 		t.Fatalf("buildWAF with all categories disabled must compile: %v", err)
 	}
 	s.WAF = nil
-	if _, err := buildWAF(s, &config.Policy{}); err != nil {
+	if _, err := buildWAF(s, &config.Policy{}, nil); err != nil {
 		t.Fatalf("buildWAF default (all categories) must compile: %v", err)
 	}
 }
@@ -259,7 +259,7 @@ func TestBuildWAFEachCategoryExcludedCompiles(t *testing.T) {
 			Domains: []string{"each-cat-test.local"},
 			WAF:     &config.WAFSettings{Categories: cats},
 		}
-		if _, err := buildWAF(s, &config.Policy{}); err != nil {
+		if _, err := buildWAF(s, &config.Policy{}, nil); err != nil {
 			t.Fatalf("buildWAF with category %q excluded must compile: %v", excluded, err)
 		}
 	}

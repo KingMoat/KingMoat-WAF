@@ -1090,7 +1090,12 @@ func (c *Config) validateSite(i int, s *Site, groups map[string]bool) error {
 				return fmt.Errorf("config: sites[%d].waf.body_over_limit must be \"bypass\", \"reject\" or \"stream\", got %q", i, s.WAF.BodyOverLimit)
 			}
 			if s.WAF.CustomRulesFile != "" {
-				if _, err := os.Stat(s.WAF.CustomRulesFile); err != nil {
+				// Compat: a pre-rename data-directory path is validated at its
+				// remapped location when the file exists there, so a migration
+				// straggler is not rejected before the data plane ever gets to
+				// resolve it (logger nil: the warn belongs to the actual read).
+				p := ResolveLegacyDataPath(s.WAF.CustomRulesFile, nil)
+				if _, err := os.Stat(p); err != nil {
 					return fmt.Errorf("config: sites[%d].waf.custom_rules_file: %w", i, err)
 				}
 			}

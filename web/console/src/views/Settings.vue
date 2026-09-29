@@ -659,7 +659,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { api, can, del, post, role } from '../api'
+import { api, applyNotice, can, del, post, role } from '../api'
 import { parseListenAddr } from '../listen'
 
 const tabs = [
@@ -1385,7 +1385,7 @@ async function save() {
   }
   try {
     const r = await post('/api/config/publish', { note: 'settings update', config: cfg })
-    ElMessage.success('已发布并热生效（版本 ' + r.revision + '）')
+    applyNotice(r, '已发布并热生效（版本 ' + r.revision + '）')
     load()
   } catch (e) {
     ElMessage.error('发布失败：' + e.message)

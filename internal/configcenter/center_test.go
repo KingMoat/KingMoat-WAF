@@ -60,8 +60,8 @@ func TestOpenSeedPublishSubscribe(t *testing.T) {
 	}
 	select {
 	case got := <-ch:
-		if got != 2 {
-			t.Fatalf("subscriber got rev %d", got)
+		if got.Rev != 2 || len(got.Config.Sites) != 2 {
+			t.Fatalf("subscriber got rev %d sites %d", got.Rev, len(got.Config.Sites))
 		}
 	case <-time.After(time.Second):
 		t.Fatal("subscriber not notified")

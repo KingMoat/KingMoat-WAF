@@ -125,12 +125,14 @@ HMAC 签名通行 Cookie。校验端点固定为 `/.well-known/km-captcha/verify
 | 字段 | 类型 | 默认 | 说明 |
 |---|---|---|---|
 | `enabled` | bool | `false` | |
-| `db_path` | string | 必填 | MaxMind mmdb 文件路径（自备，如 GeoLite2-Country.mmdb） |
+| `db_path` | string | `""` | MaxMind mmdb 文件路径。留空使用内置 DB-IP Country Lite 国家库（随版本内置，开箱即用）；填写路径则使用自备 mmdb（如 GeoLite2-Country.mmdb），文件不存在或不可读时配置构建直接失败（fail-static，发布报错），不会静默降级 |
 | `blacklist` | string[] | `[]` | ISO 3166-1 alpha-2 国家码，如 `["KP","RU"]` |
 | `whitelist` | string[] | `[]` | 白名单模式：仅列出的国家放行 |
 | `whitelist_trusted` | bool | `false` | 白名单命中是否同时跳过后续所有检测 |
 
 `blacklist` 与 `whitelist` 二选一使用（同时配置时 whitelist 优先）。
+
+行为说明：geo 先于自定义规则与 CRS 执行；国家查询失败（如库中无该 IP 记录）时放行该请求。站点声明启用 geo 但运行引擎缺失对应映射（如热重载失败保留旧引擎）时，数据面限频输出 Warn 日志（每站点每分钟最多 1 条，`geo: configured but engine missing - check hot-reload failures`），请求仍放行、不会误拦。
 
 ## auth（AuthSettings，站点身份认证）
 

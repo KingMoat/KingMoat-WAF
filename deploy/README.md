@@ -302,7 +302,7 @@ sqlite3 /var/lib/kingmoatwaf/kingmoat.db ".backup '/backup/kingmoatwaf-online.db
 **v0.7.9 → v0.7.10 命名迁移（存量实例必读）**：自 v0.7.10 起二进制 `kingmoat` 更名为 `kingmoatwaf`、管理工具 `kingmoat-cli` 更名为 `kmwafctl`，服务名与安装布局同步更名（`kingmoatwaf.service`、`/opt/kingmoatwaf`、`/var/lib/kingmoatwaf`、`/etc/kingmoatwaf`、安装记录 `/etc/kingmoatwaf-install.conf`）。两件事必须知道：
 
 1. **v0.7.9 及更早实例的控制台在线升级会失败**：在线升级按 Release 附件名匹配下载，新版本附件已更名为 `kingmoatwaf_v<版本>_<os>_<arch>`，v0.7.9 的在线升级模块找不到新附件。存量实例升级到 v0.7.10 请**重跑一键部署脚本**（推荐，自动完成迁移）或手动替换二进制；自 v0.7.10 起在线升级恢复正常互升。
-2. **重跑 install.sh 自动迁移**：脚本检测到旧安装（`/etc/kingmoat-install.conf`、`kingmoat.service`、`/opt/kingmoat`、`/var/lib/kingmoat`）后自动完成——停旧服务并卸载旧 unit → 旧数据目录 `cp -a` 复制到新位置并做文件数/字节双重校验（复制阶段旧安装完好，失败/中断后可随时手动重启旧服务回退）→ **无条件清除数据目录 `upgrade/intent.json`**（防止迁移后被自愈机制误判为「升级失败」而自动回滚到旧二进制）→ 部署新布局并启动验证；新服务确认运行后，旧数据目录/旧安装目录/旧安装记录一律**改名留存**（`*.migrated-<时间戳>`），全程不物理删除任何数据。注意：手动安装布局下 `/etc/kingmoat/env` 的 `KINGMOAT_ADMIN_HASH` 不会自动带入（该 env 属旧 unit），迁移后如需固定口令请按 3.2 重新写入 `/etc/kingmoatwaf/env`。
+2. **重跑 install.sh 自动迁移**：脚本检测到旧安装（`/etc/kingmoat-install.conf`、`kingmoat.service`、`/opt/kingmoat`、`/var/lib/kingmoat`）后自动完成——停旧服务并卸载旧 unit → 旧数据目录 `cp -a` 复制到新位置并做文件数/字节双重校验（复制阶段旧安装完好，失败/中断后可随时手动重启旧服务回退）→ **无条件清除数据目录 `upgrade/intent.json`**（防止迁移后被自愈机制误判为「升级失败」而自动回滚到旧二进制）→ **改写数据目录内 `config.json` 与控制台配置库 `kingmoat.db` 历史发布中残留的旧数据目录绝对路径**（站点证书、自定义规则、GeoIP 库等文件路径，防止迁移后控制台发布因旧路径失败；DB 缺失或无 revisions 表时跳过，sqlite3 与 python3 皆缺时打印手动修复命令）→ 部署新布局并启动验证；新服务确认运行后，旧数据目录/旧安装目录/旧安装记录一律**改名留存**（`*.migrated-<时间戳>`），全程不物理删除任何数据。注意：手动安装布局下 `/etc/kingmoat/env` 的 `KINGMOAT_ADMIN_HASH` 不会自动带入（该 env 属旧 unit），迁移后如需固定口令请按 3.2 重新写入 `/etc/kingmoatwaf/env`。
 
 ```bash
 # 1. backup first (see 6.1)

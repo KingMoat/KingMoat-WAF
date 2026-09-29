@@ -770,6 +770,14 @@ migrate_legacy_data() {
             log "rewrote legacy $OLD_DATA_DIR/ paths in $DATA_DIR/config.json"
         fi
     fi
+    # Same rewrite for the console config DB (kingmoat.db): the live config
+    # lives in its `revisions` table and legacy revisions may still point
+    # tls_cert/tls_key/custom-rule/GeoIP paths at $OLD_DATA_DIR, which makes
+    # every console publish fail after the migration ("read tls_cert: open
+    # /var/lib/kingmoat/..."). Runs in the same stopped-service window.
+    if [[ -n "$OLD_DATA_DIR" && "$OLD_DATA_DIR" != "$DATA_DIR" && -f "$DATA_DIR/kingmoat.db" ]]; then
+        rewrite_legacy_db_paths "$DATA_DIR/kingmoat.db" "$OLD_DATA_DIR" "$DATA_DIR"
+    fi
     # Manual-install layout keeps the seed config under /etc/kingmoat; the
     # install.sh layout keeps it in the data dir - carry it over when the
     # migrated data dir has none. The legacy /etc/kingmoat/env is NOT
@@ -779,6 +787,116 @@ migrate_legacy_data() {
         cp -a /etc/kingmoat/config.json "$DATA_DIR/config.json"
         log "carried legacy /etc/kingmoat/config.json into $DATA_DIR/config.json"
     fi
+}
+
+# ---------------------------------------------------------------------------
+# Legacy console-DB path rewrite (upgrade migration helper)
+# ---------------------------------------------------------------------------
+# The live configuration is stored as JSON in the `revisions` table of the
+# console config DB (kingmoat.db). Legacy revisions may reference site
+# certificates, custom rule files or the GeoIP db under the OLD data dir;
+# after the layout migration those files only exist under the new dir, so
+# every console publish fails with "read tls_cert: open /var/lib/kingmoat/
+# ..." until the rows are fixed. The rewrite runs inside the same
+# stopped-service window as the config.json rewrite (legacy service down,
+# new service not started yet) and applies the same trailing-slash-safe
+# replacement ("kingmoat/" never matches inside "kingmoatwaf/", so already
+# rewritten paths are untouched and re-runs are no-ops). Only "/" and plain
+# letters are ever swapped, so the JSON stays valid without any escaping.
+# A pending WAL is checkpointed before and after so the rewrite lands in
+# the main DB file. It never aborts the install: a missing DB, a missing
+# revisions table or missing tools degrade to a logged skip, or to a
+# printed manual fix command marked "migration NOT completed".
+_rewrite_db_paths_sqlite3() {
+    local db="$1" old_dir="$2" new_dir="$3"
+    sqlite3 -batch "$db" "PRAGMA wal_checkpoint(TRUNCATE);" &>/dev/null || true
+    local has_revisions
+    if ! has_revisions=$(sqlite3 -batch "$db" "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='revisions';"); then
+        warn "cannot inspect $db with sqlite3 - legacy path rewrite skipped"
+        return 1
+    fi
+    if [[ "$has_revisions" != "1" ]]; then
+        log "$db has no revisions table - nothing to rewrite"
+        return 0
+    fi
+    local changed
+    if ! changed=$(sqlite3 -batch "$db" "UPDATE revisions SET config = replace(config, '${old_dir}/', '${new_dir}/') WHERE instr(config, '${old_dir}/') > 0; SELECT changes();"); then
+        return 1
+    fi
+    sqlite3 -batch "$db" "PRAGMA wal_checkpoint(TRUNCATE);" &>/dev/null || true
+    if [[ "$changed" =~ ^[0-9]+$ && "$changed" -gt 0 ]]; then
+        log "rewrote legacy $old_dir/ paths in $db (revisions updated: $changed)"
+    else
+        log "no legacy $old_dir/ paths in $db revisions - nothing to rewrite"
+    fi
+    return 0
+}
+
+_rewrite_db_paths_python3() {
+    local db="$1" old_dir="$2" new_dir="$3"
+    local py_out
+    if py_out=$(python3 - "$db" "$old_dir" "$new_dir" <<'PYEOF'
+import sqlite3
+import sys
+
+db, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
+prefix = old + "/"
+con = sqlite3.connect(db)
+try:
+    cur = con.cursor()
+    cur.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    if cur.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='revisions'").fetchone()[0] == 0:
+        print("no revisions table in %s - nothing to rewrite" % db)
+        sys.exit(0)
+    cur.execute(
+        "UPDATE revisions SET config = replace(config, ?, ?) WHERE instr(config, ?) > 0",
+        (prefix, new + "/", prefix),
+    )
+    rows = cur.rowcount
+    con.commit()
+    cur.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    if rows > 0:
+        print("rewrote legacy %s paths in %s (revisions updated: %d)" % (prefix, db, rows))
+    else:
+        print("no legacy %s paths in %s revisions - nothing to rewrite" % (prefix, db))
+finally:
+    con.close()
+PYEOF
+); then
+        while IFS= read -r _pyline; do log "$_pyline"; done <<< "$py_out"
+        return 0
+    fi
+    return 1
+}
+
+rewrite_legacy_db_paths() {
+    local db="$1" old_dir="$2" new_dir="$3"
+    if [[ ! -f "$db" ]]; then
+        log "no console config DB at $db - skipping legacy path rewrite"
+        return 0
+    fi
+    case "$old_dir$new_dir" in
+        *"'"*)
+            warn "data dir path contains a single quote - not rewriting $db automatically"
+            return 0
+            ;;
+    esac
+    local manual_hint="sqlite3 \"$db\" \"UPDATE revisions SET config = replace(config, '$old_dir/', '$new_dir/') WHERE instr(config, '$old_dir/') > 0;\""
+    if command -v sqlite3 &>/dev/null; then
+        if ! _rewrite_db_paths_sqlite3 "$db" "$old_dir" "$new_dir"; then
+            warn "sqlite3 rewrite of $db FAILED - migration NOT completed automatically; fix manually if console publishes fail:"
+            warn "  $manual_hint"
+        fi
+    elif command -v python3 &>/dev/null; then
+        if ! _rewrite_db_paths_python3 "$db" "$old_dir" "$new_dir"; then
+            warn "python3 rewrite of $db FAILED - migration NOT completed automatically; fix manually if console publishes fail:"
+            warn "  $manual_hint"
+        fi
+    else
+        warn "neither sqlite3 nor python3 available - console DB $db migration NOT completed automatically; run manually if console publishes fail:"
+        warn "  $manual_hint"
+    fi
+    return 0
 }
 
 # Tear down the legacy layout AFTER the new service is verified running.

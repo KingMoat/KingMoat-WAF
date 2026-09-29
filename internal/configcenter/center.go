@@ -29,11 +29,18 @@ type Center struct {
 	mu   sync.RWMutex
 	rev  int64
 	cfg  *config.Config
-	subs map[chan int64]struct{}
+	subs map[chan RevEvent]struct{}
 
 	// lastApply carries the data-plane outcome of the most recent revision
 	// (written by the hot-reload consumer via SetApplyStatus).
 	lastApply atomic.Value
+
+	// applyResults carries the per-revision apply outcomes so a waiter for
+	// revision N can never read the result of revision N+1 (the old single
+	// ">= rev" check let a newer result stand in for an older failure).
+	// Bounded: entries far below the newest result are pruned on insert.
+	applyMu      sync.Mutex
+	applyResults map[int64]ApplyStatus
 }
 
 // DBPath returns the SQLite database file path (for sibling data dirs).
@@ -49,7 +56,7 @@ func Open(dbPath string, seed *config.Config, logger *slog.Logger) (*Center, err
 	if err != nil {
 		return nil, err
 	}
-	c := &Center{store: st, dbPath: dbPath, logger: logger, subs: make(map[chan int64]struct{})}
+	c := &Center{store: st, dbPath: dbPath, logger: logger, subs: make(map[chan RevEvent]struct{})}
 
 	rev, raw, err := st.CurrentRevision()
 	if err == nil {
@@ -152,7 +159,7 @@ func (c *Center) publishInternal(next *config.Config, author, note string, allow
 	c.cfg = next
 	for ch := range c.subs {
 		select {
-		case ch <- rev:
+		case ch <- RevEvent{Rev: rev, Config: next}:
 		default: // subscriber slow: it will pick the revision up on next read
 		}
 	}
@@ -207,9 +214,20 @@ func (c *Center) PublishSite(domain string, site config.Site, author, note strin
 	return c.Publish(&next, author, note)
 }
 
-// Subscribe returns a channel receiving new revision ids, plus a cancel func.
-func (c *Center) Subscribe() (<-chan int64, func()) {
-	ch := make(chan int64, 8)
+// RevEvent is one published revision with the configuration snapshot that
+// belongs to it. Consumers must apply event.Config (not the center's current
+// config): by the time a slow consumer handles revision N, a newer revision
+// may already be active, and applying Current() would mispair the reload
+// result reported for N.
+type RevEvent struct {
+	Rev    int64
+	Config *config.Config
+}
+
+// Subscribe returns a channel receiving published revision events (revision
+// id + its config snapshot), plus a cancel func.
+func (c *Center) Subscribe() (<-chan RevEvent, func()) {
+	ch := make(chan RevEvent, 8)
 	c.mu.Lock()
 	c.subs[ch] = struct{}{}
 	c.mu.Unlock()
@@ -251,6 +269,21 @@ func (c *Center) SetApplyStatus(rev int64, applyErr error) {
 		st.Error = applyErr.Error()
 	}
 	c.lastApply.Store(st)
+	c.applyMu.Lock()
+	if c.applyResults == nil {
+		c.applyResults = make(map[int64]ApplyStatus)
+	}
+	c.applyResults[rev] = st
+	for len(c.applyResults) > applyHistoryLimit {
+		minRev := int64(0)
+		for r := range c.applyResults {
+			if minRev == 0 || r < minRev {
+				minRev = r
+			}
+		}
+		delete(c.applyResults, minRev)
+	}
+	c.applyMu.Unlock()
 }
 
 // ApplyStatus returns the most recent data-plane apply outcome (zero value =
@@ -262,10 +295,24 @@ func (c *Center) ApplyStatus() ApplyStatus {
 	return ApplyStatus{}
 }
 
+// ApplyStatusFor returns the recorded apply outcome for exactly rev; ok is
+// false when no consumer has reported that revision yet.
+func (c *Center) ApplyStatusFor(rev int64) (ApplyStatus, bool) {
+	c.applyMu.Lock()
+	defer c.applyMu.Unlock()
+	st, ok := c.applyResults[rev]
+	return st, ok
+}
+
+// applyHistoryLimit bounds the per-revision apply-result registry (status
+// queries only ever need recent revisions).
+const applyHistoryLimit = 64
+
 // WaitForApply blocks until a consumer reports the apply outcome for rev, or
 // the timeout elapses ("pending"). Returns immediately when there are no
-// in-process subscribers (remote mode, API-level tests). A newer revision's
-// outcome already stored is treated as a completed apply of this one.
+// in-process subscribers (remote mode, API-level tests). Matching is exact:
+// only rev's own outcome settles the wait, never a newer revision's (a newer
+// "applied" must not mask this revision's failure and vice versa).
 func (c *Center) WaitForApply(rev int64, timeout time.Duration) ApplyStatus {
 	c.mu.RLock()
 	n := len(c.subs)
@@ -275,12 +322,29 @@ func (c *Center) WaitForApply(rev int64, timeout time.Duration) ApplyStatus {
 	}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if st := c.ApplyStatus(); st.Revision >= rev {
+		if st, ok := c.ApplyStatusFor(rev); ok {
 			return st
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	return ApplyStatus{Revision: rev, Status: "pending"}
+}
+
+// RevConfig returns the configuration snapshot stored for rev (read from the
+// revision store; the active revision falls back to the in-memory copy).
+func (c *Center) RevConfig(rev int64) (*config.Config, error) {
+	raw, err := c.store.GetRevision(rev)
+	if err == nil {
+		var cfg config.Config
+		if uerr := json.Unmarshal([]byte(raw), &cfg); uerr != nil {
+			return nil, fmt.Errorf("configcenter: decode revision %d: %w", rev, uerr)
+		}
+		return &cfg, nil
+	}
+	if curRev, curCfg := c.Current(); curRev == rev && curCfg != nil {
+		return curCfg, nil
+	}
+	return nil, fmt.Errorf("configcenter: revision %d not found", rev)
 }
 
 // Store exposes the underlying store (read-only usage by the API layer).

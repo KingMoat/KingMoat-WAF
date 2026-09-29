@@ -88,6 +88,12 @@
         <div class="spacer"></div>
       </el-header>
       <el-main class="km-main">
+        <el-alert v-if="revMismatch" class="km-rev-alert" type="error" :closable="false" show-icon>
+          <template #title>
+            <span>配置已更新但引擎未应用，最新发布结果：{{ applyText }}</span>
+            <el-button v-if="can('operator')" size="small" type="danger" plain class="km-rev-alert-btn" @click="$router.push('/sites')">查看发布记录</el-button>
+          </template>
+        </el-alert>
         <router-view />
       </el-main>
     </el-container>
@@ -119,6 +125,11 @@ const aiDrawer = ref(false)
 const account = ref(false)
 const isDark = ref(getTheme() === 'dark')
 const badge = reactive({ blocked: 0, risks: 0 })
+// 引擎运行 revision vs 配置库最新 revision（T-03）：两者都存在且不一致时
+// 全局红色告警条；旧后端无字段/拉取失败时保持 null，告警条静默隐藏
+const applyInfo = reactive({ latest: null, running: null, error: '', status: '' })
+const revMismatch = computed(() => applyInfo.latest !== null && applyInfo.running !== null && applyInfo.latest !== applyInfo.running)
+const applyText = computed(() => applyInfo.error || applyInfo.status || '')
 let badgeTimer = null
 
 const route = useRoute()
@@ -178,12 +189,22 @@ function onFabClick() {
 
 async function loadBadge() {
   try {
-    const [st, risks] = await Promise.all([
+    const [st, risks, status] = await Promise.all([
       api('/api/stats'),
       api('/api/risks').catch(() => null),
+      api('/api/status').catch(() => null),
     ])
     badge.blocked = st.blocked_today || 0
     badge.risks = Array.isArray(risks) ? risks.filter(r => !r.status || r.status === 'open' || r.status === 'pending').length : 0
+    if (status && status.latest_revision != null && status.running_revision != null) {
+      applyInfo.latest = status.latest_revision
+      applyInfo.running = status.running_revision
+      applyInfo.error = (status.apply && status.apply.error) || ''
+      applyInfo.status = (status.apply && status.apply.status) || ''
+    } else {
+      applyInfo.latest = null
+      applyInfo.running = null
+    }
   } catch (e) { /* silent: badge is cosmetic */ }
 }
 function onToggleTheme() {
@@ -205,3 +226,8 @@ onMounted(() => {
 })
 onBeforeUnmount(() => { if (badgeTimer) clearInterval(badgeTimer) })
 </script>
+
+<style scoped>
+.km-rev-alert { margin-bottom: 14px; }
+.km-rev-alert-btn { margin-left: 12px; }
+</style>

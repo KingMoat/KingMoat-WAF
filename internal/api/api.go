@@ -292,6 +292,11 @@ type Options struct {
 	// registry for GET /api/policy/disable-state (nil = endpoint reports an
 	// empty state, e.g. static assemblies without a reloadable plane).
 	DisableStateFn func() *stages.StageDisableRegistry
+	// RunningRevisionFn returns the config-center revision the data plane is
+	// currently running (nil/0 = unknown, e.g. static assemblies without a
+	// reloadable plane; the status endpoint then reports running = latest so
+	// no false divergence warning is shown).
+	RunningRevisionFn func() int64
 	// ACME hosts the certificate-library issuance queue (async ACME
 	// requests, status queries, cert-library entries; nil = the
 	// /api/certs/acme/* endpoints report "not available").
@@ -907,15 +912,27 @@ func (s *Server) handleACMEEntries(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.opts.ACME.Entries())
 }
 
-// handleStatus returns build/runtime info.
+// handleStatus returns build/runtime info. running_revision is what the data
+// plane actually serves; latest_revision is the config store head. When they
+// diverge (fail-static kept the previous engine after a failed publish) the
+// console shows a persistent warning banner fed by the apply field.
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	rev, cfg := s.opts.Center.Current()
+	running := rev
+	if s.opts.RunningRevisionFn != nil {
+		if v := s.opts.RunningRevisionFn(); v > 0 {
+			running = v
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"version":  s.opts.Version,
-		"revision": rev,
-		"sites":    len(cfg.Sites),
-		"time":     time.Now().UTC().Format(time.RFC3339),
-		"engine":   engineVersions(),
+		"version":          s.opts.Version,
+		"revision":         rev,
+		"latest_revision":  rev,
+		"running_revision": running,
+		"apply":            s.opts.Center.ApplyStatus(),
+		"sites":            len(cfg.Sites),
+		"time":             time.Now().UTC().Format(time.RFC3339),
+		"engine":           engineVersions(),
 	})
 }
 
@@ -1005,6 +1022,11 @@ type publishRequest struct {
 	Config config.Config `json:"config"`
 }
 
+// publishApplyWait bounds how long a publish request synchronously waits for
+// the data plane to report the apply outcome for its revision. Overridable in
+// tests (slow-consumer / timeout cases).
+var publishApplyWait = 10 * time.Second
+
 // handlePublish validates and publishes a new configuration revision.
 func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	if !s.requireRole(w, r, store.RoleOperator) {
@@ -1030,13 +1052,16 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	// Wait briefly for the data plane to report the reload outcome so the
-	// console can surface "saved but engine load failed" (fail-static kept
-	// the previous engine). pending = no in-plane consumer or slow reload.
-	apply := s.opts.Center.WaitForApply(rev, 5*time.Second)
+	// Synchronously wait (bounded) for THIS revision's real apply outcome so
+	// the console never reports "applied" for a config the engine failed to
+	// load (fail-static keeps the old engine). applied = engine running the
+	// new config; failed = revision stored but engine kept the old one (error
+	// carries the cause); pending = slow/unknown, the frontend keeps polling
+	// /api/status until the running revision catches up.
+	apply := s.opts.Center.WaitForApply(rev, publishApplyWait)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"revision": rev,
-		"apply": map[string]any{"revision": apply.Revision, "status": apply.Status, "error": apply.Error},
+		"apply":    map[string]any{"revision": apply.Revision, "status": apply.Status, "error": apply.Error},
 	})
 }
 
@@ -1079,7 +1104,12 @@ func (s *Server) handleSitePublish(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"revision": rev, "domain": strings.ToLower(strings.TrimSpace(req.Domain))})
+	apply := s.opts.Center.WaitForApply(rev, publishApplyWait)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"revision": rev,
+		"domain":   strings.ToLower(strings.TrimSpace(req.Domain)),
+		"apply":    map[string]any{"revision": apply.Revision, "status": apply.Status, "error": apply.Error},
+	})
 }
 
 func firstSiteDomain(s *config.Site) string {
@@ -1118,7 +1148,12 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"revision": rev, "rolled_back_to": id})
+	apply := s.opts.Center.WaitForApply(rev, publishApplyWait)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"revision":       rev,
+		"rolled_back_to": id,
+		"apply":          map[string]any{"revision": apply.Revision, "status": apply.Status, "error": apply.Error},
+	})
 }
 
 // handleLogs returns audit events: newest-first recent feed by default, or

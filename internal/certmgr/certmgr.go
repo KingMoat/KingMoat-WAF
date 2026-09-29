@@ -20,6 +20,7 @@ import (
 	"golang.org/x/crypto/acme/autocert"
 
 	"github.com/kingmoat/kingmoat/internal/config"
+	"github.com/kingmoat/kingmoat/internal/naming"
 )
 
 // Info describes one site's certificate state (for /api/certificates).
@@ -92,6 +93,9 @@ func InspectFile(site, domain, certPath string) Info {
 
 // InspectSites builds the certificate inventory for a configuration. Each
 // entry carries the list of sites sharing the same certificate material.
+// Paths are compared in normalized form (internal/naming.NormalizePath), so
+// the pre-migration and post-migration spellings of the same file still
+// group together after the v0.7.10 data-directory rename.
 func InspectSites(cfg *config.Config) []Info {
 	out := []Info{}
 	// Group sites by tls_cert / tls_key path so shared certificates surface
@@ -101,6 +105,7 @@ func InspectSites(cfg *config.Config) []Info {
 		s := &cfg.Sites[i]
 		domain := s.Domains[0]
 		for _, p := range []string{s.TLSCert, s.TLSKey} {
+			p = naming.NormalizePath(p)
 			if p == "" {
 				continue
 			}
@@ -115,7 +120,7 @@ func InspectSites(cfg *config.Config) []Info {
 		switch {
 		case s.TLSCert != "":
 			info := InspectFile(domain, domain, s.TLSCert)
-			info.Sites = sharedSites(refs, s.TLSCert, s.TLSKey)
+			info.Sites = sharedSites(refs, naming.NormalizePath(s.TLSCert), naming.NormalizePath(s.TLSKey))
 			out = append(out, info)
 		case s.ACME != nil:
 			out = append(out, Info{

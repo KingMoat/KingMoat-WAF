@@ -712,6 +712,29 @@ fi
 migrate_legacy_data() {
     if [[ "$OLD_DATA_DIR" != "$DATA_DIR" ]]; then
         log "migrating legacy data: $OLD_DATA_DIR -> $DATA_DIR"
+        # Make sure the legacy service is really down before the copy: any
+        # live write during the copy (WAL checkpoint, daily archive) breaks
+        # the strict verification below. The main flow stops it earlier;
+        # this is a re-entry/idempotency backstop (e.g. the user restarted
+        # the legacy service after an earlier aborted attempt).
+        if systemctl is-active --quiet kingmoat.service 2>/dev/null; then
+            systemctl stop kingmoat.service
+            sleep 1
+            log "legacy kingmoat.service was still active; stopped it before copying"
+        fi
+        # Re-entry guard: a previously aborted migration attempt leaves the
+        # target populated (e.g. WAL files the crashed new service wrote),
+        # which would make the strict count/byte verification below fail on
+        # every retry. The target is created and managed by this script, so
+        # start each attempt from a clean target.
+        if [[ -e "$DATA_DIR" ]]; then
+            case "$DATA_DIR/" in
+                /|/var/|/var/lib/|/etc/|/opt/|/usr/|/bin/|/sbin/|/boot/|/dev/|/proc/|/sys/|/run/|/home/|/root/|/tmp/)
+                    err "refusing to wipe unsafe data dir: $DATA_DIR" ;;
+            esac
+            rm -rf "$DATA_DIR"
+            log "cleared previous target $DATA_DIR (leftover from an earlier aborted attempt)"
+        fi
         if ! cp -a "$OLD_DATA_DIR/." "$DATA_DIR/"; then
             warn "a partial copy may exist at $DATA_DIR; remove it manually if desired (rm -rf)"
             err "data migration copy failed; aborting - legacy install untouched, restart it manually with: sudo systemctl start kingmoat.service"

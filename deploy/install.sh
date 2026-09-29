@@ -287,6 +287,7 @@ if $UNINSTALL; then
     rm -f /etc/systemd/system/kingmoatwaf.service /etc/systemd/system/kingmoat.service \
         /etc/kingmoatwaf-install.conf /etc/kingmoat-install.conf
     systemctl daemon-reload
+    rm -f /usr/local/bin/kingmoatwaf /usr/local/bin/kmwafctl
     rm -rf "$INSTALL_DIR"
     warn "data dir NOT removed. Remove manually if desired:"
     warn "  rm -rf ${DATA_DIR:-/var/lib/kingmoatwaf}"
@@ -922,6 +923,11 @@ cp "$TMPDIR_INSTALL/kingmoatwaf" "$INSTALL_DIR/kingmoatwaf"
 chmod +x "$INSTALL_DIR/kingmoatwaf"
 [[ -f "$INSTALL_DIR/kmwafctl" ]] && chmod +x "$INSTALL_DIR/kmwafctl"
 
+# Expose both binaries on the default PATH so the CLI can be used without
+# the install-dir prefix; re-linked on every run so upgrades stay current.
+ln -sf "$INSTALL_DIR/kingmoatwaf" /usr/local/bin/kingmoatwaf
+[[ -f "$INSTALL_DIR/kmwafctl" ]] && ln -sf "$INSTALL_DIR/kmwafctl" /usr/local/bin/kmwafctl
+
 # ---------------------------------------------------------------------------
 # Generate config.json (fresh install) / patch listen_* fields (upgrade)
 # ---------------------------------------------------------------------------
@@ -1099,8 +1105,8 @@ echo ""
 echo "  Useful commands:"
 echo "    systemctl status kingmoatwaf"
 echo "    systemctl restart kingmoatwaf"
-echo "    ${INSTALL_DIR}/kmwafctl status        # service, ports, console URL"
-echo "    ${INSTALL_DIR}/kmwafctl hash-password -password '...'"
+echo "    kmwafctl status                      # service, ports, console URL (on PATH)"
+echo "    kmwafctl hash-password -password '...'"
 echo ""
 
 # Persist install locations for uninstall / future upgrades

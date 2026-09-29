@@ -643,7 +643,7 @@
       </el-form>
       <div class="km-dim" style="font-size:12px;line-height:1.9">
         重启完成后请用新地址访问：<span class="km-mono">{{ portPreviewUrl }}</span><br />
-        当前浏览器标签页将随重启失联；若重启后无法访问，请登录服务器按部署文档「控制台端口更换与失联恢复」小节手工恢复（改回 console.env 后 systemctl restart kingmoat）。
+        当前浏览器标签页将随重启失联；若重启后无法访问，请登录服务器按部署文档「控制台端口更换与失联恢复」小节手工恢复（改回 console.env 后 systemctl restart kingmoatwaf）。
       </div>
       <template #footer>
         <el-button @click="portDlg = false">取消</el-button>

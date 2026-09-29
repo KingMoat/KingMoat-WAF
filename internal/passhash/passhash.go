@@ -47,7 +47,7 @@ func VerifyPlain(want, got string) bool {
 }
 
 // HashPassword derives an argon2id encoded hash for a new password
-// (parameters match kingmoat-cli hash-password: 64MiB, 3 iterations, 4 threads).
+// (parameters match kmwafctl hash-password: 64MiB, 3 iterations, 4 threads).
 func HashPassword(password string) (string, error) {
 	salt := make([]byte, 16)
 	if _, err := crand.Read(salt); err != nil {

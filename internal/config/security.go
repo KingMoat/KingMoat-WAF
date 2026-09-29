@@ -109,7 +109,7 @@ type GeoSettings struct {
 
 // AuthUser is one account for site-level Basic authentication. Either
 // Password (plaintext, for quick internal use) or PasswordHash (argon2id,
-// via `kingmoat-cli hash-password`) must be set, not both.
+// via `kmwafctl hash-password`) must be set, not both.
 type AuthUser struct {
 	Username     string `json:"username"`
 	Password     string `json:"password,omitempty"`

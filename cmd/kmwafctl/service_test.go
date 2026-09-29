@@ -1,12 +1,16 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/kingmoat/kingmoat/internal/config"
+	"github.com/kingmoat/kingmoat/internal/store"
 )
 
 func captureStderr(t *testing.T, fn func()) string {
@@ -124,6 +128,65 @@ func TestServiceCommandsRequireSystemd(t *testing.T) {
 	}
 }
 
+func TestLoadRuntimeConfigPrefersConsoleDB(t *testing.T) {
+	dir := t.TempDir()
+	loc := locations{DataDir: dir}
+
+	cfg, note := loadRuntimeConfig(loc)
+	if cfg != nil || note == "" {
+		t.Fatalf("loadRuntimeConfig with no console db = %v, %q; want nil with a note", cfg, note)
+	}
+
+	live := config.Config{
+		ListenHTTP:  "0.0.0.0:80",
+		ListenHTTPS: "0.0.0.0:443",
+		Sites: []config.Site{
+			{
+				Name:    "alpha",
+				Domains: []string{"a.example.test"},
+				Upstream: config.Upstream{Nodes: []config.UpstreamNode{
+					{Address: "127.0.0.1:8081"},
+				}},
+			},
+			{
+				Name:    "beta",
+				Domains: []string{"b.example.test"},
+				Upstream: config.Upstream{Nodes: []config.UpstreamNode{
+					{Address: "127.0.0.1:8082"},
+				}},
+			},
+		},
+	}
+	raw, err := json.Marshal(live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, consoleDBName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AppendRevision(string(raw), "test", "publish"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, note = loadRuntimeConfig(loc)
+	if cfg == nil {
+		t.Fatalf("loadRuntimeConfig = nil (%q); want the live revision", note)
+	}
+	if len(cfg.Sites) != 2 {
+		t.Fatalf("live sites = %d, want 2 (config.json seed would report 0)", len(cfg.Sites))
+	}
+	if cfg.Sites[0].Name != "alpha" || cfg.Sites[1].Name != "beta" {
+		t.Fatalf("live site names = %q/%q, want alpha/beta", cfg.Sites[0].Name, cfg.Sites[1].Name)
+	}
+	if !strings.Contains(note, "revision 1") || !strings.Contains(note, "(live)") {
+		t.Fatalf("source note = %q, want the live revision marker", note)
+	}
+}
+
 func TestStatusRendersView(t *testing.T) {
 	st := serviceStatus{
 		Unit:          "kingmoatwaf.service",
@@ -134,6 +197,7 @@ func TestStatusRendersView(t *testing.T) {
 		DataDir:       "/var/lib/kingmoatwaf",
 		DataDirSource: "install record",
 		ConfigFile:    "/var/lib/kingmoatwaf/config.json",
+		ConfigSource:  "/var/lib/kingmoatwaf/kingmoat.db revision 42 (live)",
 		ListenHTTP:    "0.0.0.0:80",
 		ListenHTTPS:   "0.0.0.0:443",
 		Sites:         3,
@@ -148,6 +212,7 @@ func TestStatusRendersView(t *testing.T) {
 		"enabled       : enabled",
 		"version       : kingmoatwaf v0.7.9-beta",
 		"data dir      : /var/lib/kingmoatwaf (install record)",
+		"config source : /var/lib/kingmoatwaf/kingmoat.db revision 42 (live)",
 		"http listen   : 0.0.0.0:80",
 		"https listen  : 0.0.0.0:443",
 		"sites         : 3",
@@ -157,6 +222,32 @@ func TestStatusRendersView(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("renderStatus output missing %q:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "note") {
+		t.Fatalf("renderStatus should omit the note line when there is none:\n%s", out)
+	}
+
+	// Seed fallback: the live source note must be surfaced alongside the
+	// seed path actually used.
+	st.ConfigSource = "/var/lib/kingmoatwaf/config.json (install seed)"
+	st.ConfigNote = "console db has no published config yet"
+	out = renderStatus(st)
+	for _, want := range []string{
+		"config source : /var/lib/kingmoatwaf/config.json (install seed)",
+		"note          : console db has no published config yet",
+		"sites         : 3",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("renderStatus output missing %q:\n%s", want, out)
+		}
+	}
+
+	// No readable config at all: sites must be hidden, not shown as 0.
+	st.ConfigSource = ""
+	st.ConfigNote = "no console db at /var/lib/kingmoatwaf/kingmoat.db; config.json missing"
+	out = renderStatus(st)
+	if strings.Contains(out, "sites") {
+		t.Fatalf("renderStatus should omit the sites line when no config source is available:\n%s", out)
 	}
 }
 

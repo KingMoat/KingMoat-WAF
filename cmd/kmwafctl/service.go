@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/kingmoat/kingmoat/internal/config"
 	"github.com/kingmoat/kingmoat/internal/naming"
+	"github.com/kingmoat/kingmoat/internal/store"
 )
 
 const (
@@ -25,6 +27,7 @@ const (
 
 	consoleEnvName = "console.env"
 	configFileName = "config.json"
+	consoleDBName  = "kingmoat.db"
 )
 
 var (
@@ -67,6 +70,32 @@ type locations struct {
 	InstallDir    string
 	DataDir       string
 	DataDirSource string
+}
+
+// loadRuntimeConfig returns the live configuration published through the
+// console (newest revision in the console DB). It falls back to nil when
+// the store is unavailable or empty; callers then use the config.json
+// install seed instead. The returned string describes the source that
+// produced the config (or why the live path was not usable).
+func loadRuntimeConfig(loc locations) (*config.Config, string) {
+	dbPath := filepath.Join(loc.DataDir, consoleDBName)
+	if !fileExists(dbPath) {
+		return nil, "no console db at " + dbPath
+	}
+	st, err := store.Open(dbPath)
+	if err != nil {
+		return nil, "console db open failed: " + firstLine(err.Error())
+	}
+	defer st.Close()
+	id, raw, err := st.CurrentRevision()
+	if err != nil {
+		return nil, "console db has no published config yet"
+	}
+	var c config.Config
+	if err := json.Unmarshal([]byte(raw), &c); err != nil {
+		return nil, fmt.Sprintf("console db revision %d unparseable", id)
+	}
+	return &c, fmt.Sprintf("console db %s revision %d (live)", dbPath, id)
 }
 
 func resolveLocations() locations {
@@ -222,6 +251,7 @@ type serviceStatus struct {
 	DataDirSource string
 	ConfigFile    string
 	ConfigNote    string
+	ConfigSource  string
 	ListenHTTP    string
 	ListenHTTPS   string
 	Sites         int
@@ -248,14 +278,30 @@ func collectStatus(loc locations) serviceStatus {
 
 	cfgPath := filepath.Join(loc.DataDir, configFileName)
 	st.ConfigFile = cfgPath
-	if cfg, err := config.Load(cfgPath); err == nil {
+	var cfg *config.Config
+	live, liveNote := loadRuntimeConfig(loc)
+	switch {
+	case live != nil:
+		cfg = live
+		st.ConfigSource = liveNote
+	default:
+		st.ConfigNote = liveNote
+		seed, err := config.Load(cfgPath)
+		if err != nil {
+			if fileExists(cfgPath) {
+				st.ConfigNote += "; seed load failed: " + firstLine(err.Error())
+			} else {
+				st.ConfigNote += "; config.json missing"
+			}
+		} else {
+			cfg = seed
+			st.ConfigSource = cfgPath + " (install seed)"
+		}
+	}
+	if cfg != nil {
 		st.ListenHTTP = cfg.ListenHTTP
 		st.ListenHTTPS = cfg.ListenHTTPS
 		st.Sites = len(cfg.Sites)
-	} else if !fileExists(cfgPath) {
-		st.ConfigNote = "missing"
-	} else {
-		st.ConfigNote = "load failed: " + firstLine(err.Error())
 	}
 
 	port, note := readConsolePort(filepath.Join(loc.DataDir, consoleEnvName))
@@ -300,14 +346,17 @@ func renderStatus(st serviceStatus) string {
 	writeKV(&b, "version", st.Version)
 	writeKV(&b, "install dir", st.InstallDir)
 	writeKV(&b, "data dir", st.DataDir+" ("+st.DataDirSource+")")
-	if st.ConfigNote != "" {
-		writeKV(&b, "config file", st.ConfigFile+" ("+st.ConfigNote+")")
+	if st.ConfigSource != "" {
+		writeKV(&b, "config source", st.ConfigSource)
 	} else {
-		writeKV(&b, "config file", st.ConfigFile)
+		writeKV(&b, "config source", "unavailable")
+	}
+	if st.ConfigNote != "" {
+		writeKV(&b, "note", st.ConfigNote)
 	}
 	writeKV(&b, "http listen", orDash(st.ListenHTTP))
 	writeKV(&b, "https listen", orDash(st.ListenHTTPS))
-	if st.ConfigNote == "" {
+	if st.ConfigSource != "" {
 		writeKV(&b, "sites", fmt.Sprintf("%d", st.Sites))
 	}
 	if st.ConsolePort != "" {
@@ -323,6 +372,7 @@ type configSummary struct {
 	DataDir       string
 	DataDirSource string
 	ConfigFile    string
+	ConfigSource  string
 	LoadErr       string
 	ListenHTTP    string
 	ListenHTTPS   string
@@ -355,11 +405,22 @@ func collectConfigSummary(loc locations) configSummary {
 		ConfigFile:    filepath.Join(loc.DataDir, configFileName),
 	}
 	cs.ConsolePort, cs.ConsoleNote = readConsolePort(filepath.Join(loc.DataDir, consoleEnvName))
-	cfg, err := config.Load(cs.ConfigFile)
-	if err != nil {
-		cs.LoadErr = firstLine(err.Error())
-		return cs
+	cfg, source := loadRuntimeConfig(loc)
+	if cfg == nil {
+		var err error
+		cfg, err = config.Load(cs.ConfigFile)
+		if err != nil {
+			cs.LoadErr = source
+			if fileExists(cs.ConfigFile) {
+				cs.LoadErr += "; seed load failed: " + firstLine(err.Error())
+			} else {
+				cs.LoadErr += "; config.json missing"
+			}
+			return cs
+		}
+		source = cs.ConfigFile + " (install seed)"
 	}
+	cs.ConfigSource = source
 	cs.ListenHTTP = cfg.ListenHTTP
 	cs.ListenHTTPS = cfg.ListenHTTPS
 	cs.AcmeEmail = cfg.AcmeEmail
@@ -395,10 +456,13 @@ func renderConfigSummary(cs configSummary) string {
 	var b strings.Builder
 	fmt.Fprintln(&b, "config summary (read-only)")
 	writeKV(&b, "data dir", cs.DataDir+" ("+cs.DataDirSource+")")
+	if cs.ConfigSource != "" {
+		writeKV(&b, "config source", cs.ConfigSource)
+	}
 	if cs.LoadErr != "" {
-		writeKV(&b, "config file", cs.ConfigFile+" (load failed: "+cs.LoadErr+")")
-	} else {
-		writeKV(&b, "config file", cs.ConfigFile)
+		writeKV(&b, "note", cs.LoadErr)
+	}
+	if cs.ConfigSource != "" {
 		writeKV(&b, "http listen", orDash(cs.ListenHTTP))
 		writeKV(&b, "https listen", orDash(cs.ListenHTTPS))
 	}
@@ -407,7 +471,7 @@ func renderConfigSummary(cs configSummary) string {
 	} else {
 		writeKV(&b, "console port", "- ("+cs.ConsoleNote+")")
 	}
-	if cs.LoadErr == "" {
+	if cs.ConfigSource != "" {
 		writeKV(&b, "acme email", orDash(cs.AcmeEmail))
 		fmt.Fprintf(&b, "sites (%d)\n", len(cs.Sites))
 		for _, s := range cs.Sites {

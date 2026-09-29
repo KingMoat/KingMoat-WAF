@@ -1,6 +1,7 @@
-// Command kingmoat-cli provides offline tooling for KingMoat: config
-// validation with dry-run WAF compilation (catches SecLang syntax errors
-// before they reach the data plane).
+// Command kmwafctl provides offline tooling and service management for
+// KingMoat WAF: config validation with dry-run WAF compilation (catches
+// SecLang syntax errors before they reach the data plane) and systemd
+// service control (status / start / stop / restart / config).
 package main
 
 import (
@@ -27,41 +28,72 @@ import (
 var version = "dev"
 
 func main() {
-	if len(os.Args) < 2 {
+	os.Exit(run(os.Args[1:]))
+}
+
+func run(args []string) int {
+	if len(args) < 1 {
 		usage()
-		os.Exit(2)
+		return 2
 	}
-	switch os.Args[1] {
+	switch args[0] {
 	case "validate":
-		runValidate(os.Args[2:])
+		runValidate(args[1:])
 	case "hash-password":
-		runHashPassword(os.Args[2:])
+		runHashPassword(args[1:])
 	case "reset-password":
-		runResetPassword(os.Args[2:])
+		runResetPassword(args[1:])
 	case "upgrade-rollback":
-		runUpgradeRollback(os.Args[2:])
+		runUpgradeRollback(args[1:])
+	case "status", "start", "stop", "restart", "config":
+		return runServiceCommand(args[0], args[1:])
 	case "version":
-		fmt.Println("kingmoat-cli", version)
+		return cmdVersion(args[1:], os.Stdout)
+	case "--help", "-h", "help":
+		usageTo(os.Stdout)
+		return 0
 	default:
+		fmt.Fprintf(os.Stderr, "kmwafctl: unknown command %q\n\n", args[0])
 		usage()
-		os.Exit(2)
+		return 2
 	}
+	return 0
+}
+
+func cmdVersion(_ []string, out io.Writer) int {
+	fmt.Fprintln(out, "kmwafctl", version)
+	return 0
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `kingmoat-cli (%s)
+	usageTo(os.Stderr)
+}
 
-Usage:
-  kingmoat-cli validate -config <path>   Validate config and dry-run build every WAF instance
-  kingmoat-cli hash-password -password <pw>   Generate an argon2id hash (avoids shell history with -stdin)
-  kingmoat-cli reset-password -db <path> -username <user> [-password <pw> | -generate] [-clear-mfa]
-                                         Console password reset (offline rescue): the account is
-                                         forced to change the password at its next login.
-  kingmoat-cli upgrade-rollback [-data-dir <path>]   Restore the pre-upgrade binaries from the
-                                         backup recorded in the upgrade intent marker. NEVER fails:
-                                         every outcome exits 0 (the unit's ExecStartPre must not
-                                         block the service start).
-  kingmoat-cli version                   Print version
+func usageTo(w io.Writer) {
+	fmt.Fprintf(w, `kmwafctl (%s) - KingMoat WAF management CLI
+
+Usage: kmwafctl <command> [flags]
+
+Service management (systemd deployments; prefix with sudo when non-root):
+  kmwafctl status                Show service state, versions, listeners and the console address
+  kmwafctl start                 Start kingmoatwaf.service
+  kmwafctl stop                  Stop kingmoatwaf.service
+  kmwafctl restart               Restart kingmoatwaf.service
+  kmwafctl config                Show the effective configuration summary (read-only)
+
+Offline tooling:
+  kmwafctl validate -config <path>
+                                 Validate config and dry-run build every WAF instance
+  kmwafctl hash-password -password <pw>
+                                 Generate an argon2id hash (avoids shell history with -stdin)
+  kmwafctl reset-password -db <path> -username <user> [-password <pw> | -generate] [-clear-mfa]
+                                 Console password reset (offline rescue): the account is
+                                 forced to change the password at its next login.
+  kmwafctl upgrade-rollback [-data-dir <path>]
+                                 Restore the pre-upgrade binaries from the backup recorded in
+                                 the upgrade intent marker. NEVER fails: every outcome exits 0
+                                 (the unit's ExecStartPre must not block the service start).
+  kmwafctl version               Print version
 `, version)
 }
 
@@ -137,31 +169,36 @@ func runResetPassword(args []string) {
 // recorded pre-upgrade backup is restored in place. CONTRACT: every branch
 // exits 0 - blocking the unit start would be strictly worse than a failed
 // rollback, so even internal errors only go to stderr. The server binary is
-// looked up next to this cli executable (/opt/kingmoat/kingmoat-cli →
-// /opt/kingmoat/kingmoat); the data dir defaults to the packaged systemd
-// layout (/var/lib/kingmoat) and can be overridden with -data-dir.
+// looked up next to this CLI executable (/opt/kingmoatwaf/kmwafctl →
+// /opt/kingmoatwaf/kingmoatwaf); the data dir is derived from the install
+// record (falling back to the packaged systemd layout) and can be
+// overridden with -data-dir.
 func runUpgradeRollback(args []string) {
 	fs := flag.NewFlagSet("upgrade-rollback", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	dataDir := fs.String("data-dir", "/var/lib/kingmoat", "data directory holding the upgrade intent marker (<data-dir>/upgrade/intent.json)")
+	dataDir := fs.String("data-dir", "", "data directory holding the upgrade intent marker (<data-dir>/upgrade/intent.json); derived from the install record when omitted")
 	if err := fs.Parse(args); err != nil {
 		// Misuse (typo'd flag) must not violate the never-fail contract
 		// either; the flag error itself is already on stderr.
 		return
+	}
+	dir := strings.TrimSpace(*dataDir)
+	if dir == "" {
+		dir = deriveDataDir()
 	}
 	exe, err := os.Executable()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "upgrade-rollback: locating the server binary failed: %v\n", err)
 		return
 	}
-	serverBin := filepath.Join(filepath.Dir(exe), "kingmoat")
-	needed, reason := upgrade.CheckUpgradeIntent(*dataDir, serverBin)
+	serverBin := filepath.Join(filepath.Dir(exe), serverBinaryName)
+	needed, reason := upgrade.CheckUpgradeIntent(dir, serverBin)
 	if !needed {
 		fmt.Printf("upgrade-rollback: %s\n", reason)
 		return
 	}
 	fmt.Printf("upgrade-rollback: %s\n", reason)
-	if err := upgrade.PerformRollback(*dataDir, serverBin); err != nil {
+	if err := upgrade.PerformRollback(dir, serverBin); err != nil {
 		fmt.Fprintf(os.Stderr, "upgrade-rollback: rollback FAILED (service start continues): %v\n", err)
 		return
 	}
@@ -204,7 +241,7 @@ func runHashPassword(args []string) {
 	}
 	salt := make([]byte, 16)
 	if _, err := rand.Read(salt); err != nil {
-		fmt.Fprintln(os.Stderr, "hash-password: salt generation failed")
+		fmt.Fprintf(os.Stderr, "hash-password: salt generation failed")
 		os.Exit(1)
 	}
 	const (

@@ -258,10 +258,8 @@
           <el-card shadow="never">
             <div class="km-title" style="margin-bottom:8px">引擎与规则版本</div>
             <div class="ver-grid">
-              <div class="ver-item"><div class="ver-k">检测引擎</div><div class="ver-v km-mono">{{ engine.coraza || '-' }}</div><div class="ver-s">上游发布：{{ engine.coraza_release || '-' }} · Go 实现，兼容 ModSecurity SecLang</div></div>
-              <div class="ver-item"><div class="ver-k">规则集</div><div class="ver-v km-mono">{{ engine.crs ? 'OWASP CRS ' + engine.crs.replace('v', '') : '-' }}</div><div class="ver-s">上游发布：{{ engine.crs_release || '-' }} · PL1–PL2 · SQLi / XSS / RCE 规则族</div></div>
-              <div class="ver-item"><div class="ver-k">运行时</div><div class="ver-v km-mono">{{ engine.go || '-' }}</div><div class="ver-s">上游发布：{{ engine.go_release || '-' }} · 单二进制 · embed UI</div></div>
-              <div class="ver-item"><div class="ver-k">GeoIP 库（内置）</div><div class="ver-v km-mono">{{ engine.geoip || '-' }}</div><div class="ver-s">DB-IP Lite{{ engine.geoip_build ? ' · ' + engine.geoip_build + ' 构建' : '' }} · CC BY 4.0</div></div>
+              <div class="ver-item"><div class="ver-k">检测引擎</div><div class="ver-v km-mono">{{ engine.coraza || '-' }}</div></div>
+              <div class="ver-item"><div class="ver-k">规则集</div><div class="ver-v km-mono">{{ engine.crs ? 'OWASP CRS ' + engine.crs.replace('v', '') : '-' }}</div></div>
               <div class="ver-item"><div class="ver-k">控制台版本</div><div class="ver-v km-mono">{{ version || '-' }}</div><div class="ver-s">发布物与引擎同版本构建</div></div>
             </div>
           </el-card>

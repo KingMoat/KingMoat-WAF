@@ -6,21 +6,7 @@
       <div class="km-set-row"><div class="grow"><div class="set-name">版本</div></div><span class="km-mono">{{ aboutVersion }}</span></div>
       <div class="km-set-row"><div class="grow"><div class="set-name">检测内核</div></div>
         <span class="km-mono" style="font-size:12.5px">{{ engine.coraza ? 'Coraza ' + engine.coraza : 'Coraza' }} + {{ engine.crs ? 'OWASP CRS ' + engine.crs : 'OWASP CRS' }} + libinjection</span></div>
-      <div class="km-set-row"><div class="grow"><div class="set-name">上游发布</div></div>
-        <span class="km-mono" style="font-size:12.5px">
-          Coraza {{ engine.coraza_release || '-' }} · CRS {{ engine.crs_release || '-' }} · Go {{ engine.go_release || '-' }}
-          <template v-if="engine.geoip_build">· GeoIP {{ engine.geoip_build }}</template>
-        </span></div>
-      <div class="km-set-row"><div class="grow"><div class="set-name">运行时</div></div><span class="km-mono">{{ engine.go || '-' }}</span></div>
       <div class="km-set-row"><div class="grow"><div class="set-name">开源许可</div></div><a href="https://opensource.org/license/mulanpsl-2-0" target="_blank" style="text-decoration:none"><el-tag size="small" effect="plain" class="km-tag">MulanPSL-2.0 ↗</el-tag></a></div>
-      <div class="km-set-row"><div class="grow"><div class="set-name">GeoIP 数据</div></div>
-        <span style="font-size:12.5px">IP Geolocation by <a href="https://db-ip.com" target="_blank" style="color:var(--km-cyan)">DB-IP</a>（Country Lite，CC BY 4.0，内置随版本发布）</span></div>
-      <div class="km-set-row"><div class="grow"><div class="set-name">Slogan</div></div><span style="font-size:12.5px;color:var(--km-cyan)">固若金汤，御攻于无形 — Fortress for Every Request</span></div>
-      <div class="km-set-row"><div class="grow"><div class="set-name">发布者 / 联系人</div></div><span class="km-mono"><a href="mailto:ailife2@126.com" style="color:var(--km-cyan);text-decoration:none">ailife2@126.com</a></span></div>
-      <div class="km-set-row">
-        <div class="grow"><div class="set-name">技术支持</div><div class="set-desc">部署、集成或功能定制需要协助时可直接邮件联系</div></div>
-        <span style="font-size:12.5px;color:var(--km-cyan)">如需有偿技术支持可联系作者：<a href="mailto:ailife2@126.com" style="color:var(--km-cyan)">ailife2@126.com</a></span>
-      </div>
       <div class="km-set-row">
         <div class="grow"><div class="set-name">源码仓库</div></div>
         <span class="km-mono" style="font-size:12.5px">

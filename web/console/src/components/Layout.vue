@@ -54,7 +54,7 @@
           <el-icon><Tickets /></el-icon>API 文档
         </div>
         <div class="km-nav-item" :class="{ active: $route.path === '/about' }" @click="$router.push('/about')">
-          <el-icon><InfoFilled /></el-icon>关于KingMoat
+          <el-icon><InfoFilled /></el-icon>关于KingMoat WAF
         </div>
       </div>
       <div class="km-side-slogan">Fortress for Every Request</div>
@@ -140,7 +140,7 @@ const pageTitle = computed(() => ({
   '/settings': '系统设置',
   '/users': '用户管理',
   '/docs': 'API 文档',
-  '/about': '关于KingMoat',
+  '/about': '关于KingMoat WAF',
 }[route.path.startsWith('/log/') ? '/log' : route.path] || 'KingMoat Console'))
 
 // AI 悬浮球:拖动(位置记忆)+ 点击与拖拽区分

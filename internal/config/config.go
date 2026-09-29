@@ -808,8 +808,18 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("config: ip_groups[%d]: duplicate name %q", i, g.Name)
 		}
 		groups[g.Name] = true
-		if (g.URL == "") == (g.File == "") {
-			return fmt.Errorf("config: ip_groups[%d] (%s): exactly one of url / file is required", i, g.Name)
+		nSources := 0
+		if g.URL != "" {
+			nSources++
+		}
+		if g.File != "" {
+			nSources++
+		}
+		if len(g.Members) > 0 {
+			nSources++
+		}
+		if nSources != 1 {
+			return fmt.Errorf("config: ip_groups[%d] (%s): exactly one of url / file / members is required", i, g.Name)
 		}
 	}
 	if c.Webhook != nil && !isHTTPURL(c.Webhook.URL) {

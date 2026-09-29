@@ -19,12 +19,15 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"golang.org/x/crypto/acme"
 
 	"github.com/kingmoat/kingmoat/internal/accesslog"
 	"github.com/kingmoat/kingmoat/internal/ai"
@@ -340,13 +343,15 @@ func main() {
 	buildEngines(activeCfg)
 
 	// ACME automatic certificates (TLS-ALPN-01 on the HTTPS listener,
-	// HTTP-01 challenge short-circuited on the HTTP listener). The holder is
-	// rebuilt on every console publish (hot-reload consumer below) so ACME
-	// sites added, edited or removed after boot take effect without a
-	// restart. Boot state follows the ACTIVE config (console revisions),
-	// not the disk seed, mirroring the listener addresses below.
+	// HTTP-01 challenge short-circuited on the HTTP listener). The holder
+	// keeps one manager per issuance mode — production and staging, each with
+	// its own cache directory and CA endpoint — and is rebuilt on every
+	// console publish (hot-reload consumer below) so ACME sites added, edited
+	// or removed after boot take effect without a restart. Boot state follows
+	// the ACTIVE config (console revisions), not the disk seed, mirroring the
+	// listener addresses below.
 	acmeHolder := certmgr.NewACMEHolder("acme-cache")
-	if acmeHolder.Rebuild(activeCfg, activeCfg.AcmeEmail) != nil {
+	if prod, staging := acmeHolder.Rebuild(activeCfg, activeCfg.AcmeEmail); prod != nil || staging != nil {
 		logger.Info("ACME certificate management enabled", "hosts", len(certmgr.ACMEHosts(activeCfg)))
 	}
 
@@ -368,27 +373,6 @@ func main() {
 	// site references. Uses the root context so it stops with the process.
 	acmeSvc.RestartRenewer(ctx, activeCfg, activeCfg.AcmeEmail)
 
-	// rebuildACME swaps the ACME manager to one built from the configuration
-	// just applied to the data plane, keeping the HostWhitelist in sync with
-	// the live site router (new domains issue on demand, removed domains
-	// stop being answered). Called only after a successful data-plane reload;
-	// on reload failure the previous manager stays so both layers agree.
-	rebuildACME := func(cfg *config.Config) {
-		prev := acmeHolder.Load()
-		m := acmeHolder.Rebuild(cfg, cfg.AcmeEmail)
-		// The renewal loop works on the config snapshot just applied (site
-		// domains join/leave its target set), so it restarts on every rebuild
-		// even when the last ACME site was removed.
-		acmeSvc.RestartRenewer(ctx, cfg, cfg.AcmeEmail)
-		if m == nil {
-			if prev != nil {
-				logger.Info("ACME certificate management disabled")
-			}
-			return
-		}
-		logger.Info("ACME certificate management reloaded", "hosts", len(certmgr.ACMEHosts(cfg)))
-	}
-
 	// Bootstrap self-signed certificate (10 years) so the certificate
 	// library is usable out of the box (HTTPS sites without a CA cert).
 	if center != nil && *consoleAddr != "" {
@@ -407,6 +391,37 @@ func main() {
 	}
 	if accessSink != nil {
 		handler.SetAccessSink(accessSink)
+	}
+
+	// Arm HTTP-01 on both boot managers now that the port-80 fallback handler
+	// exists (the boot Rebuild above runs before the handler is built). See
+	// ACMEHolder.ArmHTTP01: without this the first issuance only offers
+	// http-01 once the challenge wrapper gets armed by port-80 traffic.
+	acmeHolder.ArmHTTP01(handler)
+
+	// rebuildACME swaps the ACME managers to ones built from the
+	// configuration just applied to the data plane, keeping the HostWhitelist
+	// in sync with the live site router (new domains issue on demand,
+	// removed domains stop being answered). Called only after a successful
+	// data-plane reload; on reload failure the previous managers stay so both
+	// layers agree. Defined after the handler is built so each rebuilt pair
+	// can be preset for HTTP-01: the flag and tokens live per manager
+	// instance (see ACMEHolder.ArmHTTP01), so every swap needs its own arm.
+	rebuildACME := func(cfg *config.Config) {
+		prevAny := acmeHolder.Prod() != nil || acmeHolder.Staging() != nil
+		prod, staging := acmeHolder.Rebuild(cfg, cfg.AcmeEmail)
+		// The renewal loop works on the config snapshot just applied (site
+		// domains join/leave its target set), so it restarts on every rebuild
+		// even when the last ACME site was removed.
+		acmeSvc.RestartRenewer(ctx, cfg, cfg.AcmeEmail)
+		if prod == nil && staging == nil {
+			if prevAny {
+				logger.Info("ACME certificate management disabled")
+			}
+			return
+		}
+		acmeHolder.ArmHTTP01(handler)
+		logger.Info("ACME certificate management reloaded", "hosts", len(certmgr.ACMEHosts(cfg)))
 	}
 
 	var aiBuilder func(cfg *config.Config)
@@ -672,41 +687,111 @@ func main() {
 	startServers(ctx, handler, listenCfg, acmeHolder, logger)
 }
 
+// acmeWarnWindow bounds how often ACME certificate failures are logged from
+// the TLS handshake path (R4): GetCertificate runs synchronously per
+// handshake and is client-driven, so a flapping ACME domain or an SNI
+// scanner must not flood the log.
+const acmeWarnWindow = time.Minute
+
+// acmeFailureLimiter rate-limits ACME failure warnings. The first failure in
+// a window logs immediately; further failures inside the window are counted
+// silently and reported as the suppressed count by the next logged failure
+// once the window closes. Any success resets the window so a recovered host
+// is logged again right away on its next failure.
+type acmeFailureLimiter struct {
+	mu         sync.Mutex
+	window     time.Duration
+	until      time.Time // zero = idle: a failure logs and opens the window
+	suppressed int       // failures swallowed during the current window
+}
+
+// allow reports whether this failure should be logged now, together with the
+// number of failures suppressed during the just-closed window (0 otherwise).
+func (l *acmeFailureLimiter) allow(now time.Time) (ok bool, suppressed int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.until.IsZero() || !now.Before(l.until) {
+		sup := l.suppressed
+		l.until = now.Add(l.window)
+		l.suppressed = 0
+		return true, sup
+	}
+	l.suppressed++
+	return false, 0
+}
+
+// reset clears the active window after a success.
+func (l *acmeFailureLimiter) reset() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.until = time.Time{}
+	l.suppressed = 0
+}
+
 // certSelector returns the TLS certificate selection chain for the HTTPS
-// listener: site SNI certificates first, then the current ACME manager
-// (issue/renew on demand). The manager is re-resolved from the holder on
-// every handshake so console publishes take effect without a restart; with
-// ACME disabled the chain degrades to the plain site-certificate path.
-func certSelector(handler *proxy.Handler, acme *certmgr.ACMEHolder) func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+// listener. TLS-ALPN-01 challenge connections first: a CA verification
+// negotiates exactly "acme-tls/1" (autocert wantsTokenCert, x/crypto
+// v0.57.0 L319-325) and must reach the ACME managers before any site
+// certificate - the challenge answer lives in a manager's token store and a
+// static site certificate must never shadow it. The holder's facade probes
+// the production tokens first and falls through to staging on miss (token
+// lookups never issue). Regular handshakes keep the unchanged chain: site
+// SNI certificates first, then the holder's facade (knowledge-based slot
+// routing, issue/renew on demand - never a cross-slot probe, which would
+// start a real issuance against the wrong CA). The managers are re-resolved
+// from the holder on every handshake so console publishes take effect
+// without a restart; with ACME disabled the chain degrades to the plain
+// site-certificate path.
+func certSelector(handler *proxy.Handler, holder *certmgr.ACMEHolder, logger *slog.Logger) func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	limiter := &acmeFailureLimiter{window: acmeWarnWindow}
 	return func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
+		if len(chi.SupportedProtos) == 1 && chi.SupportedProtos[0] == acme.ALPNProto {
+			if cert, cerr := holder.GetCertificate(chi); !errors.Is(cerr, certmgr.ErrACMEDisabled) {
+				return cert, cerr
+			}
+			// No manager: nothing can answer a challenge; fall through to
+			// the regular chain (the plain site-router error).
+		}
 		cert, err := handler.GetCertificate(chi)
 		if err == nil {
 			return cert, nil
 		}
-		if m := acme.Load(); m != nil {
-			return m.GetCertificate(chi)
+		cert, aerr := holder.GetCertificate(chi)
+		if errors.Is(aerr, certmgr.ErrACMEDisabled) {
+			return nil, err
 		}
-		return nil, err
+		if aerr != nil {
+			// Rate-limited so the synchronous handshake path cannot flood
+			// the log when issuance keeps failing for a domain.
+			if ok, suppressed := limiter.allow(time.Now()); ok && logger != nil {
+				args := []any{"sni", chi.ServerName, "err", aerr.Error()}
+				if suppressed > 0 {
+					args = append(args, "suppressed", suppressed)
+				}
+				logger.Warn("ACME certificate lookup for handshake failed", args...)
+			}
+			return nil, aerr
+		}
+		limiter.reset() // a success reopens the window for future failures
+		return cert, nil
 	}
 }
 
 // acmeChallengeHandler serves ACME HTTP-01 challenges ahead of the data
-// plane. It re-resolves the current ACME manager on every request: a wrapper
-// built once at boot would pin the manager's HostWhitelist, so challenges
-// for domains published later would be rejected and domains removed from the
-// config would keep being answered. With ACME disabled the request goes
-// straight to the data plane.
+// plane through the holder's dual-slot facade: the challenge path is served
+// by the manager knowledge routes it to (the one whose order armed the
+// token), and every other path reaches the data plane. The routing
+// re-resolves the current managers on every request: a wrapper built once at
+// boot would pin their whitelists, so challenges for domains published later
+// would be rejected and domains removed from the config would keep being
+// answered. With ACME disabled the request goes straight to the data plane.
 type acmeChallengeHandler struct {
 	acme *certmgr.ACMEHolder
 	data http.Handler
 }
 
 func (h acmeChallengeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if m := h.acme.Load(); m != nil {
-		m.HTTPHandler(h.data).ServeHTTP(w, r)
-		return
-	}
-	h.data.ServeHTTP(w, r)
+	h.acme.HTTPHandler(h.data).ServeHTTP(w, r)
 }
 
 // computeStats mirrors the console /api/stats aggregation for AI tools.
@@ -745,8 +830,35 @@ func tlsConfigForWithFallback(handler *proxy.Handler, getCert func(*tls.ClientHe
 		oc, err := handler.TLSConfigFor(chi)
 		if oc != nil {
 			oc.GetCertificate = getCert
+			// proxy.TLSConfigFor rebuilds the config from scratch with only
+			// h2/http1.1 in NextProtos; re-add the TLS-ALPN-01 challenge proto
+			// so challenge connections to such sites still negotiate it.
+			if !slices.Contains(oc.NextProtos, acme.ALPNProto) {
+				oc.NextProtos = append(oc.NextProtos, acme.ALPNProto)
+			}
 		}
 		return oc, err
+	}
+}
+
+// dataPlaneTLSConfig assembles the HTTPS listener TLS configuration: the
+// data-plane hardening (MinVersion, moderate cipher suites) plus the
+// certificate chain and the autocert-style ALPN set. NextProtos mirrors
+// autocert Manager.TLSConfig (x/crypto v0.57.0 L228-236): "h2", "http/1.1"
+// and acme.ALPNProto, so a CA verification connection can negotiate
+// "acme-tls/1" for TLS-ALPN-01. The challenge proto is resident: with ACME
+// disabled the negotiated proto simply falls through to the static
+// certificate path.
+func dataPlaneTLSConfig(handler *proxy.Handler, getCert func(*tls.ClientHelloInfo) (*tls.Certificate, error)) *tls.Config {
+	return &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		CipherSuites: config.TLSCipherSuitesModerate,
+		NextProtos: []string{
+			"h2", "http/1.1", // enable HTTP/2
+			acme.ALPNProto, // enable tls-alpn-01 ACME challenges
+		},
+		GetCertificate:     getCert,
+		GetConfigForClient: tlsConfigForWithFallback(handler, getCert), // per-site override must keep the ACME fallback
 	}
 }
 
@@ -760,7 +872,7 @@ func startServers(ctx context.Context, handler *proxy.Handler, cfg *config.Confi
 	// Certificate selection: site SNI certificates first, then the ACME
 	// manager (issue/renew on demand). certSelector re-resolves the current
 	// manager on every handshake so publishes take effect without a restart.
-	getCert := certSelector(handler, acme)
+	getCert := certSelector(handler, acme, logger)
 
 	if cfg.ListenHTTP != "" {
 		// Serve ACME HTTP-01 challenges from the CURRENT manager before the
@@ -791,12 +903,7 @@ func startServers(ctx context.Context, handler *proxy.Handler, cfg *config.Confi
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       120 * time.Second,
 			MaxHeaderBytes:    1 << 20,
-			TLSConfig: &tls.Config{
-				MinVersion:         tls.VersionTLS12,
-				CipherSuites:       config.TLSCipherSuitesModerate,
-				GetCertificate:     getCert,
-				GetConfigForClient: tlsConfigForWithFallback(handler, getCert), // per-site override must keep the ACME fallback
-			},
+			TLSConfig:         dataPlaneTLSConfig(handler, getCert),
 		}
 		lnTLS, lerr := net.Listen("tcp", cfg.ListenHTTPS)
 		if lerr != nil {

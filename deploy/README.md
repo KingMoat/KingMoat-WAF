@@ -92,14 +92,14 @@ Windows 推荐：`C:\kingmoat\`（二进制、config.json、kingmoat.db、logs\ 
 
 Docker：单一数据卷挂载到容器 `/data`（本地磁盘目录，勿挂网络盘）。
 
-数据目录运行时会生成/维护：`kingmoat.db`（配置库）、`kingmoat-assets.db` 与 `kingmoat-ai.db`（API 资产学习库 / AI 助手库，由 `-console-db` 文件名派生）、`logs/audit.db` + `logs/archive/`（审计与归档）、`logs/metrics-state.json`（累计请求计数）、`uploads/certs/`（证书库，含控制台自签引导证书）、`ai-kek.key`（AI API Key 加密密钥）、`acme-cache/`（ACME 账户与订单缓存）、`acme-cache-staging/`（staging 环境测试证书缓存，自 v0.7.8 起与正式证书隔离）、`upgrade/`（在线升级任务工作区与升级意图标记）。**备份必须覆盖整个数据目录**（见 6.1）。
+数据目录运行时会生成/维护：`kingmoat.db`（配置库）、`kingmoat-assets.db` 与 `kingmoat-ai.db`（API 资产学习库 / AI 助手库，由 `-console-db` 文件名派生）、`logs/audit.db` + `logs/archive/`（审计与归档）、`logs/metrics-state.json`（累计请求计数）、`uploads/certs/`（证书库，含控制台自签引导证书）、`ai-kek.key`（AI API Key 加密密钥）、`acme-cache/`（生产 ACME 账号与订单/证书缓存）、`acme-cache-staging/`（staging 环境测试证书缓存，自 v0.7.8 起与正式证书隔离；两目录使用相互独立的 ACME 账号，各持一份 `acme_account+key`）、`upgrade/`（在线升级任务工作区与升级意图标记）。**备份必须覆盖整个数据目录**（见 6.1）。
 
 ### 1.5 DNS 与证书前置
 
 - 把要防护的站点域名 A/AAAA/CNAME 解析到 WAF 数据面地址。
 - 站点证书两种方式（控制台「证书」页配置）：
   - **PEM 上传**：每个站点 `tls_cert`/`tls_key`，或控制台直接上传；
-  - **ACME（Let's Encrypt 自动申请续签）**：要求 80/443 公网可达（TLS-ALPN-01 走 HTTPS 监听，HTTP-01 走 HTTP 监听），且域名能解析到本机。
+  - **ACME（Let's Encrypt 自动申请续签）**：要求 80/443 公网可达，且域名能解析到本机。TLS-ALPN-01 走 HTTPS 监听——挑战连接由监听侧常驻协商 ALPN `acme-tls/1` 后直接交 ACME 引擎应答（优先于站点静态证书）；HTTP-01 走 HTTP 监听，挑战路径先于数据面应答。
 - 控制台自身的 TLS 证书：首次启动自动生成 10 年期自签证书（浏览器告警属预期），可在控制台设置页替换为正式证书。
 
 ## 2. 路径 A：Docker / Docker Compose（Path A: Docker）
@@ -312,6 +312,16 @@ kingmoat -version
 Docker：替换镜像 tag 后 `docker compose up -d`。Windows：停服务 → 替换 `kingmoat.exe` → 起服务。配置库向后兼容自动沿用；升级后打开控制台确认版本号与站点状态即可。
 
 **控制台在线升级**（v0.7.9 起）：系统设置 → 「版本与升级」支持检查更新与一键升级——页面展示阶段进度（检测 → 下载 → 校验 → 替换 → 重启），失败后进入冷却窗口防止反复重试；升级前自动在安装目录留滚动备份并具备自愈回滚（见 6.3）。建议在维护窗口执行；升级完成后服务自动重启。
+
+**ACME 账号重置（本次升级必做，未使用 ACME 可跳过）**：本版本重构了 ACME 签发链路（详见仓库 CHANGELOG）。此前签发失败会在 Let's Encrypt 侧留下被停用（deactivated）的授权并绑定在旧 ACME 账号上——不重置账号，同域名的重试会持续失败。升级到本版本后执行一次：
+
+```bash
+sudo systemctl stop kingmoat
+sudo rm -f /var/lib/kingmoat/acme-cache/acme_account+key /var/lib/kingmoat/acme-cache-staging/acme_account+key
+sudo systemctl start kingmoat
+```
+
+数据目录按实际安装路径调整（一键部署默认 `/var/lib/kingmoat`）。两个缓存目录使用相互独立的 ACME 账号，两个账号文件都要删除；重启后首次签发会自动注册新账号。已缓存的有效证书不受影响，后续续期改用新账号进行。
 
 ### 6.3 回滚（两层）
 

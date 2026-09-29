@@ -63,65 +63,79 @@ func TestACMEHosts(t *testing.T) {
 	}
 }
 
-// TestACMEManagerFromCfg covers the manager construction contract: nil
-// conversion without ACME sites, HostWhitelist membership, the site-to-global
-// email fallback chain and the staging directory URL.
-func TestACMEManagerFromCfg(t *testing.T) {
+// TestACMEHolderSlotManagers covers the slot construction contract: nil
+// slots without ACME sites, per-slot HostWhitelist membership, the
+// site-to-global email fallback chain and the staging directory URL (each
+// mode's manager owns its own CA endpoint and cache directory).
+func TestACMEHolderSlotManagers(t *testing.T) {
 	t.Run("nil without acme sites", func(t *testing.T) {
+		h := NewACMEHolder(t.TempDir())
 		cfg := &config.Config{Sites: []config.Site{{Domains: []string{"plain.local"}}}}
-		if m := ACMEManager(cfg, t.TempDir(), "ops@x.io"); m != nil {
-			t.Fatalf("ACMEManager = %v, want nil", m)
+		if prod, staging := h.Rebuild(cfg, "ops@x.io"); prod != nil || staging != nil {
+			t.Fatalf("Rebuild = (%v, %v), want nil managers", prod, staging)
 		}
 	})
 
 	t.Run("host whitelist", func(t *testing.T) {
+		h := NewACMEHolder(t.TempDir())
 		cfg := &config.Config{Sites: []config.Site{
 			{Domains: []string{"a.local"}, ACME: &config.ACMESettings{}},
 			{Domains: []string{"b.local"}, ACME: &config.ACMESettings{}},
 		}}
-		m := ACMEManager(cfg, t.TempDir(), "")
-		if m == nil {
-			t.Fatal("ACMEManager = nil, want manager")
+		prod, staging := h.Rebuild(cfg, "")
+		if prod == nil || staging != nil {
+			t.Fatalf("Rebuild = (%v, %v), want prod manager only", prod, staging)
 		}
 		for _, host := range []string{"a.local", "b.local"} {
-			if err := m.HostPolicy(context.Background(), host); err != nil {
+			if err := prod.HostPolicy(context.Background(), host); err != nil {
 				t.Fatalf("HostPolicy(%q) = %v, want allowed", host, err)
 			}
 		}
-		if err := m.HostPolicy(context.Background(), "other.local"); err == nil {
+		if err := prod.HostPolicy(context.Background(), "other.local"); err == nil {
 			t.Fatal("HostPolicy(other.local) = nil, want rejected")
 		}
 	})
 
 	t.Run("email fallback chain", func(t *testing.T) {
 		// Site contact wins over the global settings email.
+		h := NewACMEHolder(t.TempDir())
 		cfg := &config.Config{Sites: []config.Site{
 			{Domains: []string{"a.local"}, ACME: &config.ACMESettings{Email: "site@x.io"}},
 		}}
-		if m := ACMEManager(cfg, t.TempDir(), "global@x.io"); m.Email != "site@x.io" {
-			t.Fatalf("Email = %q, want site contact", m.Email)
+		prod, _ := h.Rebuild(cfg, "global@x.io")
+		if prod == nil || prod.Email != "site@x.io" {
+			t.Fatalf("Email = %q, want site contact", prod.Email)
 		}
 		// Without a site contact the global settings email applies.
+		h = NewACMEHolder(t.TempDir())
 		cfg = &config.Config{Sites: []config.Site{
 			{Domains: []string{"a.local"}, ACME: &config.ACMESettings{}},
 		}}
-		if m := ACMEManager(cfg, t.TempDir(), "global@x.io"); m.Email != "global@x.io" {
-			t.Fatalf("Email = %q, want global contact", m.Email)
+		prod, _ = h.Rebuild(cfg, "global@x.io")
+		if prod == nil || prod.Email != "global@x.io" {
+			t.Fatalf("Email = %q, want global contact", prod.Email)
 		}
 	})
 
 	t.Run("staging directory url", func(t *testing.T) {
+		h := NewACMEHolder(t.TempDir())
 		cfg := &config.Config{Sites: []config.Site{
 			{Domains: []string{"a.local"}, ACME: &config.ACMESettings{Staging: true}},
 		}}
-		m := ACMEManager(cfg, t.TempDir(), "")
-		if m.Client == nil || m.Client.DirectoryURL != "https://acme-staging-v02.api.letsencrypt.org/directory" {
-			t.Fatalf("staging client = %+v, want staging directory URL", m.Client)
+		prod, staging := h.Rebuild(cfg, "")
+		if staging == nil || staging.Client == nil || staging.Client.DirectoryURL != "https://acme-staging-v02.api.letsencrypt.org/directory" {
+			t.Fatalf("staging client = %+v, want staging directory URL", staging)
+		}
+		if prod != nil {
+			t.Fatalf("prod manager = %v, want nil (no prod sites)", prod)
 		}
 		cfg.Sites[0].ACME.Staging = false
-		m = ACMEManager(cfg, t.TempDir(), "")
-		if m.Client != nil {
-			t.Fatalf("non-staging client = %+v, want nil", m.Client)
+		prod, staging = h.Rebuild(cfg, "")
+		if prod == nil || prod.Client != nil {
+			t.Fatalf("non-staging client = %+v, want nil", prod)
+		}
+		if staging != nil {
+			t.Fatalf("staging manager = %v, want nil after flag flip", staging)
 		}
 	})
 }
@@ -132,8 +146,8 @@ func TestACMEManagerFromCfg(t *testing.T) {
 // swaps to a manager scoped to the new domain set only.
 func TestACMEHolderRebuildFollowsConfig(t *testing.T) {
 	h := NewACMEHolder(t.TempDir())
-	if m := h.Load(); m != nil {
-		t.Fatalf("fresh holder Load = %v, want nil", m)
+	if m := h.Prod(); m != nil {
+		t.Fatalf("fresh holder Prod = %v, want nil", m)
 	}
 
 	withACME := func(domains ...string) *config.Config {
@@ -148,27 +162,27 @@ func TestACMEHolderRebuildFollowsConfig(t *testing.T) {
 	}
 
 	// Publish an ACME site: the new domain becomes issuable.
-	if m := h.Rebuild(withACME("a.local"), ""); m == nil {
-		t.Fatal("Rebuild(a.local) = nil, want manager")
+	if prod, staging := h.Rebuild(withACME("a.local"), ""); prod == nil || staging != nil {
+		t.Fatalf("Rebuild(a.local) = (%v, %v), want prod manager only", prod, staging)
 	}
-	if m := h.Load(); !allows(m, "a.local") {
-		t.Fatalf("Load after rebuild: HostPolicy(a.local) rejected (m=%v)", m)
+	if m := h.Prod(); !allows(m, "a.local") {
+		t.Fatalf("Prod after rebuild: HostPolicy(a.local) rejected (m=%v)", m)
 	}
 
 	// Publish the removal of the last ACME site: ACME disables cleanly.
-	if m := h.Rebuild(&config.Config{}, ""); m != nil {
-		t.Fatalf("Rebuild(empty) = %v, want nil", m)
+	if prod, staging := h.Rebuild(&config.Config{}, ""); prod != nil || staging != nil {
+		t.Fatalf("Rebuild(empty) = (%v, %v), want nil", prod, staging)
 	}
-	if m := h.Load(); m != nil {
-		t.Fatalf("Load after removal = %v, want nil", m)
+	if m := h.Prod(); m != nil {
+		t.Fatalf("Prod after removal = %v, want nil", m)
 	}
 
 	// Re-add with a different domain: the old domain stops being answered.
-	if m := h.Rebuild(withACME("c.local"), ""); m == nil {
+	if prod, _ := h.Rebuild(withACME("c.local"), ""); prod == nil {
 		t.Fatal("Rebuild(c.local) = nil, want manager")
 	}
-	m := h.Load()
+	m := h.Prod()
 	if !allows(m, "c.local") || allows(m, "a.local") {
-		t.Fatalf("Load after re-add: c.local allowed=%v, a.local allowed=%v", allows(m, "c.local"), allows(m, "a.local"))
+		t.Fatalf("Prod after re-add: c.local allowed=%v, a.local allowed=%v", allows(m, "c.local"), allows(m, "a.local"))
 	}
 }

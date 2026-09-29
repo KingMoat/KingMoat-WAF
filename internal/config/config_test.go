@@ -251,3 +251,42 @@ func TestValidateUpstreamSNIHostRejectsInvalidHostname(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateIPGroupsExactlyOneSource(t *testing.T) {
+	const wantErr = "exactly one of url / file / members is required"
+	cases := []struct {
+		name    string
+		url     string
+		file    string
+		members []string
+		err     string
+	}{
+		{name: "members only passes", members: []string{"10.0.0.1/32"}},
+		{name: "url only passes", url: "https://example.com/list.txt"},
+		{name: "file only passes", file: "/etc/kingmoat/ip.list"},
+		{name: "url and members rejected", url: "https://example.com/list.txt", members: []string{"10.0.0.1/32"}, err: wantErr},
+		{name: "file and members rejected", file: "/etc/kingmoat/ip.list", members: []string{"10.0.0.1/32"}, err: wantErr},
+		{name: "no source rejected", err: wantErr},
+		{name: "empty members slice rejected", members: []string{}, err: wantErr},
+		{name: "all three sources rejected", url: "https://example.com/list.txt", file: "/etc/kingmoat/ip.list", members: []string{"10.0.0.1/32"}, err: wantErr},
+	}
+	for _, tc := range cases {
+		c := &Config{
+			ListenHTTP: ":80",
+			IPGroups:   []IPGroupSettings{{Name: "trusted", URL: tc.url, File: tc.file, Members: tc.members}},
+		}
+		err := c.Validate()
+		if tc.err == "" {
+			if err != nil {
+				t.Fatalf("%s: valid ip group rejected: %v", tc.name, err)
+			}
+			continue
+		}
+		if err == nil {
+			t.Fatalf("%s: must be rejected", tc.name)
+		}
+		if !strings.Contains(err.Error(), tc.err) {
+			t.Fatalf("%s: unexpected error: %v", tc.name, err)
+		}
+	}
+}

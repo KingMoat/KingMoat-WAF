@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### 修复
+
+- **手动列表（members）IP 组保存 / 发布被误拒**：IP 组支持订阅 URL / 本地文件 / 手动列表三种来源，但发布校验只认 URL / 文件二选一，控制台用默认「手动列表」模式新建 IP 组后发布配置必然被 `exactly one of url / file is required` 拒绝。现校验改为三种来源恰好一个：手动列表成员非空即视为有效来源，可正常保存与发布；混合来源（如同时填订阅 URL 与手动成员，运行时本就静默忽略手动成员）改为显式拒绝，错误文案同步更新为 `exactly one of url / file / members is required`
+- **ACME 证书签发全链路失效（证书库申请 100% 秒败 / 站点级 ACME 握手 internal error）**：两个用户可感知症状——①证书库「申请证书」对任意域名 100% 秒败（`no viable challenge type found`）；②站点启用 ACME 后发布被接受，但既不签发也不报错，站点 HTTPS 握手直接回 `tlsv1 alert internal error`（无证书、无任何日志）。根因是签发侧 ACME Manager 的挑战通道整体缺失：TLS-ALPN-01 要求服务端在 ALPN 中协商 `acme-tls/1` 并应答挑战证书，此前数据面 443 监听根本没有该 ALPN，协商永不发生；HTTP-01 需要 HTTPHandler 注册，此前依赖首次 80 请求的时序竞态；而证书库申请走的 one-shot 签发实例与数据面实例相互隔离，挑战 token 永远对不上——挑战应答链路天然不可达；签发失败还会停用 pending 授权，Let's Encrypt 复用同账号上的失效授权，导致同域名重试永久失败。现修复：443 监听常驻 `acme-tls/1` ALPN，挑战连接直通 ACME Manager（优先于站点静态证书，生产 token 优先、staging 兜底）；HTTP-01 在启动与每次配置发布时对双槽预置注册，挑战应答先于数据面；证书库签发改由数据面双槽 Manager 执行（生产/测试独立缓存目录与 CA，申请中域名动态并入签发白名单，挑战应答天然可达，同时消除 prod/staging 混布时跨站点 staging 开关误切生产签发目录的问题）；签发失败增加限频告警日志（含域名/SNI 与原因）。**升级注意**：部署新版后需删除 `<数据目录>/acme-cache/acme_account+key` 与 `<数据目录>/acme-cache-staging/acme_account+key` 并重启服务——重置 ACME 账号、清除历史上被停用的授权，否则旧账号上的失效授权会继续导致同域名重试失败（步骤见 deploy/README.md「ACME 账号重置」）
+
 ## v0.7.9-beta (2026-09-27)
 
 基于 v0.7.8-beta，配置与数据库完全兼容、无需迁移。新增控制台在线升级（自动备份 / SHA256 强校验 / 失败自愈回滚防变砖）；开启 TOTP 两步验证的账号不再出现登录锁死。存量部署（v0.7.8 及更早安装）的 systemd unit 无启动前自愈钩子，首次在线升级由启动自检兜底，重跑新版 install.sh 可获得完整双保险。

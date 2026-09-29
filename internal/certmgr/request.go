@@ -12,15 +12,14 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/crypto/acme"
-	"golang.org/x/crypto/acme/autocert"
 )
 
 // IssueFunc performs one issuance attempt for domain and returns the issued
-// leaf certificate. The default implementation drives a one-shot
-// autocert.Manager against the target cache directory (production or
-// staging); tests replace it via WithIssuer so nothing touches the network.
+// leaf certificate. The default implementation drives the shared holder's
+// slot manager (production or staging, routed by the staging parameter) so
+// the ACME order and its challenge tokens live in the manager the data
+// plane serves; tests replace it via WithIssuer so nothing touches the
+// network.
 type IssueFunc func(ctx context.Context, domain, email string, staging bool) (*x509.Certificate, error)
 
 const (
@@ -143,31 +142,24 @@ func NewService(holder *ACMEHolder, globalEmail func() string, opts ...Option) *
 	return s
 }
 
-// buildIssueManager assembles a one-shot manager for a single domain against
-// one cache directory. Managers are intentionally rebuilt per attempt: the
-// request/renewal paths are low-frequency, and reusing the data-plane holder
-// would couple issuance to the site-config whitelist, which the
-// request-first flow must not depend on.
-func buildIssueManager(domain, email string, staging bool, cacheDir string) *autocert.Manager {
-	m := &autocert.Manager{
-		Cache:      autocert.DirCache(cacheDir),
-		HostPolicy: autocert.HostWhitelist(domain),
-		Email:      email,
-		Prompt:     autocert.AcceptTOS,
-	}
-	if staging {
-		m.Client = &acme.Client{DirectoryURL: stagingDirectoryURL}
-	}
-	return m
-}
-
-// defaultIssue drives the one-shot manager. autocert reads its context
-// from hello.Context(), which a synthetic ClientHelloInfo cannot set
-// (unexported field), so the issueTimeout is enforced by an outer select:
-// on timeout the task fails while the issuance goroutine drains on its own
-// (the ACME endpoints apply their own deadlines).
+// defaultIssue drives the certificate-library issuance through the shared
+// holder's slot manager for the requested mode (production or staging): the
+// ACME order and its challenge tokens live in the same manager instance the
+// data plane serves, so TLS-ALPN-01 and HTTP-01 validations reach them — the
+// one-shot manager this replaced kept both in a private instance no
+// challenge connection could ever answer (the issuance could not complete).
+//
+// autocert's GetCertificate builds its own 5-minute context (x/crypto
+// v0.57.0, autocert.go L274) and never reads hello.Context(), which a
+// synthetic ClientHelloInfo could not set anyway. The issueTimeout is
+// therefore enforced by an outer select: on timeout the task fails while
+// the issuance goroutine drains on its own (the ACME endpoints apply their
+// own deadlines).
 func (s *Service) defaultIssue(ctx context.Context, domain, email string, staging bool) (*x509.Certificate, error) {
-	m := buildIssueManager(domain, email, staging, cacheDirFor(s.base, staging))
+	m := s.holder.slotFor(domain, staging, email)
+	if m == nil {
+		return nil, errors.New("certmgr: no ACME manager available for the requested mode")
+	}
 	type result struct {
 		leaf *x509.Certificate
 		err  error
@@ -310,6 +302,12 @@ func (s *Service) Request(domain, email string, staging bool) (RequestTask, erro
 	task := *t
 	s.mu.Unlock()
 
+	// Whitelist the pending domain in the holder (dynamic HostPolicy) before
+	// the issuance goroutine starts: request-first issuance must pass the
+	// slot manager's policy even though no site and no cached certificate
+	// references the domain yet. run() settles the registration (cooldown
+	// window on failure, keep-until-covered on success).
+	s.holder.register(domain, staging)
 	go s.run(t)
 	return task, nil
 }
@@ -349,12 +347,22 @@ func (s *Service) run(t *RequestTask) {
 		t.Status = TaskFailed
 		t.Error = err.Error()
 		s.cooldown[taskKey(t.Staging, t.Domain)] = time.Now().Add(failureCooldown)
+		// Keep the domain whitelisted until the cooldown ends (card decision):
+		// the retry after the cooldown re-registers, and meanwhile the
+		// handshake/challenge path still reaches the manager instead of
+		// bouncing off a stale whitelist.
+		s.holder.settle(t.Domain, t.Staging, true)
 		return
 	}
 	t.Status = TaskSuccess
 	if leaf != nil {
 		t.NotAfter = rfc3339(leaf.NotAfter)
 	}
+	// Issuance succeeded: the certificate now sits in the slot's cache
+	// directory. Keep the registration (no expiry) so the data plane serves
+	// the domain immediately; the next rebuild folds it into the whitelist
+	// from CachedHosts and prunes the registration.
+	s.holder.settle(t.Domain, t.Staging, false)
 }
 
 // emailFor resolves the contact fallback chain: requested email first, then

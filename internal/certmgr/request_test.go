@@ -50,7 +50,7 @@ func TestValidateDomain(t *testing.T) {
 		{"a-b.example.co.uk", true},
 		{"xn--fiq228c.example.com", true}, // punycode label
 		{"", false},
-		{"*.example.com", false},  // wildcard (DNS-01 only)
+		{"*.example.com", false},   // wildcard (DNS-01 only)
 		{"example.com:443", false}, // port baggage
 		{"https://example.com", false},
 		{"-bad.example.com", false},
@@ -240,12 +240,14 @@ func TestRequestTaskHistoryCap(t *testing.T) {
 	}
 }
 
-// TestACMEManagerMergesCachedHosts covers the "request first, attach site
-// later" guarantee: cached certificate domains (production AND staging
-// directories) stay in the rebuilt manager's whitelist even without any
-// ACME site, so the manager keeps serving and renewing them, including
-// across restarts.
-func TestACMEManagerMergesCachedHosts(t *testing.T) {
+// TestACMEHolderMergesCachedHostsPerSlot covers the "request first, attach
+// site later" guarantee per slot: cached certificate domains stay in the
+// rebuilt manager's whitelist of their OWN slot even without any ACME site
+// (so the manager keeps serving and renewing them, including across
+// restarts), and the two cache directories never bleed into each other's
+// whitelist (staging certificates are never served or re-issued by the
+// production manager and vice versa).
+func TestACMEHolderMergesCachedHostsPerSlot(t *testing.T) {
 	base := t.TempDir()
 	far := time.Now().Add(90 * 24 * time.Hour)
 	if err := os.WriteFile(filepath.Join(base, "e.local"), genTestCertPEM(t, []string{"e.local"}, far), 0o600); err != nil {
@@ -259,29 +261,39 @@ func TestACMEManagerMergesCachedHosts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// No ACME site at all, but cached certificates keep ACME enabled.
-	m := ACMEManager(&config.Config{}, base, "")
-	if m == nil {
-		t.Fatal("ACMEManager = nil, want manager for cached certificates")
+	// No ACME site at all, but cached certificates keep their slots enabled.
+	h := NewACMEHolder(base)
+	prod, staging := h.Rebuild(&config.Config{}, "")
+	if prod == nil || staging == nil {
+		t.Fatalf("Rebuild = (%v, %v), want managers for cached certificates", prod, staging)
 	}
-	for _, host := range []string{"e.local", "f.local"} {
-		if err := m.HostPolicy(context.Background(), host); err != nil {
-			t.Fatalf("HostPolicy(%q) = %v, want allowed", host, err)
-		}
+	ctx := context.Background()
+	if err := prod.HostPolicy(ctx, "e.local"); err != nil {
+		t.Fatalf("prod HostPolicy(e.local) = %v, want allowed", err)
 	}
-	if err := m.HostPolicy(context.Background(), "other.local"); err == nil {
-		t.Fatal("HostPolicy(other.local) = nil, want rejected")
+	if err := prod.HostPolicy(ctx, "f.local"); err == nil {
+		t.Fatal("prod HostPolicy(f.local) = nil, want rejected (staging cache must not bleed)")
+	}
+	if err := staging.HostPolicy(ctx, "f.local"); err != nil {
+		t.Fatalf("staging HostPolicy(f.local) = %v, want allowed", err)
+	}
+	if err := staging.HostPolicy(ctx, "e.local"); err == nil {
+		t.Fatal("staging HostPolicy(e.local) = nil, want rejected (prod cache must not bleed)")
 	}
 
-	// With an ACME site, both site domains and cached domains are allowed.
+	// With an ACME site, both the site domains and the slot's cached domains
+	// are allowed; the other slot is untouched.
 	cfg := &config.Config{Sites: []config.Site{
 		{Domains: []string{"site.local"}, ACME: &config.ACMESettings{}},
 	}}
-	m = ACMEManager(cfg, base, "")
-	for _, host := range []string{"site.local", "e.local", "f.local"} {
-		if err := m.HostPolicy(context.Background(), host); err != nil {
-			t.Fatalf("HostPolicy(%q) = %v, want allowed", host, err)
+	prod, staging = h.Rebuild(cfg, "")
+	for _, host := range []string{"site.local", "e.local"} {
+		if err := prod.HostPolicy(ctx, host); err != nil {
+			t.Fatalf("prod HostPolicy(%q) = %v, want allowed", host, err)
 		}
+	}
+	if err := staging.HostPolicy(ctx, "site.local"); err == nil {
+		t.Fatal("staging HostPolicy(site.local) = nil, want rejected")
 	}
 }
 

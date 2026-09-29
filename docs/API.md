@@ -273,5 +273,5 @@ Prometheus 文本格式。核心指标：
 
 | 路径 | 说明 |
 |---|---|
-| `/.well-known/acme-challenge/*` | ACME HTTP-01（启用 ACME 时自动挂载；重定向豁免） |
+| `/.well-known/acme-challenge/*` | ACME HTTP-01 挑战应答（启用 ACME 时挂载；挑战路径先于数据面命中 ACME 引擎，生产/staging 双槽按 token 归属应答，其余路径回落数据面；重定向豁免。TLS-ALPN-01 挑战不走 HTTP：由 443 监听常驻协商 ALPN `acme-tls/1` 后直通引擎应答） |
 | `/.well-known/km-captcha/verify` | 滑块验证校验端点（GET，参数 token/x/back；成功签发 `km_captcha` Cookie） |

@@ -40,6 +40,8 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 			"/api/certificates/upload":    postOp("上传证书（cert+key 或压缩包 zip/tar.gz，5 层，内容识别+公钥配对）", nil),
 			"/api/certificates/uploads":   getOp("已上传证书库", nil),
 			"/api/certificates/uploads/{name}": deleteOp("删除证书库条目（被站点/控制台引用时拒绝）"),
+			"/api/certs/acme/request": mergeOps(postOp("证书库 ACME 在线申请证书（单域名异步签发：body {domain,email?,staging}，202 返回申请任务；同域名并发/已缓存幂等返回原任务；429 失败冷却、400 域名或监听前置校验失败、501 未启用证书库）", nil), getOp("查询 ACME 申请任务状态（?id=，缺 id 400、未知 id 404；任务含 id/domain/staging/status(pending|running|success|failed)/error/not_after 等）", nil)),
+			"/api/certs/acme/entries": getOp("证书库 ACME 托管证书条目（读生产/staging 双缓存目录，生产在前；含有效期/状态/最近续期检查）", nil),
 			"/api/policy/whitelist": postOp("一键加白 → 生成微引擎放行规则（站点+路径条件，action=allow 跳过全部检测；幂等，重复返回 unchanged）", nil),
 			"/api/policy/micro-rules/hits": getOp("微引擎规则命中计数（进程内计数，重启归零，与每条规则的审计开关无关）", nil),
 			"/api/policy/exceptions": mergeOps(getOp("[deprecated] 误报加白例外列表（旧版，改用 /api/policy/whitelist）", nil), postOp("[deprecated] 新增加白例外（旧版，改用 /api/policy/whitelist）", nil)),

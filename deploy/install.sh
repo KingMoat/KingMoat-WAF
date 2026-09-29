@@ -734,6 +734,18 @@ migrate_legacy_data() {
         rm -f "$DATA_DIR/upgrade/intent.json"
         log "cleared $DATA_DIR/upgrade/intent.json (prevents false-failure rollback after the migration)"
     fi
+    # Rewrite stale absolute paths inside the migrated config.json: a legacy
+    # config may point audit_log_dir (or other files) at $OLD_DATA_DIR,
+    # which the new unit's ReadWritePaths sandbox does not allow - SQLite
+    # then fails with SQLITE_CANTOPEN and the service crash-loops. The
+    # trailing-slash pattern cannot touch kingmoatwaf paths ("kingmoat/"
+    # never matches inside "kingmoatwaf/").
+    if [[ -n "$OLD_DATA_DIR" && "$OLD_DATA_DIR" != "$DATA_DIR" && -f "$DATA_DIR/config.json" ]]; then
+        if grep -q "$OLD_DATA_DIR/" "$DATA_DIR/config.json"; then
+            sed -i "s|$OLD_DATA_DIR/|$DATA_DIR/|g" "$DATA_DIR/config.json"
+            log "rewrote legacy $OLD_DATA_DIR/ paths in $DATA_DIR/config.json"
+        fi
+    fi
     # Manual-install layout keeps the seed config under /etc/kingmoat; the
     # install.sh layout keeps it in the data dir - carry it over when the
     # migrated data dir has none. The legacy /etc/kingmoat/env is NOT

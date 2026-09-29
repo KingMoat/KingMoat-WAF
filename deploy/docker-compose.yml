@@ -1,4 +1,4 @@
-# KingMoat all-in-one compose stack: data plane + console in ONE container.
+# KingMoat WAF all-in-one compose stack: data plane + console in ONE container.
 #
 # Usage:
 #   1. prepare the data dir on a LOCAL disk (SQLite fails on NFS/SMB/network drives):
@@ -13,14 +13,14 @@
 #   4. verify:
 #        console    https://localhost:8081   (self-signed cert; accept the warning)
 #        data plane http://localhost:80      (mapped to container :8080)
-#        logs       docker logs -f kingmoat
+#        logs       docker logs -f kingmoatwaf
 services:
-  kingmoat:
+  kingmoatwaf:
     build:
       context: ..                      # repo root: the Dockerfile builds from source
       dockerfile: deploy/Dockerfile
-    image: kingmoat:local
-    container_name: kingmoat
+    image: kingmoatwaf:local
+    container_name: kingmoatwaf
     restart: unless-stopped            # restart on crash and on docker daemon restart
     ports:
       - "80:8080"                      # data plane HTTP   (host 80  -> container listen_http :8080)
@@ -30,8 +30,8 @@ services:
     environment:
       # OPTIONAL but recommended for internet-exposed consoles: anchor the admin
       # password with an argon2id hash (skips the default-credential window).
-      # Generate it with a locally downloaded kingmoat-cli:
-      #   kingmoat-cli hash-password -stdin  <<< 'YourStrongPassw0rd!'
+      # Generate it with a locally downloaded kmwafctl:
+      #   kmwafctl hash-password -stdin  <<< 'YourStrongPassw0rd!'
       # If unset, sign in with the bootstrap account kmadmin / KingMoat@2026 —
       # a password change is forced at first login.
       # KINGMOAT_ADMIN_HASH: "$argon2id$v=19$m=65536,t=3,p=4$..."
@@ -46,7 +46,7 @@ services:
     # probe, poll the console status API from the host or a sidecar instead:
     #   curl -ksf https://127.0.0.1:8081/api/status
     healthcheck:
-      test: ["CMD", "/kingmoat-cli", "version"]
+      test: ["CMD", "/kmwafctl", "version"]
       interval: 30s
       timeout: 3s
       retries: 3

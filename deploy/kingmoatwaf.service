@@ -16,25 +16,26 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-# StateDirectory creates /var/lib/kingmoat with correct ownership and keeps it
-# writable despite ProtectSystem=strict (config DB, audit logs, cert library,
-# acme-cache all live there). ConfigurationDirectory covers /etc/kingmoat.
-StateDirectory=kingmoat
-ConfigurationDirectory=kingmoat
-WorkingDirectory=/var/lib/kingmoat
-# Console admin password hash (argon2id): generate with `kingmoat-cli hash-password -stdin`
-# and drop it into /etc/kingmoat/env as KINGMOAT_ADMIN_HASH=...
+# StateDirectory creates /var/lib/kingmoatwaf with correct ownership and keeps
+# it writable despite ProtectSystem=strict (config DB, audit logs, cert
+# library, acme-cache all live there). ConfigurationDirectory covers
+# /etc/kingmoatwaf.
+StateDirectory=kingmoatwaf
+ConfigurationDirectory=kingmoatwaf
+WorkingDirectory=/var/lib/kingmoatwaf
+# Console admin password hash (argon2id): generate with `kmwafctl hash-password -stdin`
+# and drop it into /etc/kingmoatwaf/env as KINGMOAT_ADMIN_HASH=...
 # (optional: KINGMOAT_ADMIN_TOTP=<base32>, KINGMOAT_AI_API_KEY=<provider key>)
 # If the hash is unset, console auth is still enforced: sign in with the
 # bootstrap account kmadmin / KingMoat@2026 (password change forced at first login).
-EnvironmentFile=-/etc/kingmoat/env
+EnvironmentFile=-/etc/kingmoatwaf/env
 # Console port (CONSOLE_PORT): the in-console port change (settings page)
 # rewrites this file and restarts the unit. Create it before first start:
-#   echo CONSOLE_PORT=8443 | sudo tee /var/lib/kingmoat/console.env
-#   sudo chmod 600 /var/lib/kingmoat/console.env
+#   echo CONSOLE_PORT=8443 | sudo tee /var/lib/kingmoatwaf/console.env
+#   sudo chmod 600 /var/lib/kingmoatwaf/console.env
 # If it is missing the unit fails to start (keep the dash prefix removed for
 # fail-fast behavior; restore the value as shown above to recover).
-EnvironmentFile=/var/lib/kingmoat/console.env
+EnvironmentFile=/var/lib/kingmoatwaf/console.env
 # -config            seed config, imported on first boot; live config lives in the console DB
 # -console-addr      embedded console (Web UI + /api/* + /metrics); HTTPS by default
 #                    (self-signed bootstrap cert; replace from the console settings);
@@ -46,8 +47,8 @@ EnvironmentFile=/var/lib/kingmoat/console.env
 # fails (exit 0 when no intent / intent satisfied / files missing), and
 # the leading "-" makes systemd ignore its exit code even if the binary
 # itself is missing - startup must never be blocked by this hook.
-ExecStartPre="-/usr/local/bin/kingmoat-cli" upgrade-rollback -data-dir /var/lib/kingmoat
-ExecStart=/usr/local/bin/kingmoat -config /etc/kingmoat/config.json -console-addr 127.0.0.1:${CONSOLE_PORT} -console-db /var/lib/kingmoat/kingmoat.db
+ExecStartPre="-/usr/local/bin/kmwafctl" upgrade-rollback -data-dir /var/lib/kingmoatwaf
+ExecStart=/usr/local/bin/kingmoatwaf -config /etc/kingmoatwaf/config.json -console-addr 127.0.0.1:${CONSOLE_PORT} -console-db /var/lib/kingmoatwaf/kingmoat.db
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=65536

@@ -6,12 +6,12 @@ KingMoat 支持 **all-in-one** 单二进制部署：数据面（反向代理 + W
 ## 1. 目录规划
 
 ```
-C:\kingmoat\
-├── kingmoat.exe          # 数据面 + 内嵌控制台
-├── kingmoat-cli.exe      # 配置校验 / 密码工具（hash-password / reset-password）
-├── config.json           # 初始种子配置（首次启动导入配置库，之后以控制台配置为准）
-├── kingmoat.db           # 控制台配置库（首次启动自动创建）
-└── logs\                 # 审计数据（audit_log_dir）：audit.db + archive\ 归档
+C:\kingmoatwaf\
+├── kingmoatwaf.exe         # 数据面 + 内嵌控制台
+├── kmwafctl.exe            # 配置校验 / 密码工具（hash-password / reset-password）
+├── config.json             # 初始种子配置（首次启动导入配置库，之后以控制台配置为准）
+├── kingmoat.db             # 控制台配置库（首次启动自动创建）
+└── logs\                   # 审计数据（audit_log_dir）：audit.db + archive\ 归档
 ```
 
 > 整个目录必须位于**本地磁盘**：SQLite 在 NFS/SMB/网盘同步目录上会报
@@ -21,7 +21,7 @@ disk I/O error。控制台示例端口统一用 `8443`（`-console-addr` 可任�
 
 ```powershell
 # 生成 argon2id 哈希（输出形如 $argon2id$v=19$...；-stdin 可避免口令进入 shell 历史）
-echo 'YourStrongPassw0rd!' | .\kingmoat-cli.exe hash-password -stdin
+echo 'YourStrongPassw0rd!' | .\kmwafctl.exe hash-password -stdin
 
 # 为服务设置环境变量（系统级，服务重启后生效）
 [Environment]::SetEnvironmentVariable("KINGMOAT_ADMIN_HASH", "<粘贴上面的哈希>", "Machine")
@@ -34,9 +34,9 @@ echo 'YourStrongPassw0rd!' | .\kingmoat-cli.exe hash-password -stdin
 ## 3. 手工启动验证
 
 ```powershell
-cd C:\kingmoat
-.\kingmoat-cli.exe validate -config config.json
-.\kingmoat.exe -config config.json -console-addr 127.0.0.1:8443 -console-db C:\kingmoat\kingmoat.db
+cd C:\kingmoatwaf
+.\kmwafctl.exe validate -config config.json
+.\kingmoatwaf.exe -config config.json -console-addr 127.0.0.1:8443 -console-db C:\kingmoatwaf\kingmoat.db
 ```
 
 - 数据面监听 `config.json` 的 `listen_http` / `listen_https`
@@ -50,16 +50,16 @@ cd C:\kingmoat
 
 ### 方式 A：WinSW（推荐，无外部依赖）
 
-把 `WinSW-x64.exe` 复制为 `C:\kingmoat\kingmoat-service.exe`，同目录放 `kingmoat-service.xml`：
+把 `WinSW-x64.exe` 复制为 `C:\kingmoatwaf\kingmoatwaf-service.exe`，同目录放 `kingmoatwaf-service.xml`：
 
 ```xml
 <service>
-  <id>kingmoat</id>
+  <id>kingmoatwaf</id>
   <name>KingMoat WAF</name>
   <description>KingMoat WAF data plane + console</description>
-  <executable>C:\kingmoat\kingmoat.exe</executable>
-  <arguments>-config C:\kingmoat\config.json -console-addr 127.0.0.1:8443 -console-db C:\kingmoat\kingmoat.db</arguments>
-  <workingdirectory>C:\kingmoat</workingdirectory>
+  <executable>C:\kingmoatwaf\kingmoatwaf.exe</executable>
+  <arguments>-config C:\kingmoatwaf\config.json -console-addr 127.0.0.1:8443 -console-db C:\kingmoatwaf\kingmoat.db</arguments>
+  <workingdirectory>C:\kingmoatwaf</workingdirectory>
   <env name="KINGMOAT_ADMIN_HASH">$env{KINGMOAT_ADMIN_HASH}</env>
   <startmode>Automatic</startmode>
   <onfailure action="restart" delay="3 sec"/>
@@ -68,17 +68,17 @@ cd C:\kingmoat
 ```
 
 ```powershell
-.\kingmoat-service.exe install
-.\kingmoat-service.exe start
+.\kingmoatwaf-service.exe install
+.\kingmoatwaf-service.exe start
 ```
 
 ### 方式 B：NSSM
 
 ```powershell
-nssm install kingmoat C:\kingmoat\kingmoat.exe "-config C:\kingmoat\config.json -console-addr 127.0.0.1:8443 -console-db C:\kingmoat\kingmoat.db"
-nssm set kingmoat AppDirectory C:\kingmoat
-nssm set kingmoat AppEnvironmentExtra KINGMOAT_ADMIN_HASH=<哈希>
-nssm start kingmoat
+nssm install kingmoatwaf C:\kingmoatwaf\kingmoatwaf.exe "-config C:\kingmoatwaf\config.json -console-addr 127.0.0.1:8443 -console-db C:\kingmoatwaf\kingmoat.db"
+nssm set kingmoatwaf AppDirectory C:\kingmoatwaf
+nssm set kingmoatwaf AppEnvironmentExtra KINGMOAT_ADMIN_HASH=<哈希>
+nssm start kingmoatwaf
 ```
 
 ## 5. 防火墙
@@ -97,8 +97,8 @@ New-NetFirewallRule -DisplayName "KingMoat Console" -Direction Inbound -Protocol
 ## 6. 升级
 
 配置与版本记录都在 `kingmoat.db`（SQLite），升级只需替换二进制后重启服务；
-新版本启动时自动沿用既有配置库（先停服务、备份整个 `C:\kingmoat\`，再替换
-`kingmoat.exe`）。误发布配置优先用控制台「配置版本」页一键回滚（旧版本以新
+新版本启动时自动沿用既有配置库（先停服务、备份整个 `C:\kingmoatwaf\`，再替换
+`kingmoatwaf.exe`）。误发布配置优先用控制台「配置版本」页一键回滚（旧版本以新
 revision 追加发布，热生效），而不是降级二进制。
 
 ## 7. 常见问题

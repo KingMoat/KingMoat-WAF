@@ -17,6 +17,12 @@
 #      (port occupancy on the host is checked with ss before the service starts)
 #   4. Generates a minimal config.json and installs a systemd unit
 #   5. Starts the service and verifies the console responds
+#   6. Legacy migration: a pre-kingmoatwaf install (v0.7.9-beta and earlier:
+#      /etc/kingmoat-install.conf, kingmoat.service, /opt/kingmoat,
+#      /var/lib/kingmoat) is detected and migrated to the new layout
+#      automatically - data is copied and verified, the old directories are
+#      renamed aside (never deleted), any pending upgrade intent is dropped
+#      (it would otherwise trigger a false-failure rollback on first boot)
 #
 # Requirements: root (or sudo), systemd, amd64 or arm64.
 # ============================================================================
@@ -54,9 +60,84 @@ need_root() {
     fi
 }
 
-# Set to true after an upgrade has stopped a running service and back to
-# false once the service is confirmed running again; cleanup() reads it to
-# best-effort restart the service on any aborted exit path (no rollback).
+# Parse an install-record file with a strict two-key whitelist instead of
+# sourcing it - it must never execute as root. Sets _conf_install/_conf_data
+# (empty when absent or illegal; illegal values are warned about). Used for
+# both the new (/etc/kingmoatwaf-install.conf) and the legacy
+# (/etc/kingmoat-install.conf) record layout.
+parse_install_conf() {
+    local file="$1"
+    _conf_install=""
+    _conf_data=""
+    local line key val
+    while IFS= read -r line; do
+        key="${line%%=*}"
+        val="${line#*=}"
+        case "$key" in
+            INSTALL_DIR|DATA_DIR) ;;
+            *) continue ;;
+        esac
+        # Expect the exact quoted form the installer writes: KEY="value"
+        val="${val%\"}"
+        val="${val#\"}"
+        case "$val" in
+            /*) ;;
+            *) warn "ignoring illegal value in $file for $key (not an absolute path)"; continue ;;
+        esac
+        case "$val" in
+            *'"'*|*'$'*|*'`'*|*' '*) warn "ignoring illegal value in $file for $key (unsupported characters)"; continue ;;
+        esac
+        case "$key" in
+            INSTALL_DIR) _conf_install="$val" ;;
+            DATA_DIR)    _conf_data="$val" ;;
+        esac
+    done < "$file"
+}
+
+# ---------------------------------------------------------------------------
+# Legacy install detection (v0.7.9-beta and earlier layout)
+# ---------------------------------------------------------------------------
+# A legacy install is identified by its install record or its systemd unit
+# (either implies the other once, but manual installs only have the unit).
+# Old paths serve as fallbacks when the record is missing or points nowhere.
+# Detection runs before the directory prompts so the prompts can announce
+# the pending migration; nothing is modified here.
+readonly LEGACY_CONF="/etc/kingmoat-install.conf"
+readonly LEGACY_UNIT="/etc/systemd/system/kingmoat.service"
+readonly LEGACY_DEFAULT_INSTALL="/opt/kingmoat"
+readonly LEGACY_DEFAULT_DATA="/var/lib/kingmoat"
+MIGRATE=false
+OLD_INSTALL_DIR=""
+OLD_DATA_DIR=""
+# Whether a legacy /etc/kingmoat config dir exists (manual-install layout):
+# checked at detection time because finalize_legacy_migration renames it
+# aside before the summary banner is printed.
+HAD_LEGACY_ETC=false
+
+detect_legacy_install() {
+    OLD_INSTALL_DIR="$LEGACY_DEFAULT_INSTALL"
+    OLD_DATA_DIR="$LEGACY_DEFAULT_DATA"
+    if [[ -f "$LEGACY_CONF" ]]; then
+        parse_install_conf "$LEGACY_CONF"
+        [[ -n "${_conf_install:-}" ]] && OLD_INSTALL_DIR="$_conf_install"
+        [[ -n "${_conf_data:-}" ]] && OLD_DATA_DIR="$_conf_data"
+    elif [[ ! -f "$LEGACY_UNIT" ]]; then
+        return 1
+    fi
+    if [[ -d /etc/kingmoat ]]; then
+        HAD_LEGACY_ETC=true
+    fi
+    # A record/unit pointing at dirs that do not exist is a stale leftover:
+    # there is nothing to migrate, install fresh.
+    [[ -d "$OLD_INSTALL_DIR" || -d "$OLD_DATA_DIR" ]] || return 1
+    MIGRATE=true
+    return 0
+}
+
+# Set to true after an upgrade/migration has stopped a running service and
+# back to false once the service is confirmed running again; cleanup() reads
+# it to best-effort restart the service on any aborted exit path (no
+# rollback).
 SERVICE_STOPPED=false
 
 # ---------------------------------------------------------------------------
@@ -68,12 +149,20 @@ SERVICE_STOPPED=false
 cleanup() {
     trap - EXIT
     if [[ "${SERVICE_STOPPED:-false}" == true ]]; then
-        # Upgrade aborted between "systemctl stop" and a verified running
-        # service: best-effort restart, no version rollback. A new binary
-        # that cannot start is left failed on purpose - the original error
-        # must stay visible.
-        warn "attempting to restart kingmoat.service after aborted run ..."
-        systemctl start kingmoat.service 2>/dev/null || true
+        # Upgrade/migration aborted between "systemctl stop" and a verified
+        # running service: best-effort restart, no version rollback. A new
+        # binary that cannot start is left failed on purpose - the original
+        # error must stay visible.
+        # Two-level attempt: the new kingmoatwaf unit when present (upgrade,
+        # or a migration that already got that far - its data dir is complete
+        # by then), otherwise the legacy kingmoat unit (an aborted early
+        # migration: the legacy unit and data dir are both untouched). A
+        # failing start blocks until systemd gives up before falling through
+        # to the legacy unit - slow but the safe direction.
+        warn "attempting to restart the service after aborted run ..."
+        systemctl start kingmoatwaf.service 2>/dev/null \
+            || systemctl start kingmoat.service 2>/dev/null \
+            || true
     fi
     if [[ -n "${TMPDIR_INSTALL:-}" ]]; then
         rm -rf "$TMPDIR_INSTALL" 2>/dev/null || true
@@ -136,15 +225,15 @@ done
 # ---------------------------------------------------------------------------
 # Only trust a caller-provided KINGMOAT_REEXEC that looks like what this
 # script itself sets for the second pass: an absolute path under
-# /tmp/kingmoat-install.* pointing at an existing file. Anything else is
+# /tmp/kingmoatwaf-install.* pointing at an existing file. Anything else is
 # dropped so a forged value can neither bypass the guard nor leak into the
 # cleanup rm below.
 KINGMOAT_REEXEC="${KINGMOAT_REEXEC:-}"
-if [[ -n "$KINGMOAT_REEXEC" && ( $KINGMOAT_REEXEC != /* || $KINGMOAT_REEXEC != /tmp/kingmoat-install.* || ! -f $KINGMOAT_REEXEC ) ]]; then
+if [[ -n "$KINGMOAT_REEXEC" && ( $KINGMOAT_REEXEC != /* || $KINGMOAT_REEXEC != /tmp/kingmoatwaf-install.* || ! -f $KINGMOAT_REEXEC ) ]]; then
     KINGMOAT_REEXEC=""
 fi
 if [[ ! -t 0 && -z "$KINGMOAT_REEXEC" && $NONINTERACTIVE == false && $UNINSTALL == false ]]; then
-    _reexec="$(mktemp /tmp/kingmoat-install.XXXXXX)"
+    _reexec="$(mktemp /tmp/kingmoatwaf-install.XXXXXX)"
     # Re-download a complete copy (see the rationale above); fail over to the
     # mirror URL when the primary is unreachable.
     if ! curl -fsSL --max-time 60 -o "$_reexec" "$INSTALLER_URL_PRIMARY" \
@@ -177,43 +266,31 @@ fi
 if $UNINSTALL; then
     need_root
     # Prefer the install metadata written by a previous run of this script
-    # (custom install dirs); fall back to the default location. The conf is
-    # parsed with a strict two-key whitelist instead of being sourced - it
-    # must never execute as root. Illegal values are skipped with a warning
-    # and the default applies: uninstall must not be blocked by a corrupted
-    # conf, and a missed (warned-about) dir beats a wrongly deleted one.
-    INSTALL_DIR="/opt/kingmoat"
-    if [[ -f /etc/kingmoat-install.conf ]]; then
-        while IFS= read -r _conf_line; do
-            _conf_key="${_conf_line%%=*}"
-            _conf_val="${_conf_line#*=}"
-            case "$_conf_key" in
-                INSTALL_DIR|DATA_DIR) ;;
-                *) continue ;;
-            esac
-            # Expect the exact quoted form the installer writes: KEY="value"
-            _conf_val="${_conf_val%\"}"
-            _conf_val="${_conf_val#\"}"
-            case "$_conf_val" in
-                /*) ;;
-                *) warn "ignoring illegal value in /etc/kingmoat-install.conf for $_conf_key (not an absolute path)"; continue ;;
-            esac
-            case "$_conf_val" in
-                *'"'*|*'$'*|*'`'*|*' '*) warn "ignoring illegal value in /etc/kingmoat-install.conf for $_conf_key (unsupported characters)"; continue ;;
-            esac
-            case "$_conf_key" in
-                INSTALL_DIR) INSTALL_DIR="$_conf_val" ;;
-                DATA_DIR)    [[ -z "$DATA_DIR" ]] && DATA_DIR="$_conf_val" ;;
-            esac
-        done < /etc/kingmoat-install.conf
-    fi
-    log "stopping and disabling kingmoat.service ..."
+    # (custom install dirs); fall back to the legacy pre-rename record
+    # (/etc/kingmoat-install.conf) so old installs uninstall cleanly too.
+    # The conf is parsed with a strict two-key whitelist instead of being
+    # sourced - it must never execute as root. Illegal values are skipped
+    # with a warning and the default applies: uninstall must not be blocked
+    # by a corrupted conf, and a missed (warned-about) dir beats a wrongly
+    # deleted one.
+    INSTALL_DIR="/opt/kingmoatwaf"
+    for _rec in /etc/kingmoatwaf-install.conf /etc/kingmoat-install.conf; do
+        [[ -f "$_rec" ]] || continue
+        parse_install_conf "$_rec"
+        [[ -n "${_conf_install:-}" ]] && INSTALL_DIR="$_conf_install"
+        [[ -n "${_conf_data:-}" && -z "$DATA_DIR" ]] && DATA_DIR="$_conf_data"
+        break
+    done
+    log "stopping and disabling kingmoatwaf.service (and any legacy kingmoat.service) ..."
+    systemctl disable --now kingmoatwaf.service 2>/dev/null || true
     systemctl disable --now kingmoat.service 2>/dev/null || true
-    rm -f /etc/systemd/system/kingmoat.service /etc/kingmoat-install.conf
+    rm -f /etc/systemd/system/kingmoatwaf.service /etc/systemd/system/kingmoat.service \
+        /etc/kingmoatwaf-install.conf /etc/kingmoat-install.conf
     systemctl daemon-reload
     rm -rf "$INSTALL_DIR"
     warn "data dir NOT removed. Remove manually if desired:"
-    warn "  rm -rf ${DATA_DIR:-/var/lib/kingmoat}"
+    warn "  rm -rf ${DATA_DIR:-/var/lib/kingmoatwaf}"
+    warn "renamed-aside migration backups (*.migrated-*) are NOT removed either."
     log "uninstall done."
     exit 0
 fi
@@ -294,9 +371,9 @@ resolve_version
 # ---------------------------------------------------------------------------
 # Download
 # ---------------------------------------------------------------------------
-TMPDIR_INSTALL=$(mktemp -d /tmp/kingmoat-install.XXXXXX)
+TMPDIR_INSTALL=$(mktemp -d /tmp/kingmoatwaf-install.XXXXXX)
 
-PKG_NAME="kingmoat_${RELEASE_TAG}_linux_${PKG_ARCH}"
+PKG_NAME="kingmoatwaf_${RELEASE_TAG}_linux_${PKG_ARCH}"
 # Gitee asset naming convention (no dot in tag): tar.gz
 ASSET_FILE="${PKG_NAME}.tar.gz"
 DL_URL_GITEE="${GITEE_DL}/${RELEASE_TAG}/${ASSET_FILE}"
@@ -348,37 +425,49 @@ log "checksum verified ✓"
 # Extract
 log "extracting ..."
 tar -xzf "$TMPDIR_INSTALL/$ASSET_FILE" -C "$TMPDIR_INSTALL"
-if [[ ! -f "$TMPDIR_INSTALL/kingmoat" ]]; then
+if [[ ! -f "$TMPDIR_INSTALL/kingmoatwaf" ]]; then
     # The archive wraps contents in a top-level package directory (e.g.
-    # kingmoat_v0.7.5-beta_linux_amd64/). Search exactly one level below the
-    # temp dir: -mindepth 1 keeps the temp dir itself (named kingmoat-install.*)
-    # from matching its own kingmoat* prefix, -maxdepth 1 matches the wrapper
-    # our packager produces without descending further.
-    SUBDIR=$(find "$TMPDIR_INSTALL" -mindepth 1 -maxdepth 1 -type d -name 'kingmoat*' | head -1)
+    # kingmoatwaf_v0.7.10-beta_linux_amd64/). Search exactly one level below
+    # the temp dir: -mindepth 1 keeps the temp dir itself (named
+    # kingmoatwaf-install.*) from matching its own kingmoatwaf* prefix,
+    # -maxdepth 1 matches the wrapper our packager produces without
+    # descending further.
+    SUBDIR=$(find "$TMPDIR_INSTALL" -mindepth 1 -maxdepth 1 -type d -name 'kingmoatwaf*' | head -1)
     if [[ -n "$SUBDIR" ]]; then
         mv "$SUBDIR"/* "$TMPDIR_INSTALL/"
     fi
 fi
-[[ -f "$TMPDIR_INSTALL/kingmoat" ]] || err "kingmoat binary not found in archive"
+[[ -f "$TMPDIR_INSTALL/kingmoatwaf" ]] || err "kingmoatwaf binary not found in archive"
 log "extracted ✓"
-chmod +x "$TMPDIR_INSTALL/kingmoat"
-[[ -f "$TMPDIR_INSTALL/kingmoat-cli" ]] && chmod +x "$TMPDIR_INSTALL/kingmoat-cli"
+chmod +x "$TMPDIR_INSTALL/kingmoatwaf"
+[[ -f "$TMPDIR_INSTALL/kmwafctl" ]] && chmod +x "$TMPDIR_INSTALL/kmwafctl"
 
 # ---------------------------------------------------------------------------
 # Interactive directory selection
 # ---------------------------------------------------------------------------
-INSTALL_DIR="/opt/kingmoat"
+# Detect a legacy (pre-kingmoatwaf) install BEFORE the prompts so they can
+# announce the pending migration. Purely informational here - nothing is
+# modified until after the ports are settled and the old service is stopped.
+detect_legacy_install || true
+
+INSTALL_DIR="/opt/kingmoatwaf"
 if [[ $NONINTERACTIVE == false ]]; then
     # Every prompt tolerates EOF (piped install without a terminal): read
     # keeps the default and the install continues unattended.
     echo ""
+    if [[ $MIGRATE == true ]]; then
+        printf '\033[1;36m── 检测到旧版安装 ──\033[0m\n'
+        echo "发现旧版布局：安装目录 $OLD_INSTALL_DIR、数据目录 $OLD_DATA_DIR（记录/服务 kingmoat.service）。"
+        echo "回车采用下方默认新目录即可自动迁移：数据目录复制并校验后切换，旧目录改名保留（*.migrated-<时间戳>，不删除）。"
+        echo "迁移会先停旧服务 kingmoat.service，待新服务 kingmoatwaf 验证正常后再清理旧 unit。"
+    fi
     printf '\033[1;36m── 安装目录 ──\033[0m\n'
     read -rp "安装目录 [$INSTALL_DIR]: " INPUT_INSTALL || true
     [[ -n "${INPUT_INSTALL:-}" ]] && INSTALL_DIR="$INPUT_INSTALL"
 
     printf '\033[1;36m── 数据目录 ──\033[0m\n'
     echo "数据目录存放 SQLite 配置库、审计日志与证书（必须是本机磁盘，不能是 NFS/SMB）。"
-    DEFAULT_DATA="/var/lib/kingmoat"
+    DEFAULT_DATA="/var/lib/kingmoatwaf"
     read -rp "数据目录 [$DEFAULT_DATA]: " INPUT_DATA || true
     if [[ -n "${INPUT_DATA:-}" ]]; then
         DATA_DIR="$INPUT_DATA"
@@ -390,7 +479,7 @@ fi
 # Validate data dir is on a local filesystem (create it first so the
 # detection can resolve the mount instead of silently failing on a
 # missing path)
-DATA_DIR="${DATA_DIR:-/var/lib/kingmoat}"
+DATA_DIR="${DATA_DIR:-/var/lib/kingmoatwaf}"
 mkdir -p "$DATA_DIR" 2>/dev/null || true
 _fs_type=""
 if command -v findmnt &>/dev/null; then
@@ -432,9 +521,20 @@ CONFIG_FILE="$DATA_DIR/config.json"
 OLD_HTTP_ADDR=""
 OLD_HTTPS_ADDR=""
 _old_console=""
+# Effective config source for port seeding: the NEW data dir first (plain
+# upgrade), then the legacy data dir and finally the legacy /etc/kingmoat
+# seed (manual-install layout keeps config.json there) when migrating.
+CONFIG_SRC=""
 if [[ -f "$CONFIG_FILE" ]]; then
-    OLD_HTTP_ADDR=$(grep -oP '"listen_http"\s*:\s*"\K[^"]*' "$CONFIG_FILE" | head -1 || true)
-    OLD_HTTPS_ADDR=$(grep -oP '"listen_https"\s*:\s*"\K[^"]*' "$CONFIG_FILE" | head -1 || true)
+    CONFIG_SRC="$CONFIG_FILE"
+elif [[ $MIGRATE == true && -n "$OLD_DATA_DIR" && "$OLD_DATA_DIR" != "$DATA_DIR" && -f "$OLD_DATA_DIR/config.json" ]]; then
+    CONFIG_SRC="$OLD_DATA_DIR/config.json"
+elif [[ $MIGRATE == true && -f /etc/kingmoat/config.json ]]; then
+    CONFIG_SRC="/etc/kingmoat/config.json"
+fi
+if [[ -n "$CONFIG_SRC" ]]; then
+    OLD_HTTP_ADDR=$(grep -oP '"listen_http"\s*:\s*"\K[^"]*' "$CONFIG_SRC" | head -1 || true)
+    OLD_HTTPS_ADDR=$(grep -oP '"listen_https"\s*:\s*"\K[^"]*' "$CONFIG_SRC" | head -1 || true)
 fi
 FINAL_HTTP_ADDR="$OLD_HTTP_ADDR"
 FINAL_HTTPS_ADDR="$OLD_HTTPS_ADDR"
@@ -447,7 +547,7 @@ elif [[ $DATA_PORT_SET == false ]]; then
     [[ "$_p" =~ ^[0-9]{1,5}$ ]] && DATA_PORT_DEFAULT="$_p"
 fi
 if [[ -z "$FINAL_HTTPS_ADDR" ]]; then
-    if [[ -f "$CONFIG_FILE" ]]; then
+    if [[ -n "$CONFIG_SRC" ]]; then
         FINAL_HTTPS_ADDR=""           # upgrade from an older install: keep the HTTPS data plane off unless a port is entered below
         [[ $DATA_HTTPS_PORT_SET == false ]] && DATA_HTTPS_PORT_DEFAULT=""
     else
@@ -473,11 +573,27 @@ if [[ -f "$CONSOLE_ENV_FILE" && $CONSOLE_PORT_SET == false ]]; then
         CONSOLE_PORT_DEFAULT="$_env_console"
     fi
 fi
-if [[ -z "$_old_console" && -f /etc/systemd/system/kingmoat.service && $CONSOLE_PORT_SET == false ]]; then
-    _old_console=$(sed -n 's/.*-console-addr [^[:space:]]*:\([0-9]\{1,5\}\).*/\1/p' /etc/systemd/system/kingmoat.service | head -1 || true)
+# Migration: the port the legacy console.env carries wins over the old unit
+# (same precedence as above - the env file is the newer mechanism).
+if [[ -z "$_old_console" && $MIGRATE == true && -n "$OLD_DATA_DIR" && "$OLD_DATA_DIR" != "$DATA_DIR" && -f "$OLD_DATA_DIR/console.env" && $CONSOLE_PORT_SET == false ]]; then
+    _old_console=$(sed -n 's/^CONSOLE_PORT=\([0-9]\{1,5\}\).*/\1/p' "$OLD_DATA_DIR/console.env" | head -1 || true)
     if [[ -n "$_old_console" ]]; then
         CONSOLE_PORT_DEFAULT="$_old_console"
     fi
+fi
+# Last resort: parse the -console-addr out of the existing unit. The legacy
+# kingmoat.service covers migrations, kingmoatwaf.service covers pre-envfile
+# installs on the new layout (the current unit carries the literal
+# \${CONSOLE_PORT} there, which the numeric match below simply ignores).
+if [[ -z "$_old_console" && $CONSOLE_PORT_SET == false ]]; then
+    for _unit in /etc/systemd/system/kingmoat.service /etc/systemd/system/kingmoatwaf.service; do
+        [[ -f "$_unit" ]] || continue
+        _old_console=$(sed -n 's/.*-console-addr [^[:space:]]*:\([0-9]\{1,5\}\).*/\1/p' "$_unit" | head -1 || true)
+        if [[ -n "$_old_console" ]]; then
+            CONSOLE_PORT_DEFAULT="$_old_console"
+            break
+        fi
+    done
 fi
 
 # ---------------------------------------------------------------------------
@@ -506,7 +622,7 @@ if [[ $NONINTERACTIVE == false ]]; then
         if [[ -n "${INPUT_HTTPS_PORT:-}" ]]; then
             DATA_HTTPS_PORT_DEFAULT="$INPUT_HTTPS_PORT"
         fi
-    elif [[ ! -f "$CONFIG_FILE" || $DATA_HTTPS_PORT_SET == true ]]; then
+    elif [[ -z "$CONFIG_SRC" || $DATA_HTTPS_PORT_SET == true ]]; then
         # Fresh install (or an explicit --https-port): Enter enables the
         # HTTPS data plane on the shown default, matching the -y path and
         # the banner above.
@@ -550,21 +666,134 @@ validate_port "console" "$CONSOLE_PORT_DEFAULT"
 # ---------------------------------------------------------------------------
 # Install files
 # ---------------------------------------------------------------------------
-# Upgrades: stop the service before replacing the running binary (an in-place
-# cp over a live executable fails with ETXTBSY and set -e aborts midway).
-if systemctl cat kingmoat.service &>/dev/null && systemctl is-active --quiet kingmoat.service; then
-    log "stopping existing kingmoat.service for upgrade ..."
-    systemctl stop kingmoat.service
+# Upgrades/migration: stop the running service before replacing anything
+# (an in-place cp over a live executable fails with ETXTBSY and set -e
+# aborts midway). The legacy kingmoat.service is only stopped for a
+# migration; its unit file is left in place until the new service is
+# verified, so an aborted run can always restart it (see cleanup()).
+if systemctl cat kingmoatwaf.service &>/dev/null && systemctl is-active --quiet kingmoatwaf.service; then
+    log "stopping existing kingmoatwaf.service for upgrade ..."
+    systemctl stop kingmoatwaf.service
     # From here until the service is confirmed running again, any exit path
     # (error, signal) must try to bring it back - see cleanup().
     SERVICE_STOPPED=true
+elif [[ $MIGRATE == true ]] && systemctl is-active --quiet kingmoat.service 2>/dev/null; then
+    log "stopping legacy kingmoat.service for migration ..."
+    systemctl stop kingmoat.service
+    SERVICE_STOPPED=true
+fi
+
+# ---------------------------------------------------------------------------
+# Legacy data migration (pre-kingmoatwaf installs)
+# ---------------------------------------------------------------------------
+# Runs AFTER the old service is stopped (no live writes while copying) and
+# BEFORE anything destructive happens. Deliberately conservative strategy:
+#   - copy (cp -a) the legacy data dir into the new one, then verify file
+#     count and byte total; the legacy dir is NOT touched by the copy, so a
+#     failed/aborted copy leaves the old install fully intact and restartable
+#     (the cleanup hook restarts it). A same-filesystem mv would be cheaper
+#     but is NOT used: once moved, any failure past that point could no
+#     longer restart the old service against its data.
+#   - verification compares file count and du -sb byte totals between the
+#     legacy dir and the copy
+#   - any pending upgrade intent is dropped UNCONDITIONALLY: after the
+#     layout migration the L1/L2 self-heal (kmwafctl upgrade-rollback /
+#     startup check) would compare the NEW kingmoatwaf binary against the
+#     recorded intent, judge the migration a failed upgrade and roll the
+#     service back to a legacy kingmoat backup. intent.json only carries
+#     target_version/target_sha256/backup/timestamp - nothing the migration
+#     needs, everything the self-heal must not see.
+#   - renaming the legacy dirs aside (*.migrated-<ts>) happens only AFTER
+#     the new service is verified running (finalize_legacy_migration);
+#     until then the legacy install stays startable at its original paths.
+migrate_legacy_data() {
+    if [[ "$OLD_DATA_DIR" != "$DATA_DIR" ]]; then
+        log "migrating legacy data: $OLD_DATA_DIR -> $DATA_DIR"
+        if ! cp -a "$OLD_DATA_DIR/." "$DATA_DIR/"; then
+            warn "a partial copy may exist at $DATA_DIR; remove it manually if desired (rm -rf)"
+            err "data migration copy failed; aborting - legacy install untouched, restart it manually with: sudo systemctl start kingmoat.service"
+        fi
+        local src_files dst_files src_bytes dst_bytes
+        src_files=$(find "$OLD_DATA_DIR" -type f | wc -l)
+        dst_files=$(find "$DATA_DIR" -type f | wc -l)
+        src_bytes=$(du -sb "$OLD_DATA_DIR" | awk '{print $1}')
+        dst_bytes=$(du -sb "$DATA_DIR" | awk '{print $1}')
+        if [[ "$src_files" != "$dst_files" || "$src_bytes" != "$dst_bytes" ]]; then
+            warn "copy verification FAILED (files $src_files->$dst_files, bytes $src_bytes->$dst_bytes)"
+            warn "a partial copy may exist at $DATA_DIR; remove it manually if desired (rm -rf)"
+            err "data migration verification failed; aborting - legacy install untouched, restart it manually with: sudo systemctl start kingmoat.service"
+        fi
+        log "data migration verified ✓ ($src_files files, $src_bytes bytes)"
+    else
+        log "data dir unchanged ($DATA_DIR): the legacy install already targets it, no copy needed"
+    fi
+    if [[ -f "$DATA_DIR/upgrade/intent.json" ]]; then
+        rm -f "$DATA_DIR/upgrade/intent.json"
+        log "cleared $DATA_DIR/upgrade/intent.json (prevents false-failure rollback after the migration)"
+    fi
+    # Manual-install layout keeps the seed config under /etc/kingmoat; the
+    # install.sh layout keeps it in the data dir - carry it over when the
+    # migrated data dir has none. The legacy /etc/kingmoat/env is NOT
+    # carried over: it belongs to the manual unit (see the summary banner
+    # for what that means for KINGMOAT_ADMIN_HASH).
+    if [[ -f /etc/kingmoat/config.json && ! -f "$DATA_DIR/config.json" ]]; then
+        cp -a /etc/kingmoat/config.json "$DATA_DIR/config.json"
+        log "carried legacy /etc/kingmoat/config.json into $DATA_DIR/config.json"
+    fi
+}
+
+# Tear down the legacy layout AFTER the new service is verified running.
+# Everything here is a rename-aside or a removal of now-redundant unit/record
+# files - never a data deletion. A failing step degrades to a warning (the
+# new layout is already live; aborting here would only mislead), and the
+# leftover is reported for manual cleanup.
+finalize_legacy_migration() {
+    local ts
+    ts=$(date +%Y%m%d%H%M%S)
+    if [[ "$OLD_DATA_DIR" != "$DATA_DIR" && -d "$OLD_DATA_DIR" ]]; then
+        if mv "$OLD_DATA_DIR" "${OLD_DATA_DIR}.migrated-${ts}"; then
+            log "legacy data dir preserved as ${OLD_DATA_DIR}.migrated-${ts}"
+        else
+            warn "could not rename legacy data dir $OLD_DATA_DIR aside - rename it manually once the new layout is confirmed good"
+        fi
+    fi
+    if [[ "$OLD_INSTALL_DIR" != "$INSTALL_DIR" && -d "$OLD_INSTALL_DIR" ]]; then
+        if mv "$OLD_INSTALL_DIR" "${OLD_INSTALL_DIR}.migrated-${ts}"; then
+            log "legacy install dir (binaries, kingmoat.bak-* upgrade backups) preserved as ${OLD_INSTALL_DIR}.migrated-${ts}"
+        else
+            warn "could not rename legacy install dir $OLD_INSTALL_DIR aside - rename it manually once the new layout is confirmed good"
+        fi
+    fi
+    if [[ -d /etc/kingmoat ]]; then
+        if mv /etc/kingmoat "/etc/kingmoat.migrated-${ts}"; then
+            log "legacy config dir /etc/kingmoat preserved as /etc/kingmoat.migrated-${ts}"
+        else
+            warn "could not rename legacy config dir /etc/kingmoat aside - rename it manually once the new layout is confirmed good"
+        fi
+    fi
+    if [[ -f "$LEGACY_UNIT" ]]; then
+        systemctl disable kingmoat.service 2>/dev/null || true
+        rm -f "$LEGACY_UNIT"
+        systemctl daemon-reload
+        log "removed legacy kingmoat.service unit"
+    fi
+    if [[ -f "$LEGACY_CONF" ]]; then
+        if mv "$LEGACY_CONF" "${LEGACY_CONF}.migrated-${ts}"; then
+            log "legacy install record preserved as ${LEGACY_CONF}.migrated-${ts}"
+        else
+            warn "could not rename legacy install record $LEGACY_CONF aside - remove it manually once the new layout is confirmed good"
+        fi
+    fi
+}
+if [[ $MIGRATE == true ]]; then
+    migrate_legacy_data
 fi
 
 # ---------------------------------------------------------------------------
 # Port occupancy & exclusivity
 # ---------------------------------------------------------------------------
 # Deliberately checked AFTER the old service has been stopped: during an
-# upgrade the running kingmoat itself holds the very ports we are about to
+# upgrade the running kingmoatwaf itself holds the very ports we are about to
 # re-use, so checking earlier would flag our own service as a squatter.
 # ss reports listeners on the whole host - that is the point: what matters
 # is whether any OTHER process on the host would keep the port from binding.
@@ -646,14 +875,14 @@ chmod 600 "$CONSOLE_ENV_FILE"
 
 log "installing to $INSTALL_DIR ..."
 mkdir -p "$INSTALL_DIR" "$DATA_DIR/logs" "$DATA_DIR/archive"
-cp "$TMPDIR_INSTALL/kingmoat"      "$INSTALL_DIR/kingmoat"
-[[ -f "$TMPDIR_INSTALL/kingmoat-cli" ]]      && cp "$TMPDIR_INSTALL/kingmoat-cli"      "$INSTALL_DIR/kingmoat-cli"
+cp "$TMPDIR_INSTALL/kingmoatwaf" "$INSTALL_DIR/kingmoatwaf"
+[[ -f "$TMPDIR_INSTALL/kmwafctl" ]]          && cp "$TMPDIR_INSTALL/kmwafctl"          "$INSTALL_DIR/kmwafctl"
 [[ -f "$TMPDIR_INSTALL/README.md" ]]         && cp "$TMPDIR_INSTALL/README.md"         "$INSTALL_DIR/"
 [[ -f "$TMPDIR_INSTALL/LICENSE" ]]           && cp "$TMPDIR_INSTALL/LICENSE"           "$INSTALL_DIR/"
 [[ -f "$TMPDIR_INSTALL/NOTICE" ]]            && cp "$TMPDIR_INSTALL/NOTICE"            "$INSTALL_DIR/"
 [[ -f "$TMPDIR_INSTALL/THIRD-PARTY-LICENSES" ]] && cp "$TMPDIR_INSTALL/THIRD-PARTY-LICENSES" "$INSTALL_DIR/"
-chmod +x "$INSTALL_DIR/kingmoat"
-[[ -f "$INSTALL_DIR/kingmoat-cli" ]] && chmod +x "$INSTALL_DIR/kingmoat-cli"
+chmod +x "$INSTALL_DIR/kingmoatwaf"
+[[ -f "$INSTALL_DIR/kmwafctl" ]] && chmod +x "$INSTALL_DIR/kmwafctl"
 
 # ---------------------------------------------------------------------------
 # Generate config.json (fresh install) / patch listen_* fields (upgrade)
@@ -722,7 +951,7 @@ fi
 # config.json. \${CONSOLE_PORT} below is expanded by systemd from the env
 # file, not by this script.
 log "installing systemd unit ..."
-cat > /etc/systemd/system/kingmoat.service <<UNIT
+cat > /etc/systemd/system/kingmoatwaf.service <<UNIT
 [Unit]
 Description=KingMoat WAF (all-in-one: data plane + console)
 Documentation=https://gitee.com/kingmoat/KingMoat-WAF
@@ -736,8 +965,8 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-StateDirectory=kingmoat
-ConfigurationDirectory=kingmoat
+StateDirectory=kingmoatwaf
+ConfigurationDirectory=kingmoatwaf
 ReadWritePaths=${DATA_DIR} ${INSTALL_DIR}
 WorkingDirectory=${DATA_DIR}
 # Console port (CONSOLE_PORT) lives in the EnvironmentFile so the running
@@ -751,8 +980,8 @@ EnvironmentFile=${DATA_DIR}/console.env
 # fails (exit 0 when no intent / intent satisfied / files missing), and
 # the leading "-" makes systemd ignore its exit code even if the binary
 # itself is missing - startup must never be blocked by this hook.
-ExecStartPre="-${INSTALL_DIR}/kingmoat-cli" upgrade-rollback -data-dir "${DATA_DIR}"
-ExecStart="${INSTALL_DIR}/kingmoat" -config "${CONFIG_FILE}" -console-addr 0.0.0.0:\${CONSOLE_PORT} -console-db "${DATA_DIR}/kingmoat.db"
+ExecStartPre="-${INSTALL_DIR}/kmwafctl" upgrade-rollback -data-dir "${DATA_DIR}"
+ExecStart="${INSTALL_DIR}/kingmoatwaf" -config "${CONFIG_FILE}" -console-addr 0.0.0.0:\${CONSOLE_PORT} -console-db "${DATA_DIR}/kingmoat.db"
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=65536
@@ -765,17 +994,17 @@ systemctl daemon-reload
 # ---------------------------------------------------------------------------
 # Start
 # ---------------------------------------------------------------------------
-log "starting kingmoat.service ..."
-systemctl enable --now kingmoat.service
+log "starting kingmoatwaf.service ..."
+systemctl enable --now kingmoatwaf.service
 sleep 2
 
-if systemctl is-active --quiet kingmoat.service; then
+if systemctl is-active --quiet kingmoatwaf.service; then
     log "service is running ✓"
     # The upgrade's stop/start window is closed; from here on a failure no
     # longer needs service recovery in cleanup().
     SERVICE_STOPPED=false
 else
-    err "service failed to start. Check: journalctl -u kingmoat -n 30"
+    err "service failed to start. Check: journalctl -u kingmoatwaf -n 30"
 fi
 
 # Smoke check
@@ -790,11 +1019,29 @@ fi
 # ---------------------------------------------------------------------------
 # Done
 # ---------------------------------------------------------------------------
+# The new service is verified running: only now is the legacy layout torn
+# down (rename-aside + unit/record removal) - an aborted run before this
+# point could always restart the legacy install (see cleanup()).
+if [[ $MIGRATE == true ]]; then
+    finalize_legacy_migration
+fi
+
 echo ""
 printf '\033[1;32m════════════════════════════════════════════════\033[0m\n'
 printf '\033[1;32m KingMoat WAF installed successfully!\033[0m\n'
 printf '\033[1;32m════════════════════════════════════════════════\033[0m\n'
 echo ""
+if [[ $MIGRATE == true ]]; then
+    echo "  Migration: legacy data $OLD_DATA_DIR -> $DATA_DIR (copied and verified)"
+    echo "             legacy dirs/record renamed aside as *.migrated-* (kept, never deleted;"
+    echo "             remove them manually once the new layout is confirmed good)"
+    echo "             pending upgrade intent cleared - old kingmoat backups will NOT auto-rollback"
+    if [[ $HAD_LEGACY_ETC == true ]]; then
+        echo "             NOTE: legacy /etc/kingmoat/env (KINGMOAT_ADMIN_HASH etc.) is not carried;"
+        echo "             reset the admin password with: ${INSTALL_DIR}/kmwafctl reset-password"
+    fi
+    echo ""
+fi
 _host_ip=$(hostname -I | awk '{print $1}')
 if [[ -n "$DATA_HTTPS_PORT_DEFAULT" ]]; then
     echo "  Data plane: http://${_host_ip}:${DATA_PORT_DEFAULT} / https://${_host_ip}:${DATA_HTTPS_PORT_DEFAULT}"
@@ -806,17 +1053,18 @@ echo "            https://127.0.0.1:${CONSOLE_PORT_DEFAULT}  (local, self-signed
 echo "  Account:  kmadmin / KingMoat@2026  (change password at first login!)"
 echo "  Config:   $CONFIG_FILE"
 echo "  Data:     $DATA_DIR"
-echo "  Logs:     journalctl -u kingmoat -f"
+echo "  Logs:     journalctl -u kingmoatwaf -f"
 echo ""
 echo "  Useful commands:"
-echo "    systemctl status kingmoat"
-echo "    systemctl restart kingmoat"
-echo "    ${INSTALL_DIR}/kingmoat-cli hash-password -password '...'"
+echo "    systemctl status kingmoatwaf"
+echo "    systemctl restart kingmoatwaf"
+echo "    ${INSTALL_DIR}/kmwafctl status        # service, ports, console URL"
+echo "    ${INSTALL_DIR}/kmwafctl hash-password -password '...'"
 echo ""
 
 # Persist install locations for uninstall / future upgrades
-cat > /etc/kingmoat-install.conf <<META
+cat > /etc/kingmoatwaf-install.conf <<META
 INSTALL_DIR="$INSTALL_DIR"
 DATA_DIR="$DATA_DIR"
 META
-chmod 600 /etc/kingmoat-install.conf
+chmod 600 /etc/kingmoatwaf-install.conf

@@ -6,7 +6,7 @@ set -euo pipefail
 
 VERSION="${1:-dev}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUTROOT="$ROOT/dist/kingmoat_${VERSION}"
+OUTROOT="$ROOT/dist/kingmoatwaf_${VERSION}"
 
 rm -rf "$OUTROOT"
 mkdir -p "$OUTROOT"
@@ -21,7 +21,7 @@ LDFLAGS="-s -w -X main.version=${VERSION} -X github.com/kingmoat/kingmoat/intern
 build_pkg() {
     local os="$1" arch="$2" ext=""
     [ "$os" = "windows" ] && ext=".exe"
-    local pkgName="kingmoat_${VERSION}_${os}_${arch}"
+    local pkgName="kingmoatwaf_${VERSION}_${os}_${arch}"
     local pkgDir="$OUTROOT/$pkgName"
     mkdir -p "$pkgDir"
 
@@ -29,13 +29,13 @@ build_pkg() {
     # no_fs_access: coraza skips its /tmp writability probe at WAF build time
     # (hardened systemd units keep /tmp read-only). All coraza inputs are
     # embedded, so local FS access is never needed.
-    GOOS="$os" GOARCH="$arch" go build -trimpath -tags no_fs_access -ldflags "$LDFLAGS" -o "$pkgDir/kingmoat$ext" ./cmd/kingmoat
-    GOOS="$os" GOARCH="$arch" go build -trimpath -tags no_fs_access -ldflags "$LDFLAGS" -o "$pkgDir/kingmoat-cli$ext" ./cmd/kingmoat-cli
+    GOOS="$os" GOARCH="$arch" go build -trimpath -tags no_fs_access -ldflags "$LDFLAGS" -o "$pkgDir/kingmoatwaf$ext" ./cmd/kingmoatwaf
+    GOOS="$os" GOARCH="$arch" go build -trimpath -tags no_fs_access -ldflags "$LDFLAGS" -o "$pkgDir/kmwafctl$ext" ./cmd/kmwafctl
 
     cp LICENSE NOTICE README.md config.example.json "$pkgDir/"
     cp "$OUTROOT/THIRD-PARTY-LICENSES" "$pkgDir/"
-    go version -m "$pkgDir/kingmoat$ext" > "$pkgDir/SBOM.txt"
-    cp deploy/kingmoat.service "$pkgDir/"
+    go version -m "$pkgDir/kingmoatwaf$ext" > "$pkgDir/SBOM.txt"
+    cp deploy/kingmoatwaf.service "$pkgDir/"
     [ "$os" = "windows" ] && cp deploy/windows.md "$pkgDir/"
 
     if [ "$os" = "windows" ]; then

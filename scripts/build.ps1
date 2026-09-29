@@ -1,6 +1,6 @@
 # KingMoat release build script (Windows / PowerShell 5.1+)
 # Usage: .\scripts\build.ps1 [-Version v0.1.0] [-OutputDir dist]
-# Produces: dist/kingmoat_<ver>/kingmoat_<ver>_<os>_<arch>.{zip,tar.gz} + checksums.txt
+# Produces: dist/kingmoatwaf_<ver>/kingmoatwaf_<ver>_<os>_<arch>.{zip,tar.gz} + checksums.txt
 # Targets: windows/amd64, linux/amd64, linux/arm64 (CGO disabled, pure static)
 [CmdletBinding()]
 param(
@@ -34,7 +34,7 @@ $platforms = @(
     @{ os = "linux";   arch = "arm64" }
 )
 
-$outRoot = Join-Path $root "$OutputDir\kingmoat_$Version"
+$outRoot = Join-Path $root "$OutputDir\kingmoatwaf_$Version"
 if (Test-Path $outRoot) { Remove-Item -Recurse -Force $outRoot }
 New-Item -ItemType Directory -Force $outRoot | Out-Null
 
@@ -78,7 +78,7 @@ foreach ($p in $platforms) {
     $ext = ""
     if ($p.os -eq "windows") { $ext = ".exe" }
 
-    $pkgName = "kingmoat_${Version}_$($p.os)_$($p.arch)"
+    $pkgName = "kingmoatwaf_${Version}_$($p.os)_$($p.arch)"
     $pkgDir = Join-Path $outRoot $pkgName
     New-Item -ItemType Directory -Force $pkgDir | Out-Null
 
@@ -88,16 +88,16 @@ foreach ($p in $platforms) {
     # ReadWritePaths) where the probe fails and cold start exits. All coraza
     # inputs are embedded (@include of the bundled CRS), so local FS access is
     # never needed. See deploy/install.sh for the unit layout.
-    go build -trimpath -tags no_fs_access -ldflags $ldflags -o (Join-Path $pkgDir "kingmoat$ext") ./cmd/kingmoat
-    if ($LASTEXITCODE -ne 0) { Pop-Location; throw "build kingmoat failed for $($p.os)/$($p.arch)" }
-    go build -trimpath -tags no_fs_access -ldflags $ldflags -o (Join-Path $pkgDir "kingmoat-cli$ext") ./cmd/kingmoat-cli
-    if ($LASTEXITCODE -ne 0) { Pop-Location; throw "build kingmoat-cli failed for $($p.os)/$($p.arch)" }
+    go build -trimpath -tags no_fs_access -ldflags $ldflags -o (Join-Path $pkgDir "kingmoatwaf$ext") ./cmd/kingmoatwaf
+    if ($LASTEXITCODE -ne 0) { Pop-Location; throw "build kingmoatwaf failed for $($p.os)/$($p.arch)" }
+    go build -trimpath -tags no_fs_access -ldflags $ldflags -o (Join-Path $pkgDir "kmwafctl$ext") ./cmd/kmwafctl
+    if ($LASTEXITCODE -ne 0) { Pop-Location; throw "build kmwafctl failed for $($p.os)/$($p.arch)" }
 
     Copy-Item (Join-Path $root "LICENSE"), (Join-Path $root "NOTICE"), (Join-Path $root "README.md"), (Join-Path $root "config.example.json") $pkgDir
     Copy-Item (Join-Path $outRoot "THIRD-PARTY-LICENSES") $pkgDir
-    go version -m (Join-Path $pkgDir "kingmoat$ext") | Out-File -Encoding utf8 (Join-Path $pkgDir "SBOM.txt")
+    go version -m (Join-Path $pkgDir "kingmoatwaf$ext") | Out-File -Encoding utf8 (Join-Path $pkgDir "SBOM.txt")
     if ($LASTEXITCODE -ne 0) { Pop-Location; throw "go version -m failed for $($p.os)/$($p.arch)" }
-    Copy-Item (Join-Path $root "deploy\kingmoat.service") $pkgDir
+    Copy-Item (Join-Path $root "deploy\kingmoatwaf.service") $pkgDir
     if ($p.os -eq "windows") {
         Copy-Item (Join-Path $root "deploy\windows.md") $pkgDir
     }

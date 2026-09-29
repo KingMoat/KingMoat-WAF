@@ -1,6 +1,6 @@
 # binaries
-/kingmoat
-/kingmoat-cli
+/kingmoatwaf
+/kmwafctl
 *.exe
 
 # local configs & secrets

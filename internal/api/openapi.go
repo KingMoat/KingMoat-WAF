@@ -57,6 +57,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 			"/api/upgrade/check":          postOp("强制刷新在线升级版本检测（绕过缓存并回写；admin）", nil),
 			"/api/upgrade/start":          postOp("启动在线升级任务（body 可空=升级到最新；任务进行中返回 409+现任务；admin）", nil),
 			"/api/upgrade/task":           getOp("查询升级任务状态（?id=，未知任务 404；admin）", nil),
+			"/api/system/restart":         postOp("重启 kingmoatwaf 服务（异步提交 systemctl --no-block restart，body 可选 delay_seconds 0-60；仅 systemd 部署，非 systemd 501；admin）", nil),
 			"/api/assets/apis":            getOp("API 资产清单", nil),
 			"/api/risks":                  getOp("风险列表", nil),
 			"/api/risks/scan":             postOp("触发风险扫描", nil),

@@ -101,6 +101,10 @@ type ReplaceFunc func(ctx context.Context, t *Task) error
 // RestartFunc restarts the service fire-and-forget (T-06).
 type RestartFunc func(ctx context.Context, t *Task) error
 
+// RestartSubmitFunc submits a STANDALONE service restart (the console API's
+// POST /api/system/restart path, outside the upgrade task machinery).
+type RestartSubmitFunc func(ctx context.Context) error
+
 // ProbeFunc reports whether this deployment can swap the running binaries
 // and restart the service (production: platform, writable binary directory
 // and systemd probe; tests: canned verdicts).
@@ -128,6 +132,9 @@ type Service struct {
 	verifyFn   VerifyFunc
 	replaceFn  ReplaceFunc
 	restartFn  RestartFunc
+
+	// Standalone-restart submission (console API path; see Restart).
+	restartSubmitFn RestartSubmitFunc
 
 	// Replace capability seams (see replace.go): probeFn overrides the
 	// capability probe; binaryDir pins the directory of the running
@@ -175,6 +182,13 @@ func WithReplacer(f ReplaceFunc) Option { return func(s *Service) { s.replaceFn 
 
 // WithRestarter replaces the restart stage (wired by T-06).
 func WithRestarter(f RestartFunc) Option { return func(s *Service) { s.restartFn = f } }
+
+// WithRestartSubmitter replaces the standalone-restart submission used by
+// Restart (console API path; tests inject canned verdicts so no real
+// systemctl is touched).
+func WithRestartSubmitter(f RestartSubmitFunc) Option {
+	return func(s *Service) { s.restartSubmitFn = f }
+}
 
 // WithProber replaces the replace-capability probe (tests: forced verdicts;
 // see replace.go for the production probe).
@@ -238,6 +252,7 @@ func NewService(currentVersion, dataDir string, opts ...Option) *Service {
 	s.verifyFn = s.verifyDownload
 	s.replaceFn = s.defaultReplace
 	s.restartFn = s.defaultRestartStage
+	s.restartSubmitFn = defaultRestarter
 	s.euidProbe = os.Geteuid
 	for _, o := range opts {
 		o(s)

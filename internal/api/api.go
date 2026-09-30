@@ -320,6 +320,9 @@ type Options struct {
 	// RestartDelay defers the restart so the change response reaches the
 	// client first (0 = 2s). Test hook.
 	RestartDelay time.Duration
+	// SystemRestartDelay defers the POST /api/system/restart submission so
+	// the response reaches the client first (0 = 1s default). Test hook.
+	SystemRestartDelay time.Duration
 	// EuidProbe reports the effective uid of the running process (nil =
 	// os.Geteuid). The online port-change flow requires root: non-root units
 	// get their systemctl restart rejected by the default polkit policy.
@@ -457,6 +460,10 @@ func New(opts Options) *Server {
 	mux.HandleFunc("POST /api/upgrade/check", s.handleUpgradeCheck)
 	mux.HandleFunc("POST /api/upgrade/start", s.handleUpgradeStart)
 	mux.HandleFunc("GET /api/upgrade/task", s.handleUpgradeTask)
+	// Whole-service restart (admin): submits the systemd unit restart via
+	// the upgrade service (501 when unavailable). Registered unconditionally
+	// like the upgrade group: the handler degrades instead of vanishing.
+	mux.HandleFunc("POST /api/system/restart", s.handleSystemRestart)
 	if opts.ConsoleTLS != nil {
 		mux.HandleFunc("GET /api/console/tls", s.handleConsoleTLSGet)
 		mux.HandleFunc("POST /api/console/tls", s.handleConsoleTLSApply)

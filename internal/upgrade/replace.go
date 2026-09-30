@@ -166,7 +166,7 @@ func (s *Service) probeRestartCapability() error {
 		return fmt.Errorf("二进制目录 %s 不可写（存量部署请重跑 install.sh 更新 systemd 单元后再试）: %w", dir, err)
 	}
 	if _, err := exec.LookPath("systemctl"); err != nil {
-		return fmt.Errorf("未找到 systemctl，无法自动重启服务（非 systemd 部署）")
+		return fmt.Errorf("%w（未找到 systemctl，无法自动重启服务）", ErrRestartUnavailable)
 	}
 	if s.euidProbe() != 0 {
 		return errors.New("当前进程非 root 运行，polkit 默认拒绝其重启 " + naming.ServiceName + " 服务（需要 root 或 polkit 授权重启服务）")

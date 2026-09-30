@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### 新增
+
+- **控制台 API 新增「重启服务」接口（POST /api/system/restart）**：面向脚本/自动化的整服务重启入口（admin 权限），复用在线升级模块的主机能力探测（可写目录/systemctl/root 三条件）与 `systemctl --no-block restart kingmoatwaf` 提交（带提交结果观测与超时上限）。处理顺序为能力探测 → 变更审计落库（`system.restart`，记录操作者/来源 IP/延迟参数；审计写入失败视为前置失败、返回 500 并取消重启，保证管理动作可追溯）→ 返回 `{"status":"restarting"}` → 延迟后异步提交重启（默认约 1 秒，`delay_seconds` 可追加 0-60 秒，越界返回 400），避免响应连接被重启击落。非 systemd 部署形态（Windows/静态部署/无 systemctl）返回 501 并附手动指引（`systemctl restart kingmoatwaf` 或 `kmwafctl restart`），绝不出现杀自身进程的半吊子行为；systemd 存在但 root/权限类探测不满足返回 500。审计记录在控制台「用户管理 → 变更记录」可见；Linux 真机重启冒烟列入下轮部署演练
+
 ### 修复
 
 - **存量布局迁移未改写控制台配置库内的旧数据目录路径**：v0.7.9 及更早实例经一键部署脚本迁移到 kingmoatwaf 布局时，此前只对 `config.json` 做旧路径改写，未处理控制台配置库 `kingmoat.db`——历史发布 revision 的 config JSON 内 `tls_cert` / `tls_key` / 自定义规则文件 / GeoIP 库路径等绝对路径仍指向旧目录，迁移后控制台发布全部失败（`site router: read tls_cert: open /var/lib/kingmoat/...`），需人工改库规避。现迁移段在改写 `config.json` 的同一停服窗口内，对 `kingmoat.db` 的 `revisions` 表执行同规则前缀替换：源串带尾部分隔符（`/var/lib/kingmoat/`），不会误伤已是 `/var/lib/kingmoatwaf/` 的路径，重复执行自然幂等；改写前后各做一次 WAL checkpoint，确保结果落主库文件且后续服务读取一致；DB 不存在或无 `revisions` 表（含空库）时跳过并记录日志；工具按 sqlite3 → python3（内置 sqlite3 模块）降级，两者皆无时打印一条手动修复命令并明确标记「迁移未自动完成」，不阻断安装。路径替换只涉及 `/` 与字母数字，不产生 JSON 转义问题

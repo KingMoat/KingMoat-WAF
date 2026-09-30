@@ -199,6 +199,60 @@ func TestDefaultRestartRequiresIntent(t *testing.T) {
 	}
 }
 
+// TestStandaloneRestartSubmitsAfterProbe: the console API's Restart probes
+// capability then submits exactly once through the injected seam - the
+// standalone path shares the probe discipline but never the upgrade task
+// machinery (no intent marker requirement).
+func TestStandaloneRestartSubmitsAfterProbe(t *testing.T) {
+	var probes, submits atomic.Int32
+	s := NewService("v0.7.8-beta", t.TempDir(),
+		WithProber(func() error { probes.Add(1); return nil }),
+		WithRestartSubmitter(func(context.Context) error { submits.Add(1); return nil }))
+	if err := s.Restart(context.Background()); err != nil {
+		t.Fatalf("Restart = %v", err)
+	}
+	if probes.Load() != 1 || submits.Load() != 1 {
+		t.Fatalf("probes=%d submits=%d, want exactly one of each", probes.Load(), submits.Load())
+	}
+}
+
+// TestStandaloneRestartProbeRefusal: a failed capability probe stops
+// Restart before any submission - a refused restart must never reach
+// systemctl.
+func TestStandaloneRestartProbeRefusal(t *testing.T) {
+	var submits atomic.Int32
+	s := NewService("v0.7.8-beta", t.TempDir(),
+		WithProber(func() error { return errors.New("当前进程非 root 运行") }),
+		WithRestartSubmitter(func(context.Context) error { submits.Add(1); return nil }))
+	err := s.Restart(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "非 root") {
+		t.Fatalf("Restart = %v, want the probe refusal", err)
+	}
+	if submits.Load() != 0 {
+		t.Fatalf("submit invoked %d times after probe refusal, want 0", submits.Load())
+	}
+}
+
+// TestStandaloneRestartUnavailableClassification: the probe classifies
+// "no automatic restart path at all" deployments with ErrRestartUnavailable
+// (console API → 501): on Windows the GOOS branch answers first; on Linux
+// a missing systemctl is classified the same way.
+func TestStandaloneRestartUnavailableClassification(t *testing.T) {
+	s := NewService("v0.7.8-beta", t.TempDir())
+	if runtime.GOOS == "windows" {
+		err := s.RestartProbe()
+		if !errors.Is(err, ErrRestartUnavailable) {
+			t.Fatalf("RestartProbe(windows) = %v, want ErrRestartUnavailable", err)
+		}
+		return
+	}
+	t.Setenv("PATH", "")
+	err := s.RestartProbe()
+	if !errors.Is(err, ErrRestartUnavailable) {
+		t.Fatalf("RestartProbe(no systemctl) = %v, want ErrRestartUnavailable", err)
+	}
+}
+
 // TestRestartSubmissionFailureFailsTask: the DEFAULT restart stage runs
 // the real systemctl submission against a fake on PATH that exits nonzero
 // with a stderr diagnostic (the polkit-denial shape). The task must FAIL

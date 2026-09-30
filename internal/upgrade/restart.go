@@ -16,11 +16,19 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/kingmoat/kingmoat/internal/naming"
 )
+
+// ErrRestartUnavailable marks deployments where the automatic restart path
+// does not exist at all (non-Linux platform, or Linux without systemctl):
+// the console API (POST /api/system/restart) answers 501 for it, while any
+// other probe failure (unwritable binary directory, non-root process) is a
+// 500 - systemd exists, this process just may not use it.
+var ErrRestartUnavailable = errors.New("非 systemd 部署形态，不支持在线重启服务")
 
 // restartSubmitTimeout bounds one `systemctl --no-block` submission.
 // --no-block returns as soon as the job is queued (well under a second in
@@ -139,4 +147,42 @@ func submitRestart(ctx context.Context, cmd *exec.Cmd) error {
 	// err == nil: the verdict is in (job accepted) - a concurrently expired
 	// context does not change that fact, so no timeout check here.
 	return nil
+}
+
+// RestartProbe reports whether a standalone service restart (console API,
+// POST /api/system/restart) can be submitted in this deployment, and why
+// not when it cannot. The console API maps ErrRestartUnavailable to 501
+// (no automatic restart path exists: non-Linux platform or no systemctl)
+// and every other failure to 500 (systemd exists, this process just may
+// not use it). probeFn (WithProber) overrides the whole probe, mirroring
+// the replace stage's seam so tests inject canned verdicts on any host.
+func (s *Service) RestartProbe() error {
+	if s.probeFn != nil {
+		return s.probeFn()
+	}
+	if runtime.GOOS != "linux" {
+		return fmt.Errorf("%w（当前平台 %s）", ErrRestartUnavailable, runtime.GOOS)
+	}
+	return s.probeRestartCapability()
+}
+
+// Restart submits a standalone service restart for the console API
+// (POST /api/system/restart): capability probe followed by the same
+// observed `systemctl --no-block restart` submission the upgrade pipeline
+// uses. Deliberately NOT the upgrade restart stage (defaultRestartStage):
+// a plain restart carries no new binary, so there is no intent marker to
+// require and no self-heal net to arm - that marker check is
+// upgrade-specific and would refuse every API-triggered restart. The
+// submission is bounded (restartSubmitTimeout) and its verdict observed;
+// the caller learns whether the restart was SUBMITTED, never its outcome
+// (this process is torn down with the unit cgroup moments later).
+func (s *Service) Restart(ctx context.Context) error {
+	if err := s.RestartProbe(); err != nil {
+		return err
+	}
+	submit := s.restartSubmitFn
+	if submit == nil {
+		submit = defaultRestarter
+	}
+	return submit(ctx)
 }

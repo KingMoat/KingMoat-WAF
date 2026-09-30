@@ -4,6 +4,8 @@
 
 ### 新增
 
+- **CRS 异常评分机制技术文档与阈值设置页说明补全**：新增 docs/CRS-ANOMALY-SCORING.md，完整说明 CRS 异常评分的计分表（CRITICAL 5 / ERROR 4 / WARNING 3 / NOTICE 2，OWASP CRS 官方默认语义）、累计语义、入站/出站阈值（默认 5 / 4）的语义与官方调优建议、误拦处置优先级（加白 > 调阈值 > 关分类）与排查方法；策略页「CRS 异常评分阈值」页签的入站/出站说明文案补全（默认值、合法范围 1–100、计分规则），并新增计分简表与「详细技术说明」外链（Gitee / GitHub 双仓库，新窗口打开）；docs/CONFIG.md 两个阈值字段说明补充文档交叉引用。纯文档与展示层改动，引擎行为零变更
+
 - **控制台 API 新增「重启服务」接口（POST /api/system/restart）**：面向脚本/自动化的整服务重启入口（admin 权限），复用在线升级模块的主机能力探测（可写目录/systemctl/root 三条件）与 `systemctl --no-block restart kingmoatwaf` 提交（带提交结果观测与超时上限）。处理顺序为能力探测 → 变更审计落库（`system.restart`，记录操作者/来源 IP/延迟参数；审计写入失败视为前置失败、返回 500 并取消重启，保证管理动作可追溯）→ 返回 `{"status":"restarting"}` → 延迟后异步提交重启（默认约 1 秒，`delay_seconds` 可追加 0-60 秒，越界返回 400），避免响应连接被重启击落。非 systemd 部署形态（Windows/静态部署/无 systemctl）返回 501 并附手动指引（`systemctl restart kingmoatwaf` 或 `kmwafctl restart`），绝不出现杀自身进程的半吊子行为；systemd 存在但 root/权限类探测不满足返回 500。审计记录在控制台「用户管理 → 变更记录」可见；Linux 真机重启冒烟列入下轮部署演练
 
 ### 修复

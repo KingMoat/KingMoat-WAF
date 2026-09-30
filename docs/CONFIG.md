@@ -53,8 +53,8 @@
 
 | 字段 | 类型 | 默认 | 说明 |
 |---|---|---|---|
-| `inbound_threshold` | int | 5 | CRS 入站异常评分阈值 |
-| `outbound_threshold` | int | 4 | CRS 出站异常评分阈值 |
+| `inbound_threshold` | int | 5 | CRS 入站异常评分阈值，详见 [docs/CRS-ANOMALY-SCORING.md](CRS-ANOMALY-SCORING.md) |
+| `outbound_threshold` | int | 4 | CRS 出站异常评分阈值，详见 [docs/CRS-ANOMALY-SCORING.md](CRS-ANOMALY-SCORING.md) |
 | `custom_rules` | string | `""` | 全局 SecLang 规则文本（追加在 CRS 之后，发布时编译校验） |
 | `global_acl` | object | 空 | `{"blacklist":[...],"whitelist":[...]}`，先于站点 ACL 生效；条目同站点 ACL（IP/CIDR/group:）。顺序：全局白名单 → 全局黑名单 → 站点白名单 → 站点黑名单，白名单命中即放行并跳过后续全部检测 |
 | `matchers` | array | `[]` | 条件组合规则（MicroEngine 式）：`{name, enabled, sites[], action, logic, conditions[{field,op,value}], disable_stages[], log_enabled}`；field：client_ip/hostname/path/uri/method/user_agent/referer/body/header:X/query:Y/cookie:Z；op：eq/neq/contains/not_contains/prefix/suffix/regex/cidr/in；action：deny/allow/monitor/disable；action=disable 时 `disable_stages` 列出对该站点关闭的检测模块（coraza/semantic/botdetect/botchallenge/ratelimit/captcha，或 `coraza:<分类>` 仅关单个 CRS 检测分类，如 `coraza:sqli`——同一规则内禁止 `coraza` 与 `coraza:<分类>` 混用）；命中后站点级持续生效（发布新配置或删除规则后恢复），`coraza:<分类>` 通过发布时预编译的变体引擎切换（每站点 ≤4 条分类规则、全局 ≤64 个变体，超限发布被拒）；disable 命中与其他动作一致由 `log_enabled` 门控（控制台对 disable 规则默认开启）；规则名称必须唯一（重名发布被拒）；`log_enabled` 开启后 deny 以外的命中写攻击日志 |

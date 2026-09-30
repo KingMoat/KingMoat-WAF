@@ -21,14 +21,33 @@
             <div class="km-title">CRS 异常评分阈值</div>
             <el-form label-width="220px" label-position="left">
               <el-form-item label="入站异常评分阈值（inbound）">
-                <el-input-number v-model="p.inbound" :min="1" :max="100" />
-                <span class="km-dim" style="margin-left:10px;font-size:12px">默认 5；调高减少误拦，调低更严格</span>
+                <div style="width:100%">
+                  <el-input-number v-model="p.inbound" :min="1" :max="100" />
+                  <div class="km-dim" style="font-size:12px;margin-top:4px">默认 5。命中规则按严重级别累计异常分（CRITICAL +5 / ERROR +4 / WARNING +3 / NOTICE +2），累计达到阈值即阻断；合法范围 1–100，调高减少误拦，调低更严格</div>
+                </div>
               </el-form-item>
               <el-form-item label="出站异常评分阈值（outbound）">
-                <el-input-number v-model="p.outbound" :min="1" :max="100" />
-                <span class="km-dim" style="margin-left:10px;font-size:12px">默认 4</span>
+                <div style="width:100%">
+                  <el-input-number v-model="p.outbound" :min="1" :max="100" />
+                  <div class="km-dim" style="font-size:12px;margin-top:4px">默认 4。出站（响应侧）命中规则按严重级别累计异常分，累计达到阈值即阻断；合法范围 1–100，调高减少误拦，调低更严格</div>
+                </div>
               </el-form-item>
             </el-form>
+            <div class="km-dim" style="font-size:12px;margin-top:4px;padding:10px 14px;border:1px solid var(--km-line-soft);border-radius:6px;background:var(--km-bg-2)">
+              <div style="margin-bottom:4px">计分规则：命中规则按严重级别累计异常分，累计达到阈值即阻断（入站 / 出站分别评估）。</div>
+              <table style="border-collapse:collapse;font-size:12px">
+                <tr>
+                  <th style="text-align:left;padding:3px 18px 3px 0;color:var(--km-txt-3);font-weight:500">严重级别</th>
+                  <th style="text-align:left;padding:3px 18px 3px 0;color:var(--km-txt-3);font-weight:500">分值</th>
+                  <th style="text-align:left;padding:3px 18px 3px 0;color:var(--km-txt-3);font-weight:500">典型来源</th>
+                </tr>
+                <tr><td style="padding:3px 18px 3px 0">CRITICAL</td><td style="padding:3px 18px 3px 0">5</td><td style="padding:3px 0">应用攻击类规则（SQL 注入、XSS、RCE、LFI/RFI 等）</td></tr>
+                <tr><td style="padding:3px 18px 3px 0">ERROR</td><td style="padding:3px 18px 3px 0">4</td><td style="padding:3px 0">出站信息泄露类规则</td></tr>
+                <tr><td style="padding:3px 18px 3px 0">WARNING</td><td style="padding:3px 18px 3px 0">3</td><td style="padding:3px 0">恶意客户端类规则</td></tr>
+                <tr><td style="padding:3px 18px 3px 0">NOTICE</td><td style="padding:3px 18px 3px 0">2</td><td style="padding:3px 0">协议合规类规则</td></tr>
+              </table>
+              <div style="margin-top:8px">详细技术说明：<a href="https://gitee.com/kingmoat/KingMoat-WAF/blob/main/docs/CRS-ANOMALY-SCORING.md" target="_blank" rel="noopener" style="color:var(--km-cyan)">Gitee</a><span style="margin:0 6px">·</span><a href="https://github.com/KingMoat/KingMoat-WAF/blob/main/docs/CRS-ANOMALY-SCORING.md" target="_blank" rel="noopener" style="color:var(--km-cyan)">GitHub</a></div>
+            </div>
             <div style="text-align:right">
               <el-button type="primary" :loading="saving" :disabled="!can('operator')" @click="saveThresholds">
                 保存并发布（热生效）

@@ -7,10 +7,13 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -142,6 +145,105 @@ func testReleaseNamed(srv *httptest.Server, archiveName string, withSums bool, e
 func dirExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// Fake hostnames for the two-server redirect tests. httptest listeners all
+// bind 127.0.0.1, but the download policy matches URLs by hostname, so the
+// two allowlisted roles are simulated with fake hosts pinned to localhost
+// by the test client's dialer (never real domains).
+const (
+	testFeedHost = "gitee-feed.test" // plays gitee.com: the feed-supplied URL host
+	testCDNHost  = "gitee-cdn.test"  // plays foruda.gitee.com: the attachment CDN the feed host 302s to
+)
+
+// testCrossHostClient builds a download client for the two-server redirect
+// tests: it trusts the self-signed test certificates and pins every
+// connection to 127.0.0.1 (same port) so the fake role hostnames reach the
+// httptest listeners.
+func testCrossHostClient() *http.Client {
+	var d net.Dialer
+	return &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // self-signed test certs; the fake hostnames are not in them
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			_, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			return d.DialContext(ctx, network, net.JoinHostPort("127.0.0.1", port))
+		},
+	}}
+}
+
+// fakeHostBase rebuilds an httptest server URL under a fake hostname
+// (original port preserved) for the two-server redirect tests.
+func fakeHostBase(t *testing.T, rawURL, host string) string {
+	t.Helper()
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return "https://" + net.JoinHostPort(host, u.Port())
+}
+
+// TestDownloadRedirectAllowlistedCrossHost covers the production Gitee
+// download shape with two separate TLS servers: the feed host (gitee.com
+// role) 302s every attachment URL to the attachment CDN (foruda.gitee.com
+// role), which serves the real bytes - verified against the published
+// releases, where .../releases/download/... chains through gitee.com
+// redirects onto https://foruda.gitee.com/... and finally 200. With both
+// hosts allowlisted the full download+verify path must succeed (this is
+// the chain the missing CDN allowlist entry broke); with the CDN host
+// missing from the allowlist the very same chain must be refused at the
+// redirect hop (the pre-fix behavior, kept as the tamper guard).
+func TestDownloadRedirectAllowlistedCrossHost(t *testing.T) {
+	archive := buildTarGz(t, map[string][]byte{"kingmoatwaf": []byte(testPayloadA), "kmwafctl": []byte(testPayloadB)})
+	sums := sumsFile(map[string][]byte{testArchiveNm: archive})
+
+	cdn := assetServer(t, map[string][]byte{testArchiveNm: archive, checksumsName: []byte(sums)})
+	cdnBase := fakeHostBase(t, cdn.URL, testCDNHost)
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/" + testArchiveNm, "/" + checksumsName:
+			http.Redirect(w, r, cdnBase+r.URL.Path, http.StatusFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(origin.Close)
+	originBase := fakeHostBase(t, origin.URL, testFeedHost)
+	rel := &Release{TagName: testVersion, Assets: []Asset{
+		{Name: testArchiveNm, BrowserDownloadURL: originBase + "/" + testArchiveNm, Size: 1},
+		{Name: checksumsName, BrowserDownloadURL: originBase + "/" + checksumsName, Size: 1},
+	}}
+
+	// Positive: both hosts allowlisted - archive and checksums.txt both
+	// traverse the cross-host 302 and pass SHA256 verification.
+	s := NewService("v0.7.8-beta", t.TempDir(),
+		WithHTTPClient(testCrossHostClient()), WithAllowedHosts([]string{testFeedHost, testCDNHost}), WithPlatform("linux", "amd64"))
+	task := &Task{ID: "cdnchain01"}
+	archivePath, err := s.downloadRelease(context.Background(), task, rel)
+	if err != nil {
+		t.Fatalf("cross-host allowlisted chain = %v, want success", err)
+	}
+	dir, err := s.verifyDownload(context.Background(), task, rel, archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, rerr := os.ReadFile(filepath.Join(dir, "kingmoatwaf")); rerr != nil || string(got) != testPayloadA {
+		t.Fatalf("payload kingmoatwaf = %q, %v; want %q", got, rerr, testPayloadA)
+	}
+
+	// Negative: with the CDN host missing from the allowlist the same
+	// chain fails at the redirect hop and leaves no workspace behind.
+	s2 := NewService("v0.7.8-beta", t.TempDir(),
+		WithHTTPClient(testCrossHostClient()), WithAllowedHosts([]string{testFeedHost}), WithPlatform("linux", "amd64"))
+	task2 := &Task{ID: "cdnchain02"}
+	if _, err := s2.downloadRelease(context.Background(), task2, rel); err == nil || !strings.Contains(err.Error(), "来源域名") {
+		t.Fatalf("cross-host chain without the CDN host = %v, want allowlist refusal", err)
+	}
+	if dirExists(s2.taskDir(task2.ID)) {
+		t.Fatal("refused cross-host download must wipe the task workspace")
+	}
 }
 
 // TestAssetForPlatform covers the T-00 asset naming per platform and the

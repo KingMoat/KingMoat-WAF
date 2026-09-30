@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -234,6 +235,10 @@ func TestACMEEntriesHTTP(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(base, "prod.local"), certPEM, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// The RSA handshake slot shares the main domain's display entry shape.
+	if err := os.WriteFile(filepath.Join(base, "prod.local+rsa"), certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(base+"-staging", 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -250,8 +255,16 @@ func TestACMEEntriesHTTP(t *testing.T) {
 	if err := json.NewDecoder(resp2.Body).Decode(&entries); err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("entries = %v, want 2", entries)
+	if len(entries) != 3 {
+		t.Fatalf("entries = %v, want 3", entries)
+	}
+	for _, e := range entries {
+		if d, _ := e["domain"].(string); strings.Contains(d, "+") {
+			t.Fatalf("internal cache key leaked as domain: %v", e)
+		}
+		if v, _ := e["variant"].(string); v != "ecdsa" && v != "rsa" {
+			t.Fatalf("entry missing variant annotation: %v", e)
+		}
 	}
 	byDomain := map[string]map[string]any{}
 	for _, e := range entries {
@@ -264,5 +277,15 @@ func TestACMEEntriesHTTP(t *testing.T) {
 	st, ok := byDomain["stag.local"]
 	if !ok || st["staging"] != true || st["status"] != "valid" {
 		t.Fatalf("staging entry = %v", st)
+	}
+	// The +rsa cache key surfaces under its plain domain, marked variant=rsa.
+	var rsaEntry map[string]any
+	for _, e := range entries {
+		if v, _ := e["variant"].(string); v == "rsa" {
+			rsaEntry = e
+		}
+	}
+	if rsaEntry == nil || rsaEntry["domain"] != "prod.local" || rsaEntry["staging"] == true {
+		t.Fatalf("rsa variant entry = %v, want prod.local (production)", rsaEntry)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -25,6 +26,12 @@ const stagingCacheSuffix = "-staging"
 // acmeAccountKeyFile is the ACME account key autocert stores inside the
 // cache directory; it is not a certificate and must not surface as one.
 const acmeAccountKeyFile = "acme_account+key"
+
+// rsaCacheKeySuffix marks autocert's internal RSA-variant cache key
+// (`<name>+rsa`): x/crypto/autocert keeps a second certificate slot under
+// that name to serve RSA-only TLS clients. The suffix is internal
+// bookkeeping, not part of the domain - `+` never appears in a DNS name.
+const rsaCacheKeySuffix = "+rsa"
 
 // renewBefore mirrors the autocert renewal window: certificates with less
 // than 30 days left count as "expiring" in the cert library, and the
@@ -110,7 +117,15 @@ func CachedHosts(dir string) []string {
 
 // CertEntry is one logical ACME certificate as shown in the cert library.
 type CertEntry struct {
-	Domain    string `json:"domain"`
+	// Domain is the display domain: autocert's internal RSA-variant cache
+	// key (`<name>+rsa`) is shown under its plain name.
+	Domain string `json:"domain"`
+	// Variant distinguishes the two cache slots of one domain: "ecdsa" is
+	// the primary ECDSA slot (cache key = the domain name), "rsa" the
+	// internal RSA-compatibility handshake slot (cache key `<domain>+rsa`,
+	// maintained by autocert on real RSA handshakes - never renewed
+	// proactively).
+	Variant   string `json:"variant"`
 	Staging   bool   `json:"staging"`
 	NotBefore string `json:"not_before,omitempty"`
 	NotAfter  string `json:"not_after,omitempty"`
@@ -130,7 +145,10 @@ type CertEntry struct {
 }
 
 // CacheEntries lists the ACME-managed certificates of both cache directories
-// (production first, then staging), sorted by domain within each.
+// (production first, then staging), sorted by domain within each. A domain
+// with both slots cached yields two entries (ecdsa first, then the rsa
+// variant right after it); the internal `+rsa` cache key never leaks into
+// the Domain field.
 func CacheEntries(base string) []CertEntry {
 	var out []CertEntry
 	now := time.Now()
@@ -153,12 +171,21 @@ func CacheEntries(base string) []CertEntry {
 			if err != nil {
 				continue // partial write / not a certificate
 			}
+			variant, domain := "ecdsa", name
+			if strings.HasSuffix(name, rsaCacheKeySuffix) {
+				variant = "rsa"
+				domain = strings.TrimSuffix(name, rsaCacheKeySuffix)
+				if domain == "" {
+					continue // degenerate key without a host part; cannot display
+				}
+			}
 			status := "valid"
 			if leaf.NotAfter.Before(now.Add(renewBefore)) {
 				status = "expiring"
 			}
 			out = append(out, CertEntry{
-				Domain:    name,
+				Domain:    domain,
+				Variant:   variant,
 				Staging:   staging,
 				NotBefore: leaf.NotBefore.UTC().Format(time.RFC3339),
 				NotAfter:  leaf.NotAfter.UTC().Format(time.RFC3339),

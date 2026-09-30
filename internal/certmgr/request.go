@@ -389,13 +389,19 @@ func (s *Service) Task(id string) (RequestTask, bool) {
 }
 
 // Entries lists the ACME cert-library entries (both cache directories),
-// merged with the latest daily-renewal outcome per entry.
+// merged with the latest daily-renewal outcome per entry. RSA-variant
+// entries are excluded from the backfill: proactive renewal never targets
+// them (see collectRenewalTargets), and keyed by the now-stripped display
+// domain they would otherwise swallow the main ECDSA slot's renewal record.
 func (s *Service) Entries() []CertEntry {
 	entries := CacheEntries(s.base)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range entries {
 		e := &entries[i]
+		if e.Variant == "rsa" {
+			continue
+		}
 		if r, ok := s.renewals[renewalKey(e.Staging, e.Domain)]; ok {
 			e.LastRenewalCheck = r.At
 			if !r.OK {

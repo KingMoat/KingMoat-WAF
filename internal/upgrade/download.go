@@ -38,10 +38,16 @@ const (
 
 // defaultAllowedHosts restricts download URLs to the release origin. URLs
 // only ever come from the Gitee releases feed; the allowlist is the second
-// guard against a tampered feed pointing at a foreign host. github.com is a
-// reserved future fallback source and deliberately not enabled (the Gitee
-// mirror does not carry release assets).
-var defaultAllowedHosts = []string{"gitee.com"}
+// guard against a tampered feed pointing at a foreign host. foruda.gitee.com
+// is Gitee's official release-attachment CDN - every attachment URL 302s
+// there (verified against the published releases), so it is trusted next to
+// gitee.com. Matching stays exact-hostname (no subdomain wildcards).
+// github.com is a reserved future fallback source and deliberately not
+// enabled (the Gitee mirror does not carry release assets); if it is ever
+// enabled, evaluate allowlisting objects.githubusercontent.com and
+// release-assets.githubusercontent.com too - GitHub 302s release downloads
+// to those asset hosts.
+var defaultAllowedHosts = []string{"gitee.com", "foruda.gitee.com"}
 
 // taskDir is the per-task workspace under <dataDir>/upgrade/. Task ids are
 // hex generated in-process; the path never incorporates external input.
@@ -186,7 +192,7 @@ func (s *Service) validateDownloadURL(u *url.URL) error {
 		return fmt.Errorf("拒绝非 HTTPS 下载地址: %s", u)
 	}
 	if !s.hostAllowed(u.Hostname()) {
-		return fmt.Errorf("下载地址 %q 不在允许的来源域名列表", u)
+		return fmt.Errorf("下载地址 %q 不在允许的来源域名列表；官方下载源为 gitee.com 与 foruda.gitee.com，如持续失败可到 Gitee Release 页手动下载升级包，并按 deploy/README.md 的手动升级说明替换", u)
 	}
 	return nil
 }

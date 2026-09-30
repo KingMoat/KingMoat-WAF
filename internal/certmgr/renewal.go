@@ -9,6 +9,7 @@ package certmgr
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -51,6 +52,12 @@ func renewalKey(staging bool, domain string) string {
 // per site, email falling back to the global contact) with every domain
 // already cached in either cache directory. Site entries win over
 // cache-derived duplicates; staging and production stay independent keys.
+// CachedHosts also surfaces autocert's internal RSA-variant cache keys
+// (`<name>+rsa`); those are not legal server names (`+` is invalid in a DNS
+// name) and proactive renewal must skip them: autocert maintains the RSA
+// handshake slot itself on real RSA handshakes under the plain host name,
+// so passing the variant key to the ACME endpoint is a guaranteed daily
+// failure ("server name contains invalid character").
 func collectRenewalTargets(cfg *config.Config, base, globalEmail string) []renewalTarget {
 	var out []renewalTarget
 	seen := map[string]bool{}
@@ -77,11 +84,13 @@ func collectRenewalTargets(cfg *config.Config, base, globalEmail string) []renew
 			}
 		}
 	}
-	for _, d := range CachedHosts(cacheDirFor(base, false)) {
-		add(d, false, globalEmail)
-	}
-	for _, d := range CachedHosts(cacheDirFor(base, true)) {
-		add(d, true, globalEmail)
+	for _, staging := range []bool{false, true} {
+		for _, d := range CachedHosts(cacheDirFor(base, staging)) {
+			if strings.HasSuffix(d, rsaCacheKeySuffix) {
+				continue // RSA handshake slot: maintained by autocert, never renewed proactively
+			}
+			add(d, staging, globalEmail)
+		}
 	}
 	return out
 }

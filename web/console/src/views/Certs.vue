@@ -97,7 +97,12 @@
       </div>
       <el-table :data="acmeEntries" size="small" style="margin-top:12px"
                 empty-text="暂无 ACME 托管证书，点击上方「申请证书」在线签发">
-        <el-table-column prop="domain" label="域名" min-width="200" class-name="km-mono" show-overflow-tooltip />
+        <el-table-column label="域名" min-width="220" class-name="km-mono" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span>{{ row.domain }}</span>
+            <el-tag v-if="row.variant === 'rsa'" size="small" type="info" effect="plain" class="km-tag" style="margin-left:6px">RSA</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="类型" width="130">
           <template #default="{ row }">
             <el-tag size="small" effect="plain" :type="row.staging ? 'warning' : 'success'">{{ row.staging ? '测试（staging）' : '生产' }}</el-tag>
@@ -110,11 +115,12 @@
             <div style="font-size:11.5px;margin-top:2px" :style="{ color: acmeExpiry(row).color }">{{ acmeExpiry(row).text }}</div>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="100">
+        <el-table-column label="状态" width="160">
           <template #default="{ row }">
             <el-tag size="small" :type="row.status === 'valid' ? 'success' : 'warning'" :effect="row.status === 'valid' ? 'plain' : 'dark'">
               {{ row.status === 'valid' ? '有效' : '即将到期' }}
             </el-tag>
+            <el-tag v-if="row.status === 'expiring' && row.last_renew_error" size="small" type="danger" effect="dark" class="km-tag" style="margin-left:4px">续期失败</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="最近续签检查" width="190">

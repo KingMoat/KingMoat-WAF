@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -35,17 +36,25 @@ func acmeSite(domains []string, staging bool) *config.Config {
 
 // TestCollectRenewalTargets covers the target merge: site domains (staging
 // flag and email per site, global-email fallback), cache-derived entries for
-// both directories, and site-wins dedup by domain+mode.
+// both directories, site-wins dedup by domain+mode, and the skip of
+// autocert's internal RSA-variant cache keys (`<name>+rsa`): they are not
+// legal server names and are maintained by autocert on real RSA handshakes.
 func TestCollectRenewalTargets(t *testing.T) {
 	base := t.TempDir()
 	far := time.Now().Add(90 * 24 * time.Hour)
 	if err := os.WriteFile(filepath.Join(base, "cached-prod.local"), genTestCertPEM(t, []string{"cached-prod.local"}, far), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(base, "cached-prod.local"+rsaCacheKeySuffix), genTestCertPEM(t, []string{"cached-prod.local"}, far), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(base+stagingCacheSuffix, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(base+stagingCacheSuffix, "cached-stag.local"), genTestCertPEM(t, []string{"cached-stag.local"}, far), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base+stagingCacheSuffix, "cached-stag.local"+rsaCacheKeySuffix), genTestCertPEM(t, []string{"cached-stag.local"}, far), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -59,6 +68,9 @@ func TestCollectRenewalTargets(t *testing.T) {
 
 	got := map[string]renewalTarget{}
 	for _, tg := range targets {
+		if strings.HasSuffix(tg.domain, rsaCacheKeySuffix) {
+			t.Fatalf("internal RSA cache key %q leaked into renewal targets", tg.domain)
+		}
 		got[renewalKey(tg.staging, tg.domain)] = tg
 	}
 	want := map[string]renewalTarget{
@@ -70,7 +82,7 @@ func TestCollectRenewalTargets(t *testing.T) {
 		"staging|cached-stag.local": {domain: "cached-stag.local", staging: true, email: "global@x"},
 	}
 	if len(targets) != len(want) {
-		t.Fatalf("collected %d targets, want %d: %+v", len(targets), len(want), targets)
+		t.Fatalf("collected %d targets, want %d (main domains still collected, +rsa variants skipped): %+v", len(targets), len(want), targets)
 	}
 	for k, w := range want {
 		if g := got[k]; g != w {
@@ -106,11 +118,16 @@ func TestRenewalPassRecordsResults(t *testing.T) {
 }
 
 // TestEntriesMergeRenewalResults covers the cert-library merge: entries pick
-// up last_renew_attempt / last_renew_error from the renewal results.
+// up last_renew_attempt / last_renew_error from the renewal results, while
+// the RSA-variant entry of the same domain stays untouched (it is never
+// renewed proactively and must not swallow the ECDSA slot's record).
 func TestEntriesMergeRenewalResults(t *testing.T) {
 	base := t.TempDir()
 	far := time.Now().Add(90 * 24 * time.Hour)
 	if err := os.WriteFile(filepath.Join(base, "a.local"), genTestCertPEM(t, []string{"a.local"}, far), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "a.local"+rsaCacheKeySuffix), genTestCertPEM(t, []string{"a.local"}, far), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	s := NewService(NewACMEHolder(base), nil)
@@ -118,17 +135,28 @@ func TestEntriesMergeRenewalResults(t *testing.T) {
 	s.mu.Lock()
 	s.renewals[renewalKey(false, "a.local")] = RenewalResult{At: "2026-09-26T00:00:00Z", OK: true}
 	s.mu.Unlock()
-	e := s.Entries()[0]
-	if e.LastRenewalCheck != "2026-09-26T00:00:00Z" || e.LastRenewError != "" {
+	entries := s.Entries()
+	if len(entries) != 2 {
+		t.Fatalf("Entries = %d (%v), want 2 (ecdsa + rsa variant)", len(entries), entries)
+	}
+	e := entries[0]
+	if e.Variant != "ecdsa" || e.LastRenewalCheck != "2026-09-26T00:00:00Z" || e.LastRenewError != "" {
 		t.Fatalf("merged ok entry = %+v", e)
+	}
+	rsaEntry := entries[1]
+	if rsaEntry.Variant != "rsa" || rsaEntry.LastRenewalCheck != "" || rsaEntry.LastRenewError != "" {
+		t.Fatalf("rsa variant entry must not be backfilled with renewal results: %+v", rsaEntry)
 	}
 
 	s.mu.Lock()
 	s.renewals[renewalKey(false, "a.local")] = RenewalResult{At: "2026-09-26T01:00:00Z", Error: "acme: boom"}
 	s.mu.Unlock()
-	e = s.Entries()[0]
-	if e.LastRenewalCheck != "2026-09-26T01:00:00Z" || e.LastRenewError != "acme: boom" {
-		t.Fatalf("merged failed entry = %+v", e)
+	entries = s.Entries()
+	if entries[0].LastRenewalCheck != "2026-09-26T01:00:00Z" || entries[0].LastRenewError != "acme: boom" {
+		t.Fatalf("merged failed entry = %+v", entries[0])
+	}
+	if entries[1].LastRenewalCheck != "" || entries[1].LastRenewError != "" {
+		t.Fatalf("rsa variant entry picked up the ECDSA slot's failure: %+v", entries[1])
 	}
 }
 

@@ -8,12 +8,12 @@
         <span class="km-mono" style="font-size:12.5px">{{ engine.coraza ? 'Coraza ' + engine.coraza : 'Coraza' }} + {{ engine.crs ? 'OWASP CRS ' + engine.crs : 'OWASP CRS' }} + libinjection</span></div>
       <div class="km-set-row"><div class="grow"><div class="set-name">开源许可</div></div><a href="https://opensource.org/license/mulanpsl-2-0" target="_blank" style="text-decoration:none"><el-tag size="small" effect="plain" class="km-tag">MulanPSL-2.0 ↗</el-tag></a></div>
       <div class="km-set-row">
-        <div class="grow"><div class="set-name">技术支持</div><div class="set-desc">部署、集成或功能定制需要协助时可直接邮件联系</div></div>
-        <span style="font-size:12.5px;color:var(--km-cyan)">如需有偿技术支持可联系作者：<a href="mailto:ailife2@126.com" style="color:var(--km-cyan)">ailife2@126.com</a></span>
+        <div class="grow"><div class="set-name">技术支持</div><div class="set-desc">部署、集成或功能定制需要协助，或需要付费支持服务时，可直接邮件联系作者</div></div>
+        <a href="mailto:ailife2@126.com" class="km-mono" style="color:var(--km-cyan);text-decoration:none;font-size:12.5px;white-space:nowrap">ailife2@126.com</a>
       </div>
       <div class="km-set-row">
         <div class="grow"><div class="set-name">源码仓库</div></div>
-        <span class="km-mono" style="font-size:12.5px">
+        <span class="km-mono" style="font-size:12.5px;white-space:nowrap">
           <a href="https://github.com/KingMoat/KingMoat-WAF" target="_blank" style="color:var(--km-cyan)">github.com/KingMoat/KingMoat-WAF</a>
           &nbsp;·&nbsp;
           <a href="https://gitee.com/kingmoat/KingMoat-WAF" target="_blank" style="color:var(--km-cyan)">gitee.com/kingmoat/KingMoat-WAF</a>

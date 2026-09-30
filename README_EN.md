@@ -6,8 +6,8 @@
 
 <p align="center">
   <a href="https://opensource.org/license/mulanpsl-2-0"><img alt="License" src="https://img.shields.io/badge/license-MulanPSL--2.0-52b100?style=for-the-badge"></a>
-  <!-- Release badge is maintained manually: bump the version here on each release (current latest published release: v0.7.10-beta) -->
-  <a href="https://gitee.com/kingmoat/KingMoat-WAF/releases"><img alt="Release" src="https://img.shields.io/badge/release-v0.7.10--betaf81f7?style=for-the-badge"></a>
+  <!-- Release badge is maintained manually: bump the version here on each release (current latest published release: v0.7.12-beta) -->
+  <a href="https://gitee.com/kingmoat/KingMoat-WAF/releases"><img alt="Release" src="https://img.shields.io/badge/release-v0.7.12--beta-2f81f7?style=for-the-badge"></a>
   <img alt="Go" src="https://img.shields.io/badge/Go-1.26%2B-00ADD8?style=for-the-badge&logo=go&logoColor=white">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey?style=for-the-badge">
 </p>

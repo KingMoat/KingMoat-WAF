@@ -99,6 +99,13 @@ func (c *Center) Consume(ctx context.Context, applier Applier, after func(ev Rev
 			// Monotonic guard (see the doc comment above): never re-apply a
 			// revision the plane already runs or has moved past.
 			if ev.Rev <= applier.RunningRevision() {
+				// Skipping a stale event leaves this receive path the only one
+				// that does not converge: if a failed apply previously jumped
+				// the plane ahead via catchUp, the buffer may still hold stale
+				// events AND the newest publish may have been dropped - without
+				// a re-check here the lag would only heal on the next publish
+				// (review C3). catchUp is a no-op once converged.
+				catchUp()
 				continue
 			}
 			if !applyOne(ev.Rev, ev.Config) {

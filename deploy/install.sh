@@ -772,15 +772,20 @@ migrate_legacy_data() {
         # slashes (review C5-②): "${v%/}" only removed one, so "dir//" vs
         # "dir" still differed after normalization.
         local sed_old="$OLD_DATA_DIR" sed_new="$DATA_DIR"
-# Strip ALL trailing slashes: a single-character pattern with % or %%
-# removes at most one, so "dir//" would survive as "dir/" and the rewrite
-# pattern would silently never match again (verified with a live shell).
-while [[ $sed_old == */ ]]; do sed_old=${sed_old%/}; done
-while [[ $sed_new == */ ]]; do sed_new=${sed_new%/}; done
+        # Strip ALL trailing slashes: a single-character pattern with % or %%
+        # removes at most one, so "dir//" would survive as "dir/" and the
+        # rewrite pattern would silently never match again (verified live).
+        while [[ $sed_old == */ ]]; do sed_old=${sed_old%/}; done
+        while [[ $sed_new == */ ]]; do sed_new=${sed_new%/}; done
+        # All-slash input (e.g. DATA_DIR="/" read back from a broken record)
+        # normalizes to empty: the literal grep below would then match every
+        # "//" in the JSON and the sed would corrupt it (review C1).
+        if [[ -z "$sed_old" || -z "$sed_new" ]]; then
+            warn "data dir empty after trailing-slash normalization - not rewriting $DATA_DIR/config.json"
         # Same value after normalization (e.g. old="dir/" new="dir"): the
         # rewrite would be a no-op, so say so instead of claiming a rewrite
         # (review C5-①).
-        if [[ "$sed_old" == "$sed_new" ]]; then
+        elif [[ "$sed_old" == "$sed_new" ]]; then
             log "config.json data dir unchanged after trailing-slash normalization ($sed_new): no rewrite needed"
         # Literal-metacharacter guard (review C5-③): the rewrite is a sed
         # s|||g over arbitrary config content. A path carrying sed/grep
@@ -790,7 +795,12 @@ while [[ $sed_new == */ ]]; do sed_new=${sed_new%/}; done
         elif [[ "$sed_old$sed_new" == *[!A-Za-z0-9/._-]* ]]; then
             warn "data dir path contains sed/shell-special characters - not rewriting $DATA_DIR/config.json automatically; fix legacy paths manually (quote them for sed)"
         elif grep -qF "$sed_old/" "$DATA_DIR/config.json"; then
-            sed -i "s|$sed_old/|$sed_new/|g" "$DATA_DIR/config.json"
+            # The allowlist permits "."; sed treats it as a wildcard, so
+            # escape every dot in the PATTERN side (the replacement keeps
+            # its literal dots) - otherwise /data/app.v1 would also match
+            # /data/appXv1/ in the config (review C2).
+            local esc_old=${sed_old//./\\.}
+            sed -i "s|$esc_old/|$sed_new/|g" "$DATA_DIR/config.json"
             log "rewrote legacy $sed_old/ paths in $DATA_DIR/config.json"
         else
             log "no legacy $sed_old/ paths in $DATA_DIR/config.json - nothing to rewrite"
@@ -913,6 +923,13 @@ rewrite_legacy_db_paths() {
     while [[ $new_dir == */ ]]; do new_dir=${new_dir%/}; done
     if [[ -z "$old_dir" || -z "$new_dir" ]]; then
         warn "empty data dir after trailing-slash normalization - not rewriting $db"
+        return 0
+    fi
+    if [[ "$old_dir" == "$new_dir" ]]; then
+        # "dir/" vs "dir": the replace below is an identity, but SQLite
+        # still counts the touched rows and the log would claim a rewrite
+        # that changed nothing (review C5).
+        log "console DB data dir unchanged after trailing-slash normalization ($new_dir): no rewrite needed"
         return 0
     fi
     if [[ ! -f "$db" ]]; then

@@ -253,6 +253,32 @@ func TestStandaloneRestartUnavailableClassification(t *testing.T) {
 	}
 }
 
+// TestStandaloneRestartProbeIgnoresBinaryDirWritability: a PLAIN restart
+// writes nothing, so the standalone probe must NOT gate on
+// binary-directory writability - that check is the upgrade path's
+// (probeRestartCapability, whose swap renames inside the directory). With
+// systemctl on PATH (fake) and a root identity the standalone probe
+// passes even for a missing (thus unwritable) binary directory, while the
+// upgrade-side three-in-one probe still refuses the same deployment.
+func TestStandaloneRestartProbeIgnoresBinaryDirWritability(t *testing.T) {
+	_, noBlock := fakeSystemctlScripts()
+	fakeSystemctl(t, noBlock)
+	s := NewService("v0.7.8-beta", t.TempDir(),
+		WithBinaryDir(filepath.Join(t.TempDir(), "missing-bin-dir")),
+		WithEuidProbe(func() int { return 0 }))
+	if err := s.probeRestartBasics(); err != nil {
+		t.Fatalf("probeRestartBasics with unwritable binary dir = %v, want pass (dir writability is upgrade-specific)", err)
+	}
+	if err := s.probeRestartCapability(); err == nil {
+		t.Fatal("probeRestartCapability with missing binary dir = nil, want the writable-directory refusal")
+	}
+	if runtime.GOOS == "linux" {
+		if err := s.RestartProbe(); err != nil {
+			t.Fatalf("RestartProbe(linux, unwritable binary dir) = %v, want pass", err)
+		}
+	}
+}
+
 // TestRestartSubmissionFailureFailsTask: the DEFAULT restart stage runs
 // the real systemctl submission against a fake on PATH that exits nonzero
 // with a stderr diagnostic (the polkit-denial shape). The task must FAIL

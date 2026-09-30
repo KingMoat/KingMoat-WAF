@@ -181,29 +181,40 @@ func buildState(cfg *config.Config, rev int64, groups ipgroups.Provider, observe
 	if err != nil {
 		return nil, err
 	}
+	// Register handles into state.closers the moment they are built: every
+	// later failure return below goes through state.close(), so nothing built
+	// before the failure leaks (the closers used to be appended only at the
+	// end, leaking geo/rl on any mid-build failure).
+	state.closers = append(state.closers, geo) // closes mmdb handles
 	captcha, err := stages.NewCaptcha(cfg, logger)
 	if err != nil {
+		state.close()
 		return nil, err
 	}
 	authSite, err := stages.NewSiteAuth(cfg, logger)
 	if err != nil {
+		state.close()
 		return nil, err
 	}
 	rl, err := stages.NewRateLimit(cfg, logger)
 	if err != nil {
+		state.close()
 		return nil, err
 	}
+	state.closers = append(state.closers, rl) // *RateLimit implements io.Closer
 	// The disable registry is shared by the matcher stage (writes site/module
 	// state on disable-rule hits) and the coraza stage (reads scoped
 	// coraza:<category> state to switch to variant engines).
 	registry := stages.NewStageDisableRegistry()
 	waf, err := coraza.New(cfg, logger)
 	if err != nil {
+		state.close()
 		return nil, err
 	}
 	waf.SetDisableGate(registry)
 	respFilter, err := stages.NewRespFilter(cfg, logger)
 	if err != nil {
+		state.close()
 		return nil, err
 	}
 	// Wire the observe-only sensitive-data hook into the asset collector
@@ -228,6 +239,7 @@ func buildState(cfg *config.Config, rev int64, groups ipgroups.Provider, observe
 	if !captchaEnabled(cfg) {
 		bot, err := stages.NewBotChallenge(cfg, logger)
 		if err != nil {
+			state.close()
 			return nil, err
 		}
 		botStage = bot
@@ -257,8 +269,7 @@ func buildState(cfg *config.Config, rev int64, groups ipgroups.Provider, observe
 	state.respFilter = respFilter
 	state.authSite = authSite
 	state.captcha = captcha
-	state.closers = append(state.closers, rl)  // *RateLimit implements io.Closer
-	state.closers = append(state.closers, geo) // closes mmdb handles
+	// geo and rl were registered into state.closers when built (see above).
 
 	sampleRate := 0.0
 	if cfg.ApiAssets != nil && cfg.ApiAssets.Enabled {
@@ -687,12 +698,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		// Geo engine-missing audit (allow path, same bypass pattern as
 		// matcher_rule above): the geo stage flags requests to a site whose
-		// config declares geo but the running engine has no mapping for it —
-		// the stale-engine signature of a failed hot-reload. The request is
-		// allowed (alerting only, no false positives); each fired flag leaves
-		// one non-blocking audit event so the silent fail-open cannot hide.
-		// The flag follows the stage's warn rate limit (one per domain per
-		// minute), so this cannot flood the audit store.
+		// config declares geo but the running engine has no mapping for it.
+		// Unreachable by construction in today's builds (the geo stage writes
+		// byDomain and its configured set in the same loop): kept as a
+		// defensive fail-open sentinel — if a future refactor makes the
+		// desync real, each fired flag leaves one non-blocking audit event so
+		// the silent fail-open cannot hide. The flag follows the stage's warn
+		// rate limit (one per domain per minute), so this cannot flood the
+		// audit store.
 		if _, missing := rc.Values["geo_engine_missing"]; missing {
 			ev := pipeline.Verdict{
 				Action: pipeline.ActionAllow,

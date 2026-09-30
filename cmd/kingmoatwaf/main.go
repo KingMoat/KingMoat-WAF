@@ -445,37 +445,31 @@ func main() {
 	switch {
 	case center != nil:
 		go func() {
-			ch, cancel := center.Subscribe()
-			defer cancel()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case ev := <-ch:
-					// Apply the snapshot that belongs to THIS event's revision:
-					// center.Current() may already be a newer revision when a
-					// burst of publishes queues up, which would mispair the
-					// reload result reported for ev.Rev.
-					applyErr := handler.Reload(ev.Config, ev.Rev)
-					center.SetApplyStatus(ev.Rev, applyErr) // surface reload outcome to publish callers
-					if applyErr != nil {
-						logger.Error("hot reload failed, keeping previous config", "revision", ev.Rev, "err", applyErr)
-					} else {
-						logger.Info("hot reload applied", "revision", ev.Rev)
-						rebuildACME(ev.Config) // ACME sites hot-apply on publish
-					}
-					if aiBuilder != nil {
-						aiBuilder(ev.Config) // ai toggle hot-applies (close+rebuild)
-					}
-					telMu.Lock()
-					bt := buildTelemetry
-					telMu.Unlock()
-					if bt != nil {
-						bt(ev.Config) // telemetry switch hot-applies
-					}
-					buildEngines(ev.Config) // alerts + risks toggle hot-applies
+			// Consume drives the hot-reload loop: per-event snapshot apply
+			// (never Current(): a burst of publishes queues up and Current()
+			// may already be a newer revision, which would mispair the reload
+			// result reported for ev.Rev) plus catch-up re-loads when the
+			// bounded subscribe buffer dropped events during a slow reload.
+			// SetApplyStatus and the revision/config pairing live inside
+			// configcenter.Consume.
+			center.Consume(ctx, handler, func(ev configcenter.RevEvent, applyErr error) {
+				if applyErr != nil {
+					logger.Error("hot reload failed, keeping previous config", "revision", ev.Rev, "err", applyErr)
+				} else {
+					logger.Info("hot reload applied", "revision", ev.Rev)
+					rebuildACME(ev.Config) // ACME sites hot-apply on publish
 				}
-			}
+				if aiBuilder != nil {
+					aiBuilder(ev.Config) // ai toggle hot-applies (close+rebuild)
+				}
+				telMu.Lock()
+				bt := buildTelemetry
+				telMu.Unlock()
+				if bt != nil {
+					bt(ev.Config) // telemetry switch hot-applies
+				}
+				buildEngines(ev.Config) // alerts + risks toggle hot-applies
+			})
 		}()
 	}
 

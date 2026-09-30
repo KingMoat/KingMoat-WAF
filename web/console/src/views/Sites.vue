@@ -640,7 +640,7 @@ async function toggleSite(i) {
       note: (next.disabled ? 'site disabled: ' : 'site enabled: ') + ((next.domains && next.domains[0]) || ''),
       site: next,
     })
-    ElMessage.success((next.disabled ? '站点已禁用' : '站点已启用') + '，热生效（版本 ' + d.revision + '）')
+    applyNotice(d, (next.disabled ? '站点已禁用' : '站点已启用') + '，热生效（版本 ' + d.revision + '）')
     await load()
     sel.value = i
   } catch (e) {

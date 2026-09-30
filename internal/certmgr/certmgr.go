@@ -91,6 +91,15 @@ func InspectFile(site, domain, certPath string) Info {
 	return info
 }
 
+// resolveDataPath routes actual file access through the runtime path
+// contract (internal/config.ResolveLegacyDataPath — the inspection twin of
+// the data-plane read in proxy/router.go): a path still under the
+// pre-rename data directory is remapped to the current layout when the
+// remapped file exists there. The indirection mirrors
+// config.legacyDataFileExists so tests can simulate the legacy remap
+// without populating /var/lib.
+var resolveDataPath = config.ResolveLegacyDataPath
+
 // InspectSites builds the certificate inventory for a configuration. Each
 // entry carries the list of sites sharing the same certificate material.
 // Paths are compared in normalized form (internal/naming.NormalizePath), so
@@ -119,7 +128,11 @@ func InspectSites(cfg *config.Config) []Info {
 		domain := s.Domains[0]
 		switch {
 		case s.TLSCert != "":
-			info := InspectFile(domain, domain, s.TLSCert)
+			// Read through the runtime path contract: without the remap a
+			// legacy spelling survives the read as "file not found" even when
+			// the certificate is intact under the current layout (review C5).
+			certPath := resolveDataPath(s.TLSCert, nil)
+			info := InspectFile(domain, domain, certPath)
 			info.Sites = sharedSites(refs, naming.NormalizePath(s.TLSCert), naming.NormalizePath(s.TLSKey))
 			out = append(out, info)
 		case s.ACME != nil:

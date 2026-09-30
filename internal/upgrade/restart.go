@@ -26,8 +26,10 @@ import (
 // ErrRestartUnavailable marks deployments where the automatic restart path
 // does not exist at all (non-Linux platform, or Linux without systemctl):
 // the console API (POST /api/system/restart) answers 501 for it, while any
-// other probe failure (unwritable binary directory, non-root process) is a
-// 500 - systemd exists, this process just may not use it.
+// other probe failure (non-root process) is a 500 - systemd exists, this
+// process just may not use it. The UPGRADE path additionally requires a
+// writable binary directory (its swap is a rename there); that check lives
+// in probeRestartCapability, not in the standalone restart probe.
 var ErrRestartUnavailable = errors.New("非 systemd 部署形态，不支持在线重启服务")
 
 // restartSubmitTimeout bounds one `systemctl --no-block` submission.
@@ -163,7 +165,26 @@ func (s *Service) RestartProbe() error {
 	if runtime.GOOS != "linux" {
 		return fmt.Errorf("%w（当前平台 %s）", ErrRestartUnavailable, runtime.GOOS)
 	}
-	return s.probeRestartCapability()
+	return s.probeRestartBasics()
+}
+
+// probeRestartBasics answers the two host-level questions a PLAIN service
+// restart depends on: systemctl exists (the submission goes through it)
+// and the process runs as root (the default polkit policy denies non-root
+// restarts). A restart writes nothing, so - unlike the upgrade path's
+// probeRestartCapability - it deliberately does NOT gate on
+// binary-directory writability: that check answers "can the swap rename
+// inside the directory", a question a plain restart never asks, and
+// gating on it refused restarts of read-only-directory deployments that
+// systemd could have performed just fine.
+func (s *Service) probeRestartBasics() error {
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return fmt.Errorf("%w（未找到 systemctl，无法自动重启服务）", ErrRestartUnavailable)
+	}
+	if s.euidProbe() != 0 {
+		return errors.New("当前进程非 root 运行，polkit 默认拒绝其重启 " + naming.ServiceName + " 服务（需要 root 或 polkit 授权重启服务）")
+	}
+	return nil
 }
 
 // Restart submits a standalone service restart for the console API

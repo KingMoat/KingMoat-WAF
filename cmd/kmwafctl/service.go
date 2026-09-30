@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -89,13 +90,25 @@ func loadRuntimeConfig(loc locations) (*config.Config, string) {
 	defer st.Close()
 	id, raw, err := st.CurrentRevision()
 	if err != nil {
-		return nil, "console db has no published config yet"
+		// Review item C9: only a genuinely empty store means "no published
+		// config yet" - every other failure must surface as-is instead of
+		// being mislabelled and silently falling back to the seed config.
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, "console db has no published config yet"
+		}
+		return nil, "console db current-revision query failed: " + firstLine(err.Error())
 	}
 	var c config.Config
 	if err := json.Unmarshal([]byte(raw), &c); err != nil {
 		return nil, fmt.Sprintf("console db revision %d unparseable", id)
 	}
-	return &c, fmt.Sprintf("console db %s revision %d (live)", dbPath, id)
+	note := fmt.Sprintf("console db %s revision %d (live)", dbPath, id)
+	// Review item C9: a stored revision may predate current validation
+	// rules (or be hand-edited); still show the config, but flag it.
+	if err := c.Validate(); err != nil {
+		note += fmt.Sprintf("（校验警告：%s）", firstLine(err.Error()))
+	}
+	return &c, note
 }
 
 func resolveLocations() locations {

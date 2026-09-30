@@ -160,7 +160,7 @@ func (c *Center) publishInternal(next *config.Config, author, note string, allow
 	for ch := range c.subs {
 		select {
 		case ch <- RevEvent{Rev: rev, Config: next}:
-		default: // subscriber slow: it will pick the revision up on next read
+		default: // subscriber slow: event dropped (buffer full); Consume's catch-up check re-applies Current() after the next handled event
 		}
 	}
 	c.mu.Unlock()

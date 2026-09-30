@@ -26,12 +26,13 @@ const geoWarnEvery = time.Minute
 // mirroring the ACL whitelist semantics.
 type Geo struct {
 	byDomain map[string]*geoSite
-	// configured holds every domain of a geo-enabled site regardless of
-	// whether it ended up in byDomain. Inspect consults it to tell "site has
-	// no geo" apart from "geo configured but the running engine lost it" —
-	// the signature of a stale engine kept alive by a failed hot-reload —
-	// and surfaces the latter with a rate-limited warning instead of
-	// silently allowing.
+	// configured holds every domain of a geo-enabled site. It is written in
+	// the SAME loop as byDomain (NewGeo), so "configured but not in byDomain"
+	// is unreachable by construction in today's code; it exists purely as a
+	// defensive invariant sentinel: if a future refactor ever introduces a
+	// real desync between the configured domains and the running engine, the
+	// rate-limited warning and the audit side channel keep the fail-open
+	// observable instead of silent.
 	configured map[string]bool
 	// embedded is the process-wide geoip.Reader() singleton shared by every
 	// geo site built with an empty db_path. It is owned by the geoip package
@@ -147,11 +148,13 @@ func (g *Geo) Inspect(ctx context.Context, rc *pipeline.RequestContext) pipeline
 	domain := strings.ToLower(strings.TrimSpace(rc.Site.Domain))
 	site, ok := g.byDomain[domain]
 	if !ok {
-		// Not a geo site → allow. But if the config declared geo for this
-		// domain and the running engine has no mapping for it, that is the
-		// stale-engine signature (e.g. hot-reload failure kept the previous
-		// engine): warn at a capped rate instead of passing silently. Never
-		// deny here — alerting only, no false positives.
+		// Not a geo site → allow. If the config declared geo for this domain
+		// and the running engine has no mapping for it, warn at a capped rate
+		// instead of passing silently. Unreachable by construction today
+		// (byDomain and configured are written in the same NewGeo loop): this
+		// is a defensive sentinel for a future refactor introducing a real
+		// desync, not a signal the current build can produce. Never deny
+		// here — alerting only, no false positives.
 		if g.configured[domain] {
 			if g.warnEngineMissing(domain) {
 				// Side channel for the proxy audit consumer (same pattern as
@@ -199,6 +202,12 @@ func (g *Geo) Inspect(ctx context.Context, rc *pipeline.RequestContext) pipeline
 // and reports whether THIS call produced a warning — the proxy mirrors fired
 // warnings into the audit trail (rc.Values["geo_engine_missing"]), so the
 // flag must obey the same rate limit.
+//
+// Callers can only reach this when byDomain lost a domain that configured
+// still holds, which today's NewGeo cannot produce (both maps are written in
+// the same loop): keep this as the fail-open invariant sentinel — if a future
+// refactor makes the desync real, this warning and the audit bypass stay the
+// observable safety net.
 func (g *Geo) warnEngineMissing(domain string) bool {
 	g.warnMu.Lock()
 	defer g.warnMu.Unlock()

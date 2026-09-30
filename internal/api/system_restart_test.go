@@ -238,6 +238,65 @@ func TestSystemRestartProbeFailure500(t *testing.T) {
 // distinct from ErrRestartUnavailable).
 var errNonRootProbe = errors.New("当前进程非 root 运行，polkit 默认拒绝其重启 kingmoatwaf 服务")
 
+// TestSystemRestartUpgradeInProgress: an in-flight upgrade task owns the
+// process lifecycle - the API refuses a concurrent restart with 409
+// BEFORE any probe, audit or submission, and the normal idle flow
+// (probe → audit → 200 → submit) recovers once the task settles.
+func TestSystemRestartUpgradeInProgress(t *testing.T) {
+	var submits atomic.Int32
+	release := make(chan struct{})
+	svc := upgrade.NewService("v0.7.8-beta", t.TempDir(),
+		upgrade.WithChecker(func(ctx context.Context) ([]upgrade.Release, error) {
+			<-release
+			return nil, errors.New("cancelled by test")
+		}),
+		upgrade.WithProber(func() error { return nil }),
+		upgrade.WithRestartSubmitter(func(context.Context) error { submits.Add(1); return nil }))
+	ts, login, center := restartServer(t, svc)
+	admin := login("admin", "hunter2")
+
+	task, err := svc.Start("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, busy := svc.Running(); !busy {
+		t.Fatal("upgrade task not in flight right after Start")
+	}
+	code, body := doJSONBody(t, admin, "POST", ts.URL+"/api/system/restart", nil)
+	if code != http.StatusConflict {
+		t.Fatalf("restart during upgrade = %d (%v), want 409", code, body)
+	}
+	if msg, _ := body["error"].(string); !containsAll(msg, "升级任务进行中", "禁止重启") {
+		t.Fatalf("409 body = %v, want the upgrade-in-progress refusal", body)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if submits.Load() != 0 {
+		t.Fatalf("submitter invoked %d times during upgrade, want 0", submits.Load())
+	}
+	if entries := auditRestartEntries(t, center); len(entries) != 0 {
+		t.Fatalf("audit entries = %v, want none during upgrade", entries)
+	}
+
+	// Settle the task (checker unblocked → detect-stage failure) and the
+	// restart path returns to the normal idle flow.
+	close(release)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, busy := svc.Running(); !busy {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("upgrade task %s never settled", task.ID)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	code, body = doJSONBody(t, admin, "POST", ts.URL+"/api/system/restart", nil)
+	if code != http.StatusOK || body["status"] != "restarting" {
+		t.Fatalf("restart after upgrade settled = %d (%v), want 200 restarting", code, body)
+	}
+	waitSubmit(t, &submits, 1)
+}
+
 // containsAll reports whether s contains every substring.
 func containsAll(s string, subs ...string) bool {
 	for _, sub := range subs {

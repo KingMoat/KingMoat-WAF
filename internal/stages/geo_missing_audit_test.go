@@ -22,7 +22,7 @@ func TestGeoEngineMissingFlagFollowsWarnRateLimit(t *testing.T) {
 	}
 	defer g.Close()
 	g.warnEvery = 50 * time.Millisecond
-	delete(g.byDomain, "t.local") // simulate engine/config desync
+	delete(g.byDomain, "t.local") // defensive-path simulation: unreachable in production builds, deleted here to exercise the sentinel logic
 
 	run := func() *pipeline.RequestContext {
 		t.Helper()
@@ -65,7 +65,7 @@ func TestGeoEngineMissingFlagNotSetForPlainSites(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer g.Close()
-	delete(g.byDomain, "t.local")
+	delete(g.byDomain, "t.local") // defensive-path simulation (same as above); requests below target a plain non-geo domain and must stay unflagged
 
 	r := httptest.NewRequest("GET", "http://other.local/", nil)
 	r.RemoteAddr = "9.9.9.9:1234"

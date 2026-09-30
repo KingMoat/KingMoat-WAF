@@ -53,10 +53,12 @@ func geoWarnCount(buf *bytes.Buffer) int {
 }
 
 // TestGeoEngineMissingWarnRateLimited pins the fail-open guard: a domain the
-// config declared geo-enabled but the running engine lost (stale engine kept
-// alive by a failed hot-reload) must never pass silently. Requests stay
-// allowed (alerting only, no false positives) and the warning is capped at
-// one per domain per interval.
+// config declared geo-enabled but the running engine has no mapping for must
+// never pass silently. Requests stay allowed (alerting only, no false
+// positives) and the warning is capped at one per domain per interval.
+// The desync is unreachable in production builds (byDomain and configured are
+// written in the same NewGeo loop), so the test simulates it defensively via
+// delete to exercise the sentinel logic itself.
 func TestGeoEngineMissingWarnRateLimited(t *testing.T) {
 	var buf bytes.Buffer
 	g, err := NewGeo(geoCfg("", nil, nil), geoCapture(&buf))
@@ -65,7 +67,7 @@ func TestGeoEngineMissingWarnRateLimited(t *testing.T) {
 	}
 	defer g.Close()
 	g.warnEvery = 50 * time.Millisecond
-	delete(g.byDomain, "t.local") // simulate engine/config desync
+	delete(g.byDomain, "t.local") // defensive-path simulation: unreachable in production builds, deleted here to exercise the sentinel logic
 
 	for i := 0; i < 5; i++ {
 		if v := geoRun(t, g, "t.local"); v.Action != pipeline.ActionAllow {

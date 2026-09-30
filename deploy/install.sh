@@ -765,9 +765,14 @@ migrate_legacy_data() {
     # trailing-slash pattern cannot touch kingmoatwaf paths ("kingmoat/"
     # never matches inside "kingmoatwaf/").
     if [[ -n "$OLD_DATA_DIR" && "$OLD_DATA_DIR" != "$DATA_DIR" && -f "$DATA_DIR/config.json" ]]; then
-        if grep -q "$OLD_DATA_DIR/" "$DATA_DIR/config.json"; then
-            sed -i "s|$OLD_DATA_DIR/|$DATA_DIR/|g" "$DATA_DIR/config.json"
-            log "rewrote legacy $OLD_DATA_DIR/ paths in $DATA_DIR/config.json"
+        # Trailing-slash normalization (review item C8): an install record
+        # carrying "dir/" made the "dir//" pattern never match and silently
+        # skipped the rewrite. The MIGRATE/-f guard above keeps the raw
+        # values; only the rewrite patterns normalize.
+        local sed_old="${OLD_DATA_DIR%/}" sed_new="${DATA_DIR%/}"
+        if [[ -n "$sed_old" && -n "$sed_new" ]] && grep -q "$sed_old/" "$DATA_DIR/config.json"; then
+            sed -i "s|$sed_old/|$sed_new/|g" "$DATA_DIR/config.json"
+            log "rewrote legacy $sed_old/ paths in $DATA_DIR/config.json"
         fi
     fi
     # Same rewrite for the console config DB (kingmoat.db): the live config
@@ -809,9 +814,13 @@ migrate_legacy_data() {
 # printed manual fix command marked "migration NOT completed".
 _rewrite_db_paths_sqlite3() {
     local db="$1" old_dir="$2" new_dir="$3"
-    sqlite3 -batch "$db" "PRAGMA wal_checkpoint(TRUNCATE);" &>/dev/null || true
+    # -init /dev/null: never read the user's ~/.sqliterc — a dotfile with
+    # dot commands (e.g. ".headers on" / ".output") corrupts the captured
+    # output and silently pushes the rewrite into the "NOT completed" branch
+    # (review item C7).
+    sqlite3 -batch -init /dev/null "$db" "PRAGMA wal_checkpoint(TRUNCATE);" &>/dev/null || true
     local has_revisions
-    if ! has_revisions=$(sqlite3 -batch "$db" "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='revisions';"); then
+    if ! has_revisions=$(sqlite3 -batch -init /dev/null "$db" "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='revisions';"); then
         warn "cannot inspect $db with sqlite3 - legacy path rewrite skipped"
         return 1
     fi
@@ -820,10 +829,10 @@ _rewrite_db_paths_sqlite3() {
         return 0
     fi
     local changed
-    if ! changed=$(sqlite3 -batch "$db" "UPDATE revisions SET config = replace(config, '${old_dir}/', '${new_dir}/') WHERE instr(config, '${old_dir}/') > 0; SELECT changes();"); then
+    if ! changed=$(sqlite3 -batch -init /dev/null "$db" "UPDATE revisions SET config = replace(config, '${old_dir}/', '${new_dir}/') WHERE instr(config, '${old_dir}/') > 0; SELECT changes();"); then
         return 1
     fi
-    sqlite3 -batch "$db" "PRAGMA wal_checkpoint(TRUNCATE);" &>/dev/null || true
+    sqlite3 -batch -init /dev/null "$db" "PRAGMA wal_checkpoint(TRUNCATE);" &>/dev/null || true
     if [[ "$changed" =~ ^[0-9]+$ && "$changed" -gt 0 ]]; then
         log "rewrote legacy $old_dir/ paths in $db (revisions updated: $changed)"
     else
@@ -871,6 +880,16 @@ PYEOF
 
 rewrite_legacy_db_paths() {
     local db="$1" old_dir="$2" new_dir="$3"
+    # Trailing-slash normalization (review item C8): an install record with
+    # "dir/" made the "dir//" instr() pattern never match - a silent no-op
+    # in every branch below (sqlite3, python3 and the manual hint). Strip
+    # one trailing slash once, here, so all consumers see the same spelling.
+    old_dir="${old_dir%/}"
+    new_dir="${new_dir%/}"
+    if [[ -z "$old_dir" || -z "$new_dir" ]]; then
+        warn "empty data dir after trailing-slash normalization - not rewriting $db"
+        return 0
+    fi
     if [[ ! -f "$db" ]]; then
         log "no console config DB at $db - skipping legacy path rewrite"
         return 0

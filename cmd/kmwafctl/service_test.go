@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"io"
 	"os"
@@ -474,5 +475,118 @@ func TestSystemctlVerdictHandlesFailuresWithOutput(t *testing.T) {
 	}
 	if got := systemctlVerdict("is-enabled"); !strings.HasPrefix(got, "unknown") {
 		t.Fatalf("verdict = %q, want unknown when systemctl yields nothing", got)
+	}
+}
+
+// TestLoadRuntimeConfigEmptyStoreNotesNoPublishedConfig pins review item
+// C9 branch 1: a console DB that opens but has no revisions is the only
+// case reported as "no published config yet" (the seed fallback relies
+// on that wording being truthful).
+func TestLoadRuntimeConfigEmptyStoreNotesNoPublishedConfig(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, consoleDBName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cfg, note := loadRuntimeConfig(locations{DataDir: dir})
+	if cfg != nil {
+		t.Fatalf("loadRuntimeConfig = %+v, want nil for an empty store", cfg)
+	}
+	if !strings.Contains(note, "no published config yet") {
+		t.Fatalf("note = %q, want the no-published-config wording", note)
+	}
+}
+
+// TestStatusSeedFallbackOnEmptyConsoleDB covers review item C9 branch 1
+// end to end: with an empty console DB the status report falls back to
+// the config.json install seed and says exactly why.
+func TestStatusSeedFallbackOnEmptyConsoleDB(t *testing.T) {
+	restoreSeams(t)
+	systemctlRun = func(args ...string) (string, error) { return "", nil }
+	dir := t.TempDir()
+	validTestConfig(t, dir)
+	st, err := store.Open(filepath.Join(dir, consoleDBName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	stt := collectStatus(locations{DataDir: dir, DataDirSource: "install record", InstallDir: dir})
+	if !strings.Contains(stt.ConfigNote, "no published config yet") {
+		t.Fatalf("ConfigNote = %q, want the no-published-config wording", stt.ConfigNote)
+	}
+	if !strings.Contains(stt.ConfigSource, "install seed") {
+		t.Fatalf("ConfigSource = %q, want the install seed fallback", stt.ConfigSource)
+	}
+	if stt.Sites != 2 {
+		t.Fatalf("Sites = %d, want the 2 seed sites", stt.Sites)
+	}
+}
+
+// TestLoadRuntimeConfigQueryFailureNotMislabelled pins review item C9
+// branch 2: a console DB that opens but whose revisions table cannot be
+// queried (config column dropped) must surface the real query failure,
+// never the "no published config yet" mislabel.
+func TestLoadRuntimeConfigQueryFailureNotMislabelled(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, consoleDBName)
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", "file:"+dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`DROP TABLE revisions`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE revisions (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cfg, note := loadRuntimeConfig(locations{DataDir: dir})
+	if cfg != nil {
+		t.Fatalf("loadRuntimeConfig = %+v, want nil on a query failure", cfg)
+	}
+	if !strings.Contains(note, "current-revision query failed") {
+		t.Fatalf("note = %q, want the query-failure wording", note)
+	}
+	if strings.Contains(note, "no published config yet") {
+		t.Fatalf("note = %q, must not mislabel a query failure as an empty store", note)
+	}
+}
+
+// TestLoadRuntimeConfigLiveRevisionValidateWarning pins review item C9
+// branch 3: a stored revision that parses but fails config.Validate is
+// still displayed, with the validation warning folded into the source
+// note instead of being shown as a clean live config.
+func TestLoadRuntimeConfigLiveRevisionValidateWarning(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, consoleDBName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AppendRevision("{}", "test", "publish"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cfg, note := loadRuntimeConfig(locations{DataDir: dir})
+	if cfg == nil {
+		t.Fatalf("loadRuntimeConfig = nil (%q); want the live config still displayed", note)
+	}
+	if !strings.Contains(note, "(live)") || !strings.Contains(note, "校验警告") || !strings.Contains(note, "listen_http") {
+		t.Fatalf("note = %q, want the live marker plus the validation warning", note)
 	}
 }

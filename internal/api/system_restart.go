@@ -54,6 +54,15 @@ func (s *Server) handleSystemRestart(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotImplemented, simpleError("服务重启接口未启用（当前部署形态不支持在线重启）"))
 		return
 	}
+	// An in-flight upgrade owns the process lifecycle (download → swap →
+	// restart submission): an API-triggered restart tearing the unit down
+	// mid-pipeline would orphan the swap and the self-heal handover. The
+	// refusal is unconditional - it does not depend on the probe verdict -
+	// and comes first to avoid a pointless probe.
+	if _, busy := s.opts.Upgrade.Running(); busy {
+		writeErr(w, http.StatusConflict, simpleError("升级任务进行中，禁止重启"))
+		return
+	}
 	// Probe BEFORE the audit: a refused restart must not leave a
 	// "restarting" audit entry behind.
 	if err := s.opts.Upgrade.RestartProbe(); err != nil {

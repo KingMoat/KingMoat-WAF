@@ -199,8 +199,17 @@ async function loadBadge() {
     if (status && status.latest_revision != null && status.running_revision != null) {
       applyInfo.latest = status.latest_revision
       applyInfo.running = status.running_revision
-      applyInfo.error = (status.apply && status.apply.error) || ''
-      applyInfo.status = (status.apply && status.apply.status) || ''
+      // apply 携带的是最近一次数据面应用结果（含 revision）：只有它与最新
+      // 发布版本一致时才代表当前配置的真实结果；不一致说明发布仍在途
+      // （或结果尚未上报），展示中性「应用中」而不是上一次的陈旧结果
+      const applyRev = status.apply && status.apply.revision
+      if (applyRev != null && applyRev === status.latest_revision) {
+        applyInfo.error = (status.apply && status.apply.error) || ''
+        applyInfo.status = (status.apply && status.apply.status) || ''
+      } else {
+        applyInfo.error = ''
+        applyInfo.status = '配置应用中…'
+      }
     } else {
       applyInfo.latest = null
       applyInfo.running = null

@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### 修复
+
+- **站点快速启停假报「热生效」成功（toggleSite 未消费发布响应的 apply 三态）**：站点防护页列表的快速禁用/启用此前无条件弹出「站点已启用/已禁用，热生效（版本 N）」的绿色成功提示，未走共享 applyNotice 三态——引擎应用失败（fail-static 旧配置继续生效）或应用结果待确认（pending）时依旧报成功，误导运维以为切换已真实生效。现与本页发布/回滚及全站发布入口统一：applied 才提示成功（含版本号），failed 如实报错并附引擎原因，pending 提示「引擎应用中，结果将自动刷新」
+- **独立重启能力探测误带升级专属的「二进制目录可写」条件**：POST /api/system/restart 与独立重启（RestartProbe）此前复用升级路径的三合一探测 probeRestartCapability（目录可写+systemctl+root），而纯重启不写任何文件——二进制目录只读但 systemctl 可用且以 root 运行的部署（如 ProtectSystem=strict 且未挂载 ReadWritePaths）被误拒为 500。现拆出 probeRestartBasics（仅 systemctl+root 两条件）供独立重启探测使用；升级路径的三合一探测原样保留（升级需在二进制目录内 rename 替换，目录可写仍是必要条件），并新增「目录不可写但 systemctl+root 就绪 → 独立重启通过、升级探测仍拒绝」的回归单测
+- **系统重启 API 与在途升级任务无互斥**：升级任务进行中（下载/校验/替换/重启提交任一阶段）发起 POST /api/system/restart 会用 systemctl 重启打断升级流水线，使二进制替换与自愈回滚交接悬空。现处理入口在能力探测之前检查 Upgrade.Running()，在途时返回 409（「升级任务进行中，禁止重启」），不写审计、不提交重启；配套单测覆盖「升级运行中 409 且零副作用 / 任务结束后恢复原有探测流程」两路径
+- **证书巡检读取未过旧数据目录路径重映射（控制台证书列表对存量迁移实例误报证书失效）**：`/api/certificates` 的证书清单构建（`certmgr.InspectSites`）此前用配置里的原始 `tls_cert` 路径直接读文件，未走运行时路径契约（`config.ResolveLegacyDataPath`，与数据面 `proxy/router.go` 的证书读取同构）——v0.7.10 数据目录更名后仍残留 `/var/lib/kingmoat/` 旧前缀的站点，实际证书文件在新布局下完好，控制台证书页却报「读取失败」。现巡检读取前先做存在性探测式重映射（目标不存在则保持原路径与既有报错语义），引用分组逻辑不变
+- **install.sh 迁移改写受用户 `~/.sqliterc` 干扰静默失败**：控制台配置库 `kingmoat.db` 旧数据目录路径改写的 sqlite3 分支（4 处调用）此前未屏蔽用户 dotfile，`~/.sqliterc` 中的 dot 命令（如 `.headers on` / `.output`）会污染命令输出，使「是否存在 revisions 表」「改写行数」判断失真，迁移被静默判为未完成（migration NOT completed）。现全部 sqlite3 调用加 `-init /dev/null`（保留 `-batch`），不再读取用户初始化文件；python3 分支无此问题
+- **install.sh 安装记录数据目录带尾斜杠时迁移改写静默失效**：安装记录里 `DATA_DIR`/`OLD_DATA_DIR` 若写法带尾斜杠（如 `/var/lib/kingmoat/`），config.json 的 sed 改写与 `kingmoat.db` 的 `instr(config, '旧目录/')` 模式变成 `旧目录//`，永不匹配，改写全程静默 no-op（manual_hint 亦不可直接复制执行）。现在两处改写入口（config.json sed 块与 `rewrite_legacy_db_paths`）对目录先做尾斜杠归一（`${dir%/}`）再匹配，manual_hint 使用归一后目录可直接复制执行；MIGRATE/-f 判断路径保持原值不动，归一后为空的退化输入显式跳过改写并告警
+- **kmwafctl `status`/`config` 把控制台库查询失败误报为「尚无发布配置」并对 live 配置跳过校验**：此前 `CurrentRevision` 任意错误一律按「无发布配置」回退种子文件展示，控制台库损坏/被锁等真实故障被掩盖；且 live revision JSON 解码后未经 `config.Validate`。现在仅 `errors.Is(err, store.ErrNotFound)`（库正常且确无发布记录）才回退种子并注明，其余错误如实报「console db current-revision query failed: 原因」；live 配置解码后补 `config.Validate`，校验不过仍展示数据，但来源描述追加「（校验警告：原因）」
+- **发布事件订阅通道丢发不自愈（慢 reload 期间引擎永久落后于配置库）**：发布事件的订阅通道容量为 8 且发布侧非阻塞投递，慢热重载期间的连发超过缓冲后事件被静默丢弃——旧代码 default 分支注释声称的「订阅方下次读取会追平」在消费方改用事件快照后不会发生（消费方只对收到的 channel 事件反应），丢发后引擎将停留在旧版本直到下一次发布，且被丢 revision 永远没有应用结果。现把热重载消费循环收编为 `configcenter.Center.Consume`：每个事件仍按自带快照应用（不误用 Current()，保证 apply 结果与 revision 精确配对），每轮处理完先排空队列中已就绪事件（不跳过已入队的中间版本），再检查 `MissedSince`（运行 revision 落后于配置库当前版本即视为丢发）并用 Current() 的原子快照补一次追平重载；追平失败不原地死循环（运行 revision 无法前进，重试同一配置无意义），下一个发布事件重新武装检查。配套单测覆盖「慢 reload 期间连发 19 次（缓冲溢出丢发）→ 最终追平到最新版本且应用的是最新快照」「正常节奏逐事件消费不引入补发」「失败后不 spin 且后续事件恢复收敛」
+- **geo「engine missing」告警与审计旁路注释口径失真（防御代码误描述为真实信号）**：站点启用 geo 时 byDomain 与 configured 映射在 NewGeo 同一循环内写入，「configured 有但引擎缺映射」在当前构造下不可达；但字段注释、Inspect 内注释与 warnEngineMissing 文档把该路径描述为「热重载失败保留旧引擎的真实 stale-engine 信号」，误导后续维护者以为存在可达的告警路径。现统一改为明确口径：构造上不可达、纯防御未来重构引入真实错位、保留限频告警与审计旁路作为不变量哨兵；测试内用 delete 模拟的场景同步标注为「防御路径模拟」。零行为变更、零断言变化
+- **控制台横幅在发布在途时展示上一次的陈旧应用结果**：全局红色告警条的文案直接取 /api/status 的 apply（最近一次数据面应用结果，lastApply 语义），新发布在途或结果未回写时，横幅显示的是上一版本的 applied/failed 结果，与「配置已更新但引擎未应用」的标题自相矛盾。现横幅侧校验 apply.revision 与 latest_revision 一致才展示真实结果（含失败原因），不一致（在途）时显示中性文案「配置应用中…」；revMismatch 的展示条件不变
+- **配置面重建中段失败泄漏 geo / rl 句柄（部分失败路径连 close 都不执行）**：buildState 的 closers 原本只在构建末尾统一追加，geo（mmdb 句柄）与 rl（sweeper goroutine）建好之后的任何中段失败——captcha/site-auth/rate-limit/coraza/respFilter 的直接 return、以及 matcher/botDetect 走 state.close() 但当时 closers 尚为空、NewBotChallenge 失败连 close 都不执行——至少泄漏 geo、rl 建好后还额外泄漏 rl（热重载场景反复触发将累积 mmdb 映射与后台 goroutine）。现改为「建好即注册」：geo、rl 构建成功后立即登记进 closers，中段所有失败 return 统一先 state.close() 再返回（coraza Stage/respFilter 等其余构建产物经核实无资源句柄，无需登记）；geo.Close 跳过内置库单例的既有保护不受影响（内置库生命周期归 geoip 包）。回归单测用真实 mmdb 副本与 RateLimit sweeper goroutine 双探针覆盖「respFilter 失败（直接 return 形态）」「matcher 非法正则（close 形态）」两条泄漏路径（探针灵敏度经临时还原泄漏代码验证有效），并断言成功路径 closers 注册完整、close 幂等
+
 ## v0.7.11-beta (2026-09-30)
 
 跨越 v0.7.10-beta：包含生产升级后反馈的两项严重缺陷修复（GeoIP 热重载静默 fail-open 与升级迁移后配置旧绝对路径失效）、发布链路 applied 真实性改造、kmwafctl 取数源修正、系统重启 API 与 CRS 异常评分技术文档。**升级提示：v0.7.10-beta 实例可控制台在线升级；v0.7.9 及更早仍须重跑 install.sh 自动迁移（本版迁移已同步修复配置库内的旧绝对路径）。**

@@ -129,7 +129,13 @@ const badge = reactive({ blocked: 0, risks: 0 })
 // 全局红色告警条；旧后端无字段/拉取失败时保持 null，告警条静默隐藏
 const applyInfo = reactive({ latest: null, running: null, error: '', status: '' })
 const revMismatch = computed(() => applyInfo.latest !== null && applyInfo.running !== null && applyInfo.latest !== applyInfo.running)
-const applyText = computed(() => applyInfo.error || applyInfo.status || '')
+// status 只存机器值（applied / failed / pending），展示文案统一在
+// applyText 映射，状态字段不再混入 UI 文案
+const applyText = computed(() => {
+  if (applyInfo.error) return applyInfo.error
+  if (applyInfo.status === 'pending') return '配置应用中…'
+  return applyInfo.status || ''
+})
 let badgeTimer = null
 
 const route = useRoute()
@@ -208,7 +214,7 @@ async function loadBadge() {
         applyInfo.status = (status.apply && status.apply.status) || ''
       } else {
         applyInfo.error = ''
-        applyInfo.status = '配置应用中…'
+        applyInfo.status = 'pending'
       }
     } else {
       applyInfo.latest = null

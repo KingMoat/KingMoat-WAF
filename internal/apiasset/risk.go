@@ -206,6 +206,11 @@ func (e *Engine) RunScan() (int, error) {
 		e.logger.Error("risk: R7 scan failed", "err", err)
 	}
 
+	// Record the scan completion time for GET /api/risks last_scan_at.
+	// Metadata only: a failure here is logged and never fails the scan.
+	if err := e.store.MarkScanNow(e.nowFunc()); err != nil {
+		e.logger.Error("risk: mark scan time failed", "err", err)
+	}
 	return newCount, nil
 }
 

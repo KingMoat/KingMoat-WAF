@@ -176,7 +176,9 @@ func TestConsumeCatchesUpAfterBufferOverflow(t *testing.T) {
 
 // TestConsumeNormalOrdering pins the non-regression half: without buffer
 // overflow every event is applied exactly once, in publish order, with no
-// catch-up reloads in between.
+// catch-up reloads in between. The only extra apply is the boot catch-up of
+// the seed revision (N-1): revisions published before Consume starts are
+// invisible to the fan-out and must be converged once at startup.
 func TestConsumeNormalOrdering(t *testing.T) {
 	c, err := Open(t.TempDir()+"/cc.db", seedCfg(), quiet())
 	if err != nil {
@@ -184,11 +186,12 @@ func TestConsumeNormalOrdering(t *testing.T) {
 	}
 	defer c.Close()
 
+	seedRev, _ := c.Current()
 	applier := &fakeApplier{} // fast consumer
 	stop := runConsume(t, c, applier)
 	defer stop()
 
-	want := []int64{}
+	want := []int64{seedRev} // boot catch-up applies the seed revision first
 	for i := 1; i <= 3; i++ {
 		time.Sleep(80 * time.Millisecond) // slow publish cadence: no drops
 		rev, err := c.Publish(burstCfg(i), "t", fmt.Sprintf("v%d", i+1))
@@ -210,6 +213,108 @@ func TestConsumeNormalOrdering(t *testing.T) {
 			t.Fatalf("apply sequence = %v, want %v (order broken)", seq, want)
 		}
 	}
+}
+
+// TestConsumeBootCatchUp is the N-1 regression: revisions published before
+// Consume starts have no subscriber to fan out to (the channel does not
+// exist yet), so the boot catch-up must converge to them at startup instead
+// of idling until the next publish re-arms the check.
+func TestConsumeBootCatchUp(t *testing.T) {
+	c, err := Open(t.TempDir()+"/cc.db", seedCfg(), quiet())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	// Published BEFORE Consume starts: nobody is subscribed, the event is
+	// never delivered through a channel receipt.
+	rev2, err := c.Publish(burstCfg(1), "t", "pre-start")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	applier := &fakeApplier{}
+	stop := runConsume(t, c, applier)
+	defer stop()
+
+	waitFor(t, 2*time.Second, func() bool {
+		return applier.RunningRevision() == rev2
+	}, "boot catch-up did not converge to the pre-start revision")
+	if st := c.WaitForApply(rev2, time.Second); st.Status != "applied" || st.Revision != rev2 {
+		t.Fatalf("apply status for the pre-start revision = %+v, want applied", st)
+	}
+}
+
+// TestConsumeNoRegressionAfterCatchUpJump is the C-1 guard regression: a
+// failed drain apply leaves older events queued, the catch-up then jumps the
+// running revision ahead to the center's latest, and the queued stale events
+// must be SKIPPED by the monotonicity guard — never re-applied (which would
+// roll the data plane back to an older revision) and never producing a
+// second apply outcome or after callback for their revision.
+func TestConsumeNoRegressionAfterCatchUpJump(t *testing.T) {
+	c, err := Open(t.TempDir()+"/cc.db", seedCfg(), quiet())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	// failRevs[4] breaks the drain mid-queue; the slow reload lets revisions
+	// 3..7 queue up behind the settling first event.
+	applier := &fakeApplier{delay: 30 * time.Millisecond, failRevs: map[int64]bool{4: true}}
+	stop := runConsume(t, c, applier)
+	defer stop()
+
+	if _, err := c.Publish(burstCfg(1), "t", "v2"); err != nil {
+		t.Fatal(err)
+	}
+	waitConverged := func() bool {
+		return applier.RunningRevision() >= 2
+	}
+	waitFor(t, 2*time.Second, waitConverged, "first event never consumed")
+
+	latest := int64(2)
+	for i := 2; i <= 6; i++ {
+		time.Sleep(2 * time.Millisecond) // queue up behind the slow reload
+		rev, err := c.Publish(burstCfg(i), "t", fmt.Sprintf("v%d", i+1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		latest = rev
+	}
+
+	// Drain applies 3 (ok) and 4 (fails) -> catch-up jumps to the latest;
+	// the guard must then skip the still-queued 5 and 6.
+	waitFor(t, 5*time.Second, func() bool {
+		return applier.RunningRevision() == latest
+	}, "consumer did not reach the latest revision after the catch-up jump")
+
+	// Give any (wrong) stale re-apply time to show up.
+	time.Sleep(200 * time.Millisecond)
+	_, n5, _ := applier.record(latest - 1)
+	if n5 != 0 {
+		t.Fatalf("stale revision %d was applied %d times after the catch-up jump, want 0 (running rolled back)", latest-1, n5)
+	}
+	_, n6, _ := applier.record(latest)
+	if n6 != 1 {
+		t.Fatalf("latest revision %d applied %d times, want exactly 1 (catch-up only)", latest, n6)
+	}
+	if got := applier.RunningRevision(); got != latest {
+		t.Fatalf("running revision = %d, want %d (no rollback)", got, latest)
+	}
+	// The skipped revisions carry no apply outcome (never applied)...
+	for _, rev := range []int64{latest - 1, latest - 2} {
+		if st, ok := c.ApplyStatusFor(rev); ok {
+			t.Fatalf("skipped revision %d has an apply outcome (%+v), want none", rev, st)
+		}
+	}
+	// ...while the loop stays healthy: the next publish applies normally.
+	revNext, err := c.Publish(burstCfg(9), "t", "after-guard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		return applier.RunningRevision() == revNext
+	}, "consumer did not apply the post-guard publish")
 }
 
 // TestConsumeFailedReloadStopsAndConverges: a failed catch-up reload must not

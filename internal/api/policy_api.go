@@ -170,9 +170,12 @@ func (s *Server) handlePolicyWhitelist(w http.ResponseWriter, r *http.Request) {
 // migrate legacy entries; new integrations must not use this endpoint.
 func (s *Server) handleExceptionList(w http.ResponseWriter, r *http.Request) {
 	_, cfg := s.opts.Center.Current()
-	list := []config.Exception{}
+	var list []config.Exception
 	if cfg.Policy != nil {
 		list = cfg.Policy.Exceptions
+	}
+	if list == nil {
+		list = []config.Exception{}
 	}
 	writeJSON(w, http.StatusOK, list)
 }

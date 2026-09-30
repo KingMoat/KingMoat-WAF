@@ -297,6 +297,12 @@ type Options struct {
 	// reloadable plane; the status endpoint then reports running = latest so
 	// no false divergence warning is shown).
 	RunningRevisionFn func() int64
+	// EffectiveAuditDir reports the audit directory the process actually
+	// writes to (resolved absolute path, e.g. after seed normalization).
+	// The config store may show a stale audit_log_dir for pre-migration
+	// revisions; this field lets operators verify where events really land
+	// instead of trusting a display value. Empty/nil = unknown (omitted).
+	EffectiveAuditDir func() string
 	// ACME hosts the certificate-library issuance queue (async ACME
 	// requests, status queries, cert-library entries; nil = the
 	// /api/certs/acme/* endpoints report "not available").
@@ -931,7 +937,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			running = v
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	// effective_audit_dir: where audit events actually land (absolute path
+	// resolved at boot). The config store may display a stale audit_log_dir
+	// for pre-migration revisions; surfacing the real path lets operators
+	// verify instead of trusting the display value (empty = unknown).
+	effectiveAuditDir := ""
+	if s.opts.EffectiveAuditDir != nil {
+		effectiveAuditDir = s.opts.EffectiveAuditDir()
+	}
+	out := map[string]any{
 		"version":          s.opts.Version,
 		"revision":         rev,
 		"latest_revision":  rev,
@@ -940,7 +954,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"sites":            len(cfg.Sites),
 		"time":             time.Now().UTC().Format(time.RFC3339),
 		"engine":           engineVersions(),
-	})
+	}
+	if effectiveAuditDir != "" {
+		out["effective_audit_dir"] = effectiveAuditDir
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // upstreamReleases maps known upstream dependency versions to their release

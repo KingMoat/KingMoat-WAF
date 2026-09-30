@@ -167,8 +167,13 @@ func (s *Server) handleRiskList(w http.ResponseWriter, r *http.Request) {
 	if risks == nil {
 		risks = []apiasset.Risk{}
 	}
+	var lastScan any
+	if ts, ok := opts.Store.LastScanAt(); ok {
+		lastScan = ts
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"risks": risks, "total": total, "page": page, "page_size": size,
+		"last_scan_at": lastScan,
 	})
 }
 

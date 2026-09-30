@@ -121,6 +121,10 @@ CREATE TABLE IF NOT EXISTS api_risks (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_risks_status ON api_risks(status);
+CREATE TABLE IF NOT EXISTS scan_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 `
 
 // Open opens (and initializes) the asset database.
@@ -135,6 +139,18 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("apiasset: init schema: %w", err)
 	}
+	// One-time hygiene for rows written before the writer-side site guard
+	// (user report N2: unknown-site traffic once aggregated under "" and
+	// leaked into /api/assets/sites). SiteList also filters at read time as
+	// a belt-and-braces guard; this purge removes the stale rows so the
+	// risk rules stop seeing them too. Idempotent and cheap: rows with an
+	// empty site are never legitimate.
+	for _, tbl := range []string{"api_assets", "api_candidates", "respfilter_hits"} {
+		if _, err := db.Exec(`DELETE FROM ` + tbl + ` WHERE site = ''`); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("apiasset: purge empty-site rows from %s: %w", tbl, err)
+		}
+	}
 	return &Store{db: db}, nil
 }
 
@@ -146,6 +162,9 @@ func tsFormat(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 // UpsertAsset persists one aggregated entry. candidate=true writes to the
 // candidates table; once hits reach min_hits the caller promotes it.
 func (s *Store) UpsertAsset(a *Asset, candidate bool) error {
+	if a.Site == "" {
+		return errors.New("apiasset: asset site required")
+	}
 	tags, _ := json.Marshal(a.Tags)
 	dist, _ := json.Marshal(a.StatusDist)
 	params, _ := json.Marshal(a.Params)
@@ -430,6 +449,30 @@ func (s *Store) SetRiskStatus(id, status string) error {
 	return err
 }
 
+// MarkScanNow records the completion time of a full risk-scan pass
+// (surfaced by GET /api/risks as last_scan_at).
+func (s *Store) MarkScanNow(t time.Time) error {
+	if _, err := s.db.Exec(`INSERT INTO scan_meta (key, value) VALUES('last_scan_at', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value`, tsFormat(t)); err != nil {
+		return fmt.Errorf("apiasset: mark scan time: %w", err)
+	}
+	return nil
+}
+
+// LastScanAt returns the completion time of the most recent full risk scan
+// (ok=false when no scan has run yet; the API then surfaces null).
+func (s *Store) LastScanAt() (time.Time, bool) {
+	var v string
+	if err := s.db.QueryRow(`SELECT value FROM scan_meta WHERE key = 'last_scan_at'`).Scan(&v); err != nil {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, v)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
 // PurgeOldAssets deletes assets and candidates unseen for days.
 func (s *Store) PurgeOldAssets(days int) (int64, error) {
 	cutoff := tsFormat(time.Now().AddDate(0, 0, -days))
@@ -457,14 +500,16 @@ func (s *Store) IgnoreAsset(id int64, ignored bool) error {
 	return err
 }
 
-// SiteList returns distinct sites present in the inventory.
+// SiteList returns distinct sites present in the inventory. Rows with an
+// empty site (a pre-guard writer artifact, user report N2) are excluded;
+// Open() purges them, the WHERE keeps the list clean even if one reappears.
 func (s *Store) SiteList() ([]string, error) {
-	rows, err := s.db.Query(`SELECT DISTINCT site FROM api_assets ORDER BY site`)
+	rows, err := s.db.Query(`SELECT DISTINCT site FROM api_assets WHERE site <> '' ORDER BY site`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []string
+	out := []string{}
 	for rows.Next() {
 		var site string
 		if err := rows.Scan(&site); err != nil {
@@ -485,6 +530,9 @@ var _ = strings.TrimSpace
 // UpsertRespFilterHit accumulates observe-only sensitive-data detections
 // (R1 signal source).
 func (s *Store) UpsertRespFilterHit(site, normPath, pattern string, n int) error {
+	if site == "" {
+		return errors.New("apiasset: respfilter hit site required")
+	}
 	_, err := s.db.Exec(`INSERT INTO respfilter_hits (site, norm_path, pattern, hits, last_seen)
         VALUES(?,?,?,?,?)
         ON CONFLICT(site, norm_path, pattern) DO UPDATE SET

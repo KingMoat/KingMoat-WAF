@@ -259,3 +259,116 @@ func TestSessionCookieSecureFlag(t *testing.T) {
 		t.Fatalf("plain login cookie unexpectedly Secure (cookies=%v)", cookies2)
 	}
 }
+
+// TestMeUsersTOTPEnabledConsistency pins review N-1: the TOTP state must
+// come from one source of truth across /api/me, /api/users and the mutation
+// responses. The reported reproduction sequence (disable MFA, then compare
+// both read endpoints) stays in lockstep at every step, and each mutation
+// response carries the value actually persisted in the store.
+func TestMeUsersTOTPEnabledConsistency(t *testing.T) {
+	ts, login := rbacServer(t)
+	admin := login("admin", "hunter2")
+
+	if code := doJSON(t, admin, "POST", ts.URL+"/api/users", map[string]string{
+		"username": "consist", "password": "consist-pw", "role": "auditor",
+	}); code != http.StatusOK {
+		t.Fatalf("create user = %d", code)
+	}
+	secret := enableUserMFA(t, ts, admin, "consist")
+
+	// self login now requires the dynamic code (per-user MFA is active)
+	valid, err := totpGenerate(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest("POST", ts.URL+"/api/login",
+		bytes.NewReader(mustJSON(t, map[string]string{"username": "consist", "password": "consist-pw", "totp": valid})))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookies := resp.Cookies()
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || len(cookies) == 0 {
+		t.Fatalf("self login with TOTP = %d cookies=%d, want 200 with cookie", resp.StatusCode, len(cookies))
+	}
+	self := &http.Client{Transport: roundTripperWithCookie{cookie: cookies[0]}}
+
+	usersState := func() bool {
+		listResp, err := admin.Get(ts.URL + "/api/users")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var users []map[string]any
+		decodeInto(t, listResp, &users)
+		for _, u := range users {
+			if u["username"] == "consist" {
+				enabled, _ := u["totp_enabled"].(bool)
+				return enabled
+			}
+		}
+		t.Fatal("consist missing from /api/users")
+		return false
+	}
+	meState := func() bool {
+		code, body := doJSONBody(t, self, "GET", ts.URL+"/api/me", nil)
+		if code != http.StatusOK {
+			t.Fatalf("/api/me = %d", code)
+		}
+		enabled, _ := body["totp_enabled"].(bool)
+		return enabled
+	}
+
+	// MFA active: both read endpoints report true, in lockstep
+	if meState() != true || usersState() != true {
+		t.Fatalf("MFA on: me=%v users=%v, want both true", meState(), usersState())
+	}
+
+	// self disables MFA; the mutation response reports the stored state
+	code, body := doJSONBody(t, self, "DELETE", ts.URL+"/api/me/mfa", nil)
+	if code != http.StatusOK {
+		t.Fatalf("self mfa disable = %d", code)
+	}
+	if body["totp_enabled"] != false {
+		t.Fatalf("self disable response totp_enabled = %v, want false", body["totp_enabled"])
+	}
+
+	// reproduction sequence: after the disable, /api/me and /api/users
+	// must agree (both false)
+	if meState() {
+		t.Fatal("/api/me totp_enabled = true after disable, want false")
+	}
+	if usersState() {
+		t.Fatal("/api/users totp_enabled = true after disable, want false")
+	}
+
+	// admin re-enrolls and disables again through the user-management
+	// surface: both mutation responses carry the real stored values
+	code, out := doJSONBody(t, admin, "POST", ts.URL+"/api/users/consist/mfa/setup", map[string]string{})
+	if code != http.StatusOK {
+		t.Fatalf("admin mfa setup = %d", code)
+	}
+	secret, _ = out["secret"].(string)
+	valid, err = totpGenerate(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, body = doJSONBody(t, admin, "POST", ts.URL+"/api/users/consist/mfa/confirm", map[string]string{"code": valid})
+	if code != http.StatusOK {
+		t.Fatalf("admin mfa confirm = %d", code)
+	}
+	if body["totp_enabled"] != true {
+		t.Fatalf("confirm response totp_enabled = %v, want true", body["totp_enabled"])
+	}
+	code, body = doJSONBody(t, admin, "DELETE", ts.URL+"/api/users/consist/mfa", nil)
+	if code != http.StatusOK {
+		t.Fatalf("admin mfa disable = %d", code)
+	}
+	if body["totp_enabled"] != false {
+		t.Fatalf("admin disable response totp_enabled = %v, want false", body["totp_enabled"])
+	}
+	if meState() || usersState() {
+		t.Fatalf("after admin disable: me=%v users=%v, want both false", meState(), usersState())
+	}
+}

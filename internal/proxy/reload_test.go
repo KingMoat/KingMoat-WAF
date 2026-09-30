@@ -74,6 +74,25 @@ func TestReloadHotSwap(t *testing.T) {
 	}
 }
 
+// TestReloadWithEmptyPrevState is the N-4 defensive regression: a handler
+// whose state pointer was never stored (Swap returns nil on an empty
+// atomic.Pointer) must reload cleanly — the prev-sites log line used to
+// dereference the nil old state unconditionally and panicked.
+func TestReloadWithEmptyPrevState(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "ok")
+	}))
+	defer up.Close()
+
+	h := &Handler{logger: testLogger(), logSampler: newLogSampler(0)}
+	if err := h.Reload(reloadTestCfg(strings.TrimPrefix(up.URL, "http://"), false), 3); err != nil {
+		t.Fatalf("Reload on a stateless handler: %v", err)
+	}
+	if got := h.RunningRevision(); got != 3 {
+		t.Fatalf("revision after reload = %d, want 3", got)
+	}
+}
+
 func BenchmarkProxyForward(b *testing.B) {
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "ok")

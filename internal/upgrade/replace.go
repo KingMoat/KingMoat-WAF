@@ -15,13 +15,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
-
-	"github.com/kingmoat/kingmoat/internal/naming"
 )
 
 const (
@@ -140,7 +137,7 @@ func (s *Service) probeReplaceCapability() error {
 	return s.probeRestartCapability()
 }
 
-// probeRestartCapability answers the three host-level questions the
+// probeRestartCapability answers the host-level questions the
 // restart handover depends on, each with a distinct actionable reason:
 //
 //  1. the binary directory is writable: the swap is a rename inside that
@@ -148,6 +145,7 @@ func (s *Service) probeReplaceCapability() error {
 //     unit's ReadWritePaths mounts - a real create-and-delete probe beats
 //     parsing unit text (old units lack the path and must re-run
 //     install.sh first);
+//
 //  2. systemctl exists: the restart stage submits the unit restart through
 //     it; without it the upgrade could replace binaries but never hand
 //     over to the new ones;
@@ -157,6 +155,10 @@ func (s *Service) probeReplaceCapability() error {
 //     internal/api/console_port.go, and its EuidProbe). Probing it here
 //     fails the upgrade early with the manual path instead of swapping
 //     binaries and then failing the restart submission.
+//
+// Checks 2 and 3 are exactly the plain restart's questions, so they are
+// delegated to probeRestartBasics (internal/upgrade/restart.go): one copy
+// of the checks, identical verdicts and refusal texts on both paths.
 func (s *Service) probeRestartCapability() error {
 	dir, err := s.currentBinaryDir()
 	if err != nil {
@@ -165,13 +167,7 @@ func (s *Service) probeRestartCapability() error {
 	if err := probeDirWritable(dir); err != nil {
 		return fmt.Errorf("二进制目录 %s 不可写（存量部署请重跑 install.sh 更新 systemd 单元后再试）: %w", dir, err)
 	}
-	if _, err := exec.LookPath("systemctl"); err != nil {
-		return fmt.Errorf("%w（未找到 systemctl，无法自动重启服务）", ErrRestartUnavailable)
-	}
-	if s.euidProbe() != 0 {
-		return errors.New("当前进程非 root 运行，polkit 默认拒绝其重启 " + naming.ServiceName + " 服务（需要 root 或 polkit 授权重启服务）")
-	}
-	return nil
+	return s.probeRestartBasics()
 }
 
 // probeDirWritable answers whether the process can create files in dir by

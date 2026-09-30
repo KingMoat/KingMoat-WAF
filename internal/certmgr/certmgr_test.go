@@ -2,8 +2,11 @@ package certmgr
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/acme/autocert"
 
@@ -184,5 +187,74 @@ func TestACMEHolderRebuildFollowsConfig(t *testing.T) {
 	m := h.Prod()
 	if !allows(m, "c.local") || allows(m, "a.local") {
 		t.Fatalf("Prod after re-add: c.local allowed=%v, a.local allowed=%v", allows(m, "c.local"), allows(m, "a.local"))
+	}
+}
+
+// TestInspectSitesACMEValidity pins review N-4: ACME site entries carry the
+// validity window read from the slot's cached leaf - production from the
+// base cache, staging from the sibling directory, the first cached domain
+// of a multi-domain site wins, and a site without a cached leaf yet keeps
+// the fields empty (no fabricated dates).
+func TestInspectSitesACMEValidity(t *testing.T) {
+	base := t.TempDir()
+	origBase := inspectCacheBase
+	inspectCacheBase = func() string { return base }
+	t.Cleanup(func() { inspectCacheBase = origBase })
+
+	far := time.Now().Add(90 * 24 * time.Hour)
+	if err := os.WriteFile(filepath.Join(base, "prod.local"), genTestCertPEM(t, []string{"prod.local"}, far), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stagingDir := cacheDirFor(base, true)
+	if err := os.MkdirAll(stagingDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stagingDir, "stag.local"), genTestCertPEM(t, []string{"stag.local"}, far), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// multi-domain site: only the second domain has a cache entry
+	if err := os.WriteFile(filepath.Join(base, "www.multi.local"), genTestCertPEM(t, []string{"www.multi.local"}, far), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		Sites: []config.Site{
+			{Domains: []string{"prod.local"}, ACME: &config.ACMESettings{}},
+			{Domains: []string{"stag.local"}, ACME: &config.ACMESettings{Staging: true}},
+			{Domains: []string{"multi.local", "www.multi.local"}, ACME: &config.ACMESettings{}},
+			{Domains: []string{"nocache.local"}, ACME: &config.ACMESettings{}},
+		},
+	}
+	bySite := map[string]Info{}
+	for _, info := range InspectSites(cfg) {
+		bySite[info.Site] = info
+	}
+
+	prod := bySite["prod.local"]
+	if prod.NotBefore == "" || prod.NotAfter == "" {
+		t.Fatalf("prod entry missing validity: %+v", prod)
+	}
+	if nb, err := time.Parse(time.RFC3339, prod.NotBefore); err != nil {
+		t.Fatalf("prod NotBefore = %q, not RFC3339: %v", prod.NotBefore, err)
+	} else if time.Until(nb) >= 0 {
+		t.Fatalf("prod NotBefore = %q, want a past timestamp", prod.NotBefore)
+	}
+	if na, err := time.Parse(time.RFC3339, prod.NotAfter); err != nil || time.Until(na) < 80*24*time.Hour {
+		t.Fatalf("prod NotAfter = %q (%v), want ~90d ahead", prod.NotAfter, err)
+	}
+	if prod.Subject != "managed by ACME (auto-renew)" {
+		t.Fatalf("prod Subject = %q, want unchanged management marker", prod.Subject)
+	}
+	stag := bySite["stag.local"]
+	if stag.NotAfter == "" {
+		t.Fatalf("staging entry missing validity (staging dir read broken): %+v", stag)
+	}
+	multi := bySite["multi.local"]
+	if multi.NotAfter == "" {
+		t.Fatalf("multi entry missing validity (second-domain fallback broken): %+v", multi)
+	}
+	nocache := bySite["nocache.local"]
+	if nocache.NotBefore != "" || nocache.NotAfter != "" {
+		t.Fatalf("nocache entry = %q..%q, want empty fields", nocache.NotBefore, nocache.NotAfter)
 	}
 }

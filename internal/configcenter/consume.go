@@ -43,10 +43,24 @@ func (c *Center) MissedSince(runningRev int64) bool {
 // and retrying the same config inline would spin) — the next published event
 // re-arms the check.
 //
-// SetApplyStatus is called here, not by the caller, so even a dropped-then-
-// caught-up revision gets an apply outcome for WaitForApply. The after
-// callback (may be nil) runs after every apply attempt, success or failure,
-// with the event that was applied.
+// A revision monotonicity guard wraps both receive paths (the main select
+// and the post-apply drain): an event whose revision is not newer than the
+// running one is skipped outright — no apply, no SetApplyStatus write, no
+// after callback. Without the guard, a catch-up that jumped ahead while a
+// failed drain apply left older events queued would re-apply those stale
+// snapshots afterwards and roll the data plane back to an older revision —
+// a transient but real config regression (security-relevant: rules briefly
+// revert to an older set). A failed apply never advances the running
+// revision, so the guard cannot suppress a genuine retry of the same
+// revision.
+//
+// SetApplyStatus is called here, not by the caller, so every revision the
+// loop actually applies gets an apply outcome for WaitForApply. Revisions
+// that were dropped by the buffer overflow and closed over by a catch-up
+// jump intentionally have none (they were never applied) — publishers
+// waiting on such a revision observe pending, which is the honest outcome.
+// The after callback (may be nil) runs after every apply attempt, success
+// or failure, with the event that was applied.
 func (c *Center) Consume(ctx context.Context, applier Applier, after func(ev RevEvent, applyErr error)) {
 	ch, cancel := c.Subscribe()
 	defer cancel()
@@ -71,11 +85,22 @@ func (c *Center) Consume(ctx context.Context, applier Applier, after func(ev Rev
 		}
 	}
 
+	// Boot catch-up: revisions published before this call had no subscriber
+	// to fan out to, so the loop would idle at the boot revision until the
+	// NEXT publish re-arms the check. One catch-up here converges
+	// immediately (a no-op when the plane already runs the active revision).
+	catchUp()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case ev := <-ch:
+			// Monotonic guard (see the doc comment above): never re-apply a
+			// revision the plane already runs or has moved past.
+			if ev.Rev <= applier.RunningRevision() {
+				continue
+			}
 			if !applyOne(ev.Rev, ev.Config) {
 				catchUp() // failed reload: try to converge to the center's revision
 				continue
@@ -86,6 +111,9 @@ func (c *Center) Consume(ctx context.Context, applier Applier, after func(ev Rev
 			for {
 				select {
 				case ev2 := <-ch:
+					if ev2.Rev <= applier.RunningRevision() {
+						continue
+					}
 					if !applyOne(ev2.Rev, ev2.Config) {
 						break drain
 					}

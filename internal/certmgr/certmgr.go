@@ -38,6 +38,16 @@ type Info struct {
 	Sites []string `json:"sites,omitempty"`
 }
 
+// DefaultCacheBase is the ACME cache directory base, relative to the working
+// directory, that main hands to NewACMEHolder. InspectSites reads the same
+// directories to backfill the ACME entries' validity window (review N-4).
+const DefaultCacheBase = "acme-cache"
+
+// inspectCacheBase returns the cache base InspectSites reads for that
+// backfill; production returns DefaultCacheBase, tests override it to point
+// at fixture directories (the seam mirrors resolveDataPath below).
+var inspectCacheBase = func() string { return DefaultCacheBase }
+
 // InspectFile parses a PEM certificate file and returns its metadata.
 func InspectFile(site, domain, certPath string) Info {
 	info := Info{Site: site, Source: "file", Domains: []string{domain}}
@@ -136,13 +146,15 @@ func InspectSites(cfg *config.Config) []Info {
 			info.Sites = sharedSites(refs, naming.NormalizePath(s.TLSCert), naming.NormalizePath(s.TLSKey))
 			out = append(out, info)
 		case s.ACME != nil:
-			out = append(out, Info{
+			info := Info{
 				Site:    domain,
 				Source:  "acme",
 				Domains: append([]string{}, s.Domains...),
 				Subject: "managed by ACME (auto-renew)",
 				Sites:   []string{domain},
-			})
+			}
+			fillACMETimes(&info, s.ACME.Staging)
+			out = append(out, info)
 		}
 	}
 	return out
@@ -161,6 +173,26 @@ func sharedSites(refs map[string][]string, certPath, keyPath string) []string {
 		}
 	}
 	return out
+}
+
+// fillACMETimes backfills not_before/not_after for an ACME-managed site
+// entry from the slot's DirCache leaf (review N-4: the site inventory used
+// to carry no validity window for ACME entries at all). Any cached domain
+// of the site describes the same certificate (autocert files the full SAN
+// set under whichever ServerName triggered issuance), so the first cache
+// hit wins; a site with no cached leaf yet (not issued, or the read races
+// an in-flight write) keeps the fields empty, exactly as before.
+func fillACMETimes(info *Info, staging bool) {
+	dir := cacheDirFor(inspectCacheBase(), staging)
+	for _, d := range info.Domains {
+		leaf, err := cachedLeaf(dir, d)
+		if err != nil {
+			continue
+		}
+		info.NotBefore = leaf.NotBefore.UTC().Format(time.RFC3339)
+		info.NotAfter = leaf.NotAfter.UTC().Format(time.RFC3339)
+		return
+	}
 }
 
 func containsStr(list []string, v string) bool {

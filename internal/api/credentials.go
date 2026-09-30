@@ -115,6 +115,20 @@ func confirmUserMFA(st *store.Store, username, code string) error {
 	return st.ConfirmUserTOTP(username)
 }
 
+// totpEnabledNow re-reads the account right after a TOTP mutation so the
+// mutation response reports the state actually persisted in the store
+// (review N-1): the field must share one source of truth with /api/me and
+// /api/users, never a hardcoded assumption. Unreachable for the success
+// paths (the mutations verify RowsAffected), so the false fallback only
+// fires on a store failure immediately after a confirmed write.
+func totpEnabledNow(st *store.Store, username string) bool {
+	u, err := st.GetUser(username)
+	if err != nil {
+		return false
+	}
+	return u.TOTPEnabled
+}
+
 // selfAccount resolves the signed-in account for /api/me endpoints; returns
 // (nil, false) when there is no console identity (dev mode).
 func (s *Server) selfAccount(w http.ResponseWriter, r *http.Request) (*store.User, bool) {
@@ -218,7 +232,7 @@ func (s *Server) handleMeMFAConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordChange(r, "mfa.enable", user.Username, "self-service")
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "totp_enabled": true})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "totp_enabled": totpEnabledNow(s.userStore(), user.Username)})
 }
 
 // handleMeMFADisable turns off the caller's own MFA.
@@ -232,7 +246,7 @@ func (s *Server) handleMeMFADisable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordChange(r, "mfa.disable", user.Username, "self-service")
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "totp_enabled": false})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "totp_enabled": totpEnabledNow(s.userStore(), user.Username)})
 }
 
 // ---- admin-managed endpoints (user management surface) ----
@@ -318,7 +332,7 @@ func (s *Server) handleUserMFAConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordChange(r, "mfa.enable", username, "")
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "username": username, "totp_enabled": true})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "username": username, "totp_enabled": totpEnabledNow(s.userStore(), username)})
 }
 
 // handleUserMFADisable turns off per-user MFA.
@@ -332,7 +346,7 @@ func (s *Server) handleUserMFADisable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordChange(r, "mfa.disable", username, "")
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "username": username, "totp_enabled": false})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "username": username, "totp_enabled": totpEnabledNow(s.userStore(), username)})
 }
 
 // decodeCode reads {"code": "..."} from the request body.

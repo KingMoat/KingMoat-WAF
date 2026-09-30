@@ -54,6 +54,28 @@ import (
 // version is overridden at build time via -ldflags "-X main.version=...".
 var version = "dev"
 
+// hotReloadAfter runs the side-component rebuilders after a hot-reload
+// apply. Every rebuilder assembles from the NEW configuration, so all of
+// them are gated on the data-plane apply outcome (the same contract
+// rebuildACME follows): a failed apply keeps the previous config alive
+// (fail-static), and rebuilding ACME / AI / telemetry / alerts+risks
+// engines from the new config anyway would split the layers - side
+// components answering with settings the traffic plane never applied.
+// Builders may be nil (wired later, or absent in static mode); nil
+// entries are skipped.
+func hotReloadAfter(logger *slog.Logger, ev configcenter.RevEvent, applyErr error, builders ...func(*config.Config)) {
+	if applyErr != nil {
+		logger.Error("hot reload failed, keeping previous config", "revision", ev.Rev, "err", applyErr)
+		return
+	}
+	logger.Info("hot reload applied", "revision", ev.Rev)
+	for _, build := range builders {
+		if build != nil {
+			build(ev.Config)
+		}
+	}
+}
+
 func main() {
 	configPath := flag.String("config", "config.json", "path to the JSON config file (static seed / static mode)")
 	consoleAddr := flag.String("console-addr", "", "enable the embedded console+API on this address (all-in-one mode)")
@@ -453,22 +475,17 @@ func main() {
 			// SetApplyStatus and the revision/config pairing live inside
 			// configcenter.Consume.
 			center.Consume(ctx, handler, func(ev configcenter.RevEvent, applyErr error) {
-				if applyErr != nil {
-					logger.Error("hot reload failed, keeping previous config", "revision", ev.Rev, "err", applyErr)
-				} else {
-					logger.Info("hot reload applied", "revision", ev.Rev)
-					rebuildACME(ev.Config) // ACME sites hot-apply on publish
-				}
-				if aiBuilder != nil {
-					aiBuilder(ev.Config) // ai toggle hot-applies (close+rebuild)
-				}
+				// Telemetry wiring is mutex-guarded (assigned later, inside the
+				// console block): read it under the same lock as its writer.
 				telMu.Lock()
 				bt := buildTelemetry
 				telMu.Unlock()
-				if bt != nil {
-					bt(ev.Config) // telemetry switch hot-applies
-				}
-				buildEngines(ev.Config) // alerts + risks toggle hot-applies
+				hotReloadAfter(logger, ev, applyErr,
+					rebuildACME,  // ACME sites hot-apply on publish
+					aiBuilder,    // nil until the console wires the AI assistant
+					bt,           // nil until the console wires telemetry
+					buildEngines, // alerts + risks toggle hot-applies
+				)
 			})
 		}()
 	}
@@ -639,6 +656,7 @@ func main() {
 			GroupsFn:       func() *ipgroups.Manager { return handler.Groups() },
 			DisableStateFn: func() *stages.StageDisableRegistry { return handler.DisableState() },
 			RunningRevisionFn: func() int64 { return handler.RunningRevision() },
+		EffectiveAuditDir: sync.OnceValue(func() string { return auditDirAbs }),
 			GeoDBFn:        geoDBPath(center),
 		})
 		mux.Handle("/", apiSrv.Handler())

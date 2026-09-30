@@ -192,7 +192,15 @@ func (s *Service) validateDownloadURL(u *url.URL) error {
 		return fmt.Errorf("拒绝非 HTTPS 下载地址: %s", u)
 	}
 	if !s.hostAllowed(u.Hostname()) {
-		return fmt.Errorf("下载地址 %q 不在允许的来源域名列表；官方下载源为 gitee.com 与 foruda.gitee.com，如持续失败可到 Gitee Release 页手动下载升级包，并按 deploy/README.md 的手动升级说明替换", u)
+		// The allowlist is spelled out in the message (C-7②) so a deployment
+		// with a non-default allowedHosts sees its own hosts, not a stale
+		// hardcoded pair. Keep the "来源域名" keyword: tests and operators
+		// match on it.
+		list := strings.Join(s.allowedHosts, "、")
+		if list == "" {
+			list = "未配置"
+		}
+		return fmt.Errorf("下载地址 %q 不在允许的来源域名白名单（当前允许：%s）；如持续失败可到 Gitee Release 页手动下载升级包，并按 deploy/README.md 的手动升级说明替换", u, list)
 	}
 	return nil
 }

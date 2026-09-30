@@ -113,6 +113,18 @@ func (s *Server) handleSystemRestart(w http.ResponseWriter, r *http.Request) {
 		// gone by the time the timer fires - a canceled context would fail
 		// every submission. The submission bounds itself (5s systemctl
 		// timeout inside defaultRestarter).
+		//
+		// TOCTOU re-check: the entry guard only saw the request-time state -
+		// an upgrade task may have started during the delay window. The task
+		// owns the process lifecycle (download -> swap -> restart handover),
+		// so submitting now would orphan the swap mid-pipeline - the same
+		// hazard the entry 409 guard protects against, re-checked at
+		// timer-fire time when the answer can only reach the log.
+		if task, busy := svc.Running(); busy {
+			slog.Error("system restart cancelled: upgrade task started during the delay window",
+				"task_id", task.ID, "delay", delay.String())
+			return
+		}
 		if err := svc.Restart(context.Background()); err != nil {
 			slog.Error("system restart submission failed", "err", err)
 		}

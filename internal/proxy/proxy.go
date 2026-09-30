@@ -334,12 +334,18 @@ func (h *Handler) Reload(cfg *config.Config, rev int64) error {
 	}
 	h.wirePenaltyHook(state.penalty)
 	old := h.state.Swap(state)
+	// Defensive nil guard: Swap returns nil only for a handler whose state
+	// pointer was never stored (not possible via New/NewReloadable, but a
+	// zero-value Handler must not panic the reload). Previous-sites logging
+	// used to dereference old unconditionally here (len(old.cfg.Sites)).
+	prevSites := 0
 	if old != nil {
 		old.close()
+		prevSites = len(old.cfg.Sites)
 	}
 	metrics.Reloads.Inc("ok")
 	h.logger.Info("configuration reloaded",
-		"sites", len(cfg.Sites), "revision", rev, "revision_sites_prev", len(old.cfg.Sites))
+		"sites", len(cfg.Sites), "revision", rev, "revision_sites_prev", prevSites)
 	return nil
 }
 

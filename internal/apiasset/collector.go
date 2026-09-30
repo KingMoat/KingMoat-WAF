@@ -137,6 +137,9 @@ func (c *Collector) Dropped() int {
 // RespFilterHit records one observe-only sensitive-data detection (R1
 // signal). The path is normalized; only pattern names are kept.
 func (c *Collector) RespFilterHit(site, path, pattern string) {
+	if strings.TrimSpace(site) == "" {
+		return
+	}
 	c.mu.Lock()
 	c.rfHits[respKey{site, NormalizePath(path), pattern}]++
 	c.mu.Unlock()
@@ -176,6 +179,12 @@ func entryKey(site, method, normPath string) string {
 }
 
 func (c *Collector) ingest(t *AccessTick) {
+	// Unknown-site ticks never aggregate under an empty site (user report
+	// N2): without a site the learned row is unreachable through the console
+	// filters and only leaks an empty entry into /api/assets/sites.
+	if strings.TrimSpace(t.Site) == "" {
+		return
+	}
 	norm := NormalizePath(t.Path)
 	key := entryKey(t.Site, t.Method, norm)
 	isAdmin := false

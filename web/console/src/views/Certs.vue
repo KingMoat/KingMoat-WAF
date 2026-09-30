@@ -97,10 +97,14 @@
       </div>
       <el-table :data="acmeEntries" size="small" style="margin-top:12px"
                 empty-text="暂无 ACME 托管证书，点击上方「申请证书」在线签发">
-        <el-table-column label="域名" min-width="220" class-name="km-mono" show-overflow-tooltip>
+        <el-table-column label="域名" min-width="220" class-name="km-mono">
           <template #default="{ row }">
-            <span>{{ row.domain }}</span>
-            <el-tag v-if="row.variant === 'rsa'" size="small" type="info" effect="plain" class="km-tag" style="margin-left:6px">RSA</el-tag>
+            <div class="km-domain-row">
+              <el-tooltip :content="row.domain" placement="top" :show-after="200">
+                <span class="km-domain-clip">{{ row.domain }}</span>
+              </el-tooltip>
+              <el-tag v-if="row.variant === 'rsa'" size="small" type="info" effect="plain" class="km-tag">RSA</el-tag>
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="类型" width="130">
@@ -561,6 +565,9 @@ onBeforeUnmount(() => { clearInterval(timer); stopAcmePoll() })
 <style scoped>
 .km-acme-spin { animation: km-acme-rotate 1.2s linear infinite; }
 @keyframes km-acme-rotate { to { transform: rotate(360deg); } }
+.km-domain-row { display:flex; align-items:center; gap:6px; min-width:0; }
+.km-domain-clip { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+.km-domain-row .el-tag { flex-shrink:0; }
 .km-acme-err {
   text-align: left; font-size: 12.5px; line-height: 1.7; color: var(--km-soft-red);
   background: var(--km-panel-2); border: 1px solid var(--km-line); border-radius: 8px;

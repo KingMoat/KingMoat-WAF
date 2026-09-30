@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/kingmoat/kingmoat/internal/certmgr"
 	"github.com/kingmoat/kingmoat/internal/config"
+	"github.com/kingmoat/kingmoat/internal/configcenter"
 	"github.com/kingmoat/kingmoat/internal/proxy"
 )
 
@@ -492,6 +494,38 @@ func TestACMEFailureLimiterWindow(t *testing.T) {
 	l.reset()
 	if ok, sup := l.allow(base.Add(3 * time.Minute)); !ok || sup != 0 {
 		t.Fatalf("post-success failure: ok=%v suppressed=%d, want logged immediately", ok, sup)
+	}
+}
+
+// TestHotReloadAfterGatesBuildersOnApplyError is the C-3 regression: every
+// side-component rebuilder assembles from the NEW config, so a failed
+// data-plane apply (fail-static keeps the previous config) must run NONE of
+// them; a successful apply runs each non-nil builder exactly once (nil
+// builders — console wiring not done yet, or static mode — are skipped).
+func TestHotReloadAfterGatesBuildersOnApplyError(t *testing.T) {
+	calls := map[string]int{}
+	builder := func(name string) func(*config.Config) {
+		return func(*config.Config) { calls[name]++ }
+	}
+	ev := configcenter.RevEvent{Rev: 7, Config: &config.Config{}}
+
+	hotReloadAfter(testLogger(), ev, errors.New("reload failed"),
+		builder("acme"), builder("ai"), builder("telemetry"), builder("engines"))
+	for _, name := range []string{"acme", "ai", "telemetry", "engines"} {
+		if calls[name] != 0 {
+			t.Fatalf("builder %q ran %d times on a failed apply, want 0", name, calls[name])
+		}
+	}
+
+	hotReloadAfter(testLogger(), ev, nil,
+		builder("acme"), nil, builder("telemetry"), builder("engines"))
+	for _, name := range []string{"acme", "telemetry", "engines"} {
+		if calls[name] != 1 {
+			t.Fatalf("builder %q ran %d times on a successful apply, want 1", name, calls[name])
+		}
+	}
+	if calls["ai"] != 0 {
+		t.Fatalf("nil ai builder ran %d times, want 0 (skipped)", calls["ai"])
 	}
 }
 

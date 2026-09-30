@@ -20,6 +20,13 @@ import (
 // given upgrade service and a near-instant restart submission (test hook),
 // returning the server, a login helper and the center for audit reads.
 func restartServer(t *testing.T, svc *upgrade.Service) (*httptest.Server, func(user, pass string) *http.Client, *configcenter.Center) {
+	return restartServerWithDelay(t, svc, 10*time.Millisecond)
+}
+
+// restartServerWithDelay is restartServer with an explicit restart-delay
+// test hook (the window tests need a long enough delay to start an
+// upgrade task inside it deterministically).
+func restartServerWithDelay(t *testing.T, svc *upgrade.Service, delay time.Duration) (*httptest.Server, func(user, pass string) *http.Client, *configcenter.Center) {
 	t.Helper()
 	hash := "$argon2id$v=19$m=65536,t=3,p=4$" +
 		mustB64([]byte("0123456789abcdef")) + "$" + mustArgonHash("hunter2")
@@ -29,7 +36,7 @@ func restartServer(t *testing.T, svc *upgrade.Service) (*httptest.Server, func(u
 	}
 	t.Cleanup(func() { center.Close() })
 	seedStoreAdmin(t, center, hash)
-	srv := New(Options{SkipBootstrap: true, Center: center, Auth: NewAuth(hash), Upgrade: svc, SystemRestartDelay: 10 * time.Millisecond})
+	srv := New(Options{SkipBootstrap: true, Center: center, Auth: NewAuth(hash), Upgrade: svc, SystemRestartDelay: delay})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	login := func(user, pass string) *http.Client {
@@ -305,4 +312,63 @@ func containsAll(s string, subs ...string) bool {
 		}
 	}
 	return true
+}
+
+// TestSystemRestartUpgradeStartedInDelayWindow is the C-2 TOCTOU
+// regression: the upgrade module is idle at request time (the restart is
+// accepted with 200 restarting), an upgrade task then starts INSIDE the
+// delay window, and the deferred submission must re-check Running() and
+// cancel - never tear the unit down mid-upgrade. A fresh restart after
+// the task settles goes through the normal flow again.
+func TestSystemRestartUpgradeStartedInDelayWindow(t *testing.T) {
+	var submits atomic.Int32
+	release := make(chan struct{})
+	svc := upgrade.NewService("v0.7.8-beta", t.TempDir(),
+		upgrade.WithChecker(func(ctx context.Context) ([]upgrade.Release, error) {
+			<-release
+			return nil, errors.New("cancelled by test")
+		}),
+		upgrade.WithProber(func() error { return nil }),
+		upgrade.WithRestartSubmitter(func(context.Context) error { submits.Add(1); return nil }))
+	// Long enough delay to start the upgrade task deterministically inside
+	// the window (the default 10ms hook would race the Start call).
+	ts, login, _ := restartServerWithDelay(t, svc, 250*time.Millisecond)
+	admin := login("admin", "hunter2")
+
+	code, body := doJSONBody(t, admin, "POST", ts.URL+"/api/system/restart", nil)
+	if code != http.StatusOK || body["status"] != "restarting" {
+		t.Fatalf("restart = %d (%v), want 200 restarting", code, body)
+	}
+	task, err := svc.Start("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, busy := svc.Running(); !busy {
+		t.Fatal("upgrade task not in flight inside the delay window")
+	}
+
+	// Well past the 250ms window: the submission must have been cancelled
+	// because the task is still in flight.
+	time.Sleep(350 * time.Millisecond)
+	if submits.Load() != 0 {
+		t.Fatalf("submitter invoked %d times while an upgrade ran in the delay window, want 0", submits.Load())
+	}
+
+	// Settle the task and restart normally.
+	close(release)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, busy := svc.Running(); !busy {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("upgrade task %s never settled", task.ID)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	code, body = doJSONBody(t, admin, "POST", ts.URL+"/api/system/restart", nil)
+	if code != http.StatusOK || body["status"] != "restarting" {
+		t.Fatalf("restart after upgrade settled = %d (%v), want 200 restarting", code, body)
+	}
+	waitSubmit(t, &submits, 1)
 }

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -31,6 +32,11 @@ type Webhook struct {
 	dropped atomic.Int64
 	done    chan struct{}
 	logger  *slog.Logger
+
+	// mu guards closed so Write never sends into a closed channel, and keeps
+	// Close idempotent (repeat calls are a no-op).
+	mu     sync.Mutex
+	closed bool
 }
 
 const queueSize = 1024
@@ -68,6 +74,11 @@ func (w *Webhook) Write(ev *logstore.Event) {
 	if ev == nil {
 		return
 	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return
+	}
 	select {
 	case w.ch <- *ev:
 	default:
@@ -78,9 +89,17 @@ func (w *Webhook) Write(ev *logstore.Event) {
 // Dropped returns the number of events dropped under backpressure.
 func (w *Webhook) Dropped() int64 { return w.dropped.Load() }
 
-// Close flushes pending events and stops the sender.
+// Close flushes pending events and stops the sender. It is idempotent: a
+// repeated call returns without closing the channel a second time.
 func (w *Webhook) Close() error {
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return nil
+	}
+	w.closed = true
 	close(w.ch)
+	w.mu.Unlock()
 	<-w.done
 	return nil
 }

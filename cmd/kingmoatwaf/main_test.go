@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unsafe"
@@ -22,9 +23,13 @@ import (
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 
+	"github.com/kingmoat/kingmoat/internal/accesslog"
+	"github.com/kingmoat/kingmoat/internal/alerting"
 	"github.com/kingmoat/kingmoat/internal/certmgr"
 	"github.com/kingmoat/kingmoat/internal/config"
 	"github.com/kingmoat/kingmoat/internal/configcenter"
+	"github.com/kingmoat/kingmoat/internal/logshipper"
+	"github.com/kingmoat/kingmoat/internal/logstore"
 	"github.com/kingmoat/kingmoat/internal/proxy"
 )
 
@@ -641,5 +646,286 @@ func TestCertSelectorFailureWarnRateLimited(t *testing.T) {
 	}
 	if got := rec.count(); got != 2 {
 		t.Fatalf("warn records after success+failure = %d, want 2 (window reset)", got)
+	}
+}
+
+// --- T-01 (v0.7.13 sync): outbound pipeline hot reload ---
+
+// stubRefStore records outboundRef forwarding for assertions.
+type stubRefStore struct {
+	writes int
+	closed int
+	drops  int64
+}
+
+func (s *stubRefStore) Write(*logstore.Event) { s.writes++ }
+func (s *stubRefStore) Dropped() int64        { return s.drops }
+func (s *stubRefStore) Close() error          { s.closed++; return nil }
+
+// TestOutboundRefForwardsToCurrentTarget pins the fan-out slot contract: a
+// nil target is a silent no-op (outbound disabled), and Write/Dropped/Close
+// always reach the CURRENT target, never a stale one.
+func TestOutboundRefForwardsToCurrentTarget(t *testing.T) {
+	var target atomic.Pointer[stubRefStore]
+	ref := outboundRef{load: func() logstore.Store {
+		if s := target.Load(); s != nil {
+			return s
+		}
+		return nil
+	}}
+
+	// nil target: no-op, no panic.
+	ref.Write(&logstore.Event{Action: "blocked"})
+	if got := ref.Dropped(); got != 0 {
+		t.Fatalf("nil target Dropped = %d, want 0", got)
+	}
+	if err := ref.Close(); err != nil {
+		t.Fatalf("nil target Close = %v, want nil", err)
+	}
+
+	first := &stubRefStore{}
+	target.Store(first)
+	ref.Write(&logstore.Event{Action: "blocked"})
+	if first.writes != 1 {
+		t.Fatalf("first.writes = %d, want 1", first.writes)
+	}
+
+	// Swap the target: the ref must follow, never write to the old one.
+	second := &stubRefStore{}
+	target.Store(second)
+	ref.Write(&logstore.Event{Action: "blocked"})
+	if second.writes != 1 || first.writes != 1 {
+		t.Fatalf("after swap writes first=%d second=%d, want 1/1", first.writes, second.writes)
+	}
+	second.drops = 7
+	if got := ref.Dropped(); got != 7 {
+		t.Fatalf("Dropped = %d, want 7 (current target)", got)
+	}
+	ref.Close()
+	ref.Close()
+	if second.closed != 2 || first.closed != 0 {
+		t.Fatalf("Close current-only: second.closed=%d first.closed=%d, want 2/0", second.closed, first.closed)
+	}
+}
+
+// TestMultiFanoutFollowsHotSwap pins the CE consumer-chain adaptation: the
+// boot fan-out (logstore.Multi over the local store + stable outboundRef
+// slots) keeps delivering events after the inner target is swapped, without
+// rebuilding the Multi itself (the data plane holds it for its lifetime).
+func TestMultiFanoutFollowsHotSwap(t *testing.T) {
+	var target atomic.Pointer[stubRefStore]
+	ref := outboundRef{load: func() logstore.Store {
+		if s := target.Load(); s != nil {
+			return s
+		}
+		return nil
+	}}
+	local := &stubRefStore{}
+	fan := logstore.Multi(local, ref)
+
+	ev := &logstore.Event{Action: "blocked"}
+	// No outbound target yet: only the local store sees the event.
+	fan.Write(ev)
+	if local.writes != 1 {
+		t.Fatalf("local writes = %d, want 1", local.writes)
+	}
+
+	first := &stubRefStore{}
+	target.Store(first)
+	fan.Write(ev)
+	if first.writes != 1 {
+		t.Fatalf("outbound writes after first target = %d, want 1", first.writes)
+	}
+
+	// Hot swap: the SAME fan-out must deliver to the new target only.
+	second := &stubRefStore{}
+	target.Store(second)
+	fan.Write(ev)
+	if second.writes != 1 || first.writes != 1 {
+		t.Fatalf("after hot swap outbound writes first=%d second=%d, want 1/1", first.writes, second.writes)
+	}
+}
+
+// newTestAccessShipper builds a valid (non-connecting) access-log shipper
+// for rebuild tests; Close is idempotent, so cleanup after a rebuild-closed
+// instance is safe.
+func newTestAccessShipper(t *testing.T, url string) *accesslog.Shipper {
+	t.Helper()
+	as, err := accesslog.New(config.AccessLogSettings{Enabled: true, Type: "clickhouse", URL: url, FlushSec: 3600}, testLogger())
+	if err != nil {
+		t.Fatalf("accesslog.New: %v", err)
+	}
+	t.Cleanup(func() { _ = as.Close() })
+	return as
+}
+
+// newTestAuditShipper builds a valid (non-connecting) audit log shipper.
+func newTestAuditShipper(t *testing.T, url string) *logshipper.Shipper {
+	t.Helper()
+	sh, err := logshipper.New(config.ShipperSettings{Type: "clickhouse", URL: url, FlushSec: 3600}, testLogger())
+	if err != nil {
+		t.Fatalf("logshipper.New: %v", err)
+	}
+	t.Cleanup(func() { _ = sh.Close() })
+	return sh
+}
+
+// TestRebuildAccessDisabledByNilSectionAndFlag covers the disable path:
+// both a removed section (nil) and enabled=false stop outbound shipping —
+// swap to nil, close the old shipper, and re-wire the data plane to the
+// resident ring (the console live tail keeps working).
+func TestRebuildAccessDisabledByNilSectionAndFlag(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		al   *config.AccessLogSettings
+	}{
+		{"nil section", nil},
+		{"enabled=false", &config.AccessLogSettings{Enabled: false, Type: "clickhouse", URL: "http://127.0.0.1:1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var cur atomic.Pointer[accesslog.Shipper]
+			old := newTestAccessShipper(t, "http://127.0.0.1:1")
+			cur.Store(old)
+			ring := accesslog.NewRing(8)
+			var sinks []accesslog.Sink
+			setSink := func(s accesslog.Sink) { sinks = append(sinks, s) }
+
+			rebuildAccess(&cur, ring, setSink, tc.al, testLogger())
+
+			if got := cur.Load(); got != nil {
+				t.Fatalf("shipper after disable = %v, want nil", got)
+			}
+			if len(sinks) != 1 || sinks[0] != accesslog.Sink(ring) {
+				t.Fatalf("SetAccessSink calls = %d, want 1 wired to the resident ring", len(sinks))
+			}
+			if ring.Count() != 0 {
+				t.Fatalf("ring count = %d, want 0 (empty live tail)", ring.Count())
+			}
+		})
+	}
+}
+
+// TestRebuildAccessRebuildFailureKeepsPrevious covers the fail-safe: an
+// invalid pipeline config fails accesslog.New, the previous shipper keeps
+// serving (pointer unchanged) and the data-plane sink is NOT touched.
+func TestRebuildAccessRebuildFailureKeepsPrevious(t *testing.T) {
+	var cur atomic.Pointer[accesslog.Shipper]
+	old := newTestAccessShipper(t, "http://127.0.0.1:1")
+	cur.Store(old)
+	ring := accesslog.NewRing(8)
+	sinkCalls := 0
+	setSink := func(accesslog.Sink) { sinkCalls++ }
+
+	rebuildAccess(&cur, ring, setSink, &config.AccessLogSettings{Enabled: true, Type: "bogus"}, testLogger())
+
+	if got := cur.Load(); got != old {
+		t.Fatal("failed rebuild must keep the previous shipper")
+	}
+	if sinkCalls != 0 {
+		t.Fatalf("SetAccessSink called %d times on failed rebuild, want 0", sinkCalls)
+	}
+}
+
+// TestRebuildAccessRebuildSuccessSwapsAndRewires covers the enable/replace
+// path: the new shipper takes over atomically, the data-plane sink becomes
+// a ring+shipper Tee on the SAME resident ring, and the old shipper closes.
+func TestRebuildAccessRebuildSuccessSwapsAndRewires(t *testing.T) {
+	var cur atomic.Pointer[accesslog.Shipper]
+	old := newTestAccessShipper(t, "http://127.0.0.1:1")
+	cur.Store(old)
+	ring := accesslog.NewRing(8)
+	var sinks []accesslog.Sink
+	setSink := func(s accesslog.Sink) { sinks = append(sinks, s) }
+
+	rebuildAccess(&cur, ring, setSink, &config.AccessLogSettings{Enabled: true, Type: "clickhouse", URL: "http://127.0.0.1:2"}, testLogger())
+
+	fresh := cur.Load()
+	if fresh == nil || fresh == old {
+		t.Fatal("successful rebuild must swap in a new shipper instance")
+	}
+	if len(sinks) != 1 {
+		t.Fatalf("SetAccessSink calls = %d, want 1", len(sinks))
+	}
+	tee, ok := sinks[0].(*accesslog.Tee)
+	if !ok {
+		t.Fatalf("sink after enable = %T, want *accesslog.Tee", sinks[0])
+	}
+	// The Tee must write through to the SAME resident ring (live-tail
+	// continuity across rebuilds).
+	tee.Write(&accesslog.Entry{Path: "/x", Outcome: "forwarded"})
+	if ring.Count() != 1 {
+		t.Fatalf("ring count after tee write = %d, want 1 (same resident ring)", ring.Count())
+	}
+	if recent := ring.Recent(1, "", "", ""); len(recent) != 1 || recent[0].Path != "/x" {
+		t.Fatal("ring did not record the teed entry")
+	}
+}
+
+// TestRebuildWebhookSwapAndDisable covers the audit webhook rebuild: a nil
+// section disables the outbound, a non-nil one swaps in a fresh instance;
+// NewWebhook cannot fail, so there is no keep-previous path here.
+func TestRebuildWebhookSwapAndDisable(t *testing.T) {
+	var cur atomic.Pointer[alerting.Webhook]
+	logger := testLogger()
+
+	rebuildWebhook(&cur, nil, logger)
+	if cur.Load() != nil {
+		t.Fatal("nil section must disable the webhook outbound")
+	}
+
+	first := alerting.NewWebhook(config.WebhookSettings{URL: "http://127.0.0.1:1"}, logger)
+	cur.Store(first)
+	rebuildWebhook(&cur, &config.WebhookSettings{URL: "http://127.0.0.1:2"}, logger)
+	fresh := cur.Load()
+	if fresh == nil || fresh == first {
+		t.Fatal("non-nil section must swap in a new webhook instance")
+	}
+	_ = first.Close() // rebuild already closed it; idempotent
+	_ = fresh.Close()
+
+	rebuildWebhook(&cur, nil, logger)
+	if cur.Load() != nil {
+		t.Fatal("nil section must disable the webhook outbound")
+	}
+}
+
+// TestRebuildShipperRebuildFailureKeepsPrevious covers the fail-safe: an
+// invalid shipper config fails logshipper.New, the previous shipper keeps
+// serving (pointer unchanged) — live outbound is never interrupted.
+func TestRebuildShipperRebuildFailureKeepsPrevious(t *testing.T) {
+	var cur atomic.Pointer[logshipper.Shipper]
+	old := newTestAuditShipper(t, "http://127.0.0.1:1")
+	cur.Store(old)
+
+	rebuildShipper(&cur, &config.ShipperSettings{Type: "bogus"}, testLogger())
+
+	if got := cur.Load(); got != old {
+		t.Fatal("failed rebuild must keep the previous shipper")
+	}
+}
+
+// TestRebuildShipperSwapAndDisable covers replace + nil-section disable.
+func TestRebuildShipperSwapAndDisable(t *testing.T) {
+	var cur atomic.Pointer[logshipper.Shipper]
+	logger := testLogger()
+
+	rebuildShipper(&cur, nil, logger)
+	if cur.Load() != nil {
+		t.Fatal("nil section must disable the log shipper outbound")
+	}
+
+	old := newTestAuditShipper(t, "http://127.0.0.1:1")
+	cur.Store(old)
+	rebuildShipper(&cur, &config.ShipperSettings{Type: "clickhouse", URL: "http://127.0.0.1:2"}, logger)
+	fresh := cur.Load()
+	if fresh == nil || fresh == old {
+		t.Fatal("non-nil section must swap in a new shipper instance")
+	}
+	_ = old.Close() // rebuild already closed it; idempotent
+	_ = fresh.Close()
+
+	rebuildShipper(&cur, nil, logger)
+	if cur.Load() != nil {
+		t.Fatal("nil section must disable the log shipper outbound")
 	}
 }

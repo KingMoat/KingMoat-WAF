@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -33,6 +34,11 @@ type Shipper struct {
 	dropped atomic.Int64
 	done    chan struct{}
 	logger  *slog.Logger
+
+	// mu guards closed so Write never sends into a closed channel, and keeps
+	// Close idempotent (repeat calls are a no-op).
+	mu     sync.Mutex
+	closed bool
 
 	batchSize int
 	flush     time.Duration
@@ -107,6 +113,11 @@ func (s *Shipper) Write(ev *logstore.Event) {
 	if ev == nil {
 		return
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
 	select {
 	case s.ch <- *ev:
 	default:
@@ -120,9 +131,18 @@ func (s *Shipper) Dropped() int64 { return s.dropped.Load() }
 // Depth returns the current queue length (observability gauge).
 func (s *Shipper) Depth() int { return len(s.ch) }
 
-// Close flushes pending events and stops the batcher.
+// Close flushes pending events and stops the batcher. It is idempotent: a
+// repeated call returns without closing the channel or the kafka target a
+// second time.
 func (s *Shipper) Close() error {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil
+	}
+	s.closed = true
 	close(s.ch)
+	s.mu.Unlock()
 	<-s.done
 	if s.kafka != nil {
 		_ = s.kafka.close()

@@ -76,6 +76,113 @@ func hotReloadAfter(logger *slog.Logger, ev configcenter.RevEvent, applyErr erro
 	}
 }
 
+// outboundRef forwards audit events to the currently active outbound store
+// (audit webhook / log shipper) behind an atomic swap. It is the stable slot
+// the boot fan-out (logstore.Multi) holds: hot reloads replace the inner
+// target without touching the fan-out, so the data plane never observes the
+// swap. A nil target (outbound absent from the active config) writes and
+// drops nothing.
+type outboundRef struct {
+	load func() logstore.Store
+}
+
+func (r outboundRef) Write(ev *logstore.Event) {
+	if s := r.load(); s != nil {
+		s.Write(ev)
+	}
+}
+
+// Dropped implements logstore.Dropper against the current target (0 when
+// absent or the target does not count drops).
+func (r outboundRef) Dropped() int64 {
+	if d, ok := r.load().(logstore.Dropper); ok {
+		return d.Dropped()
+	}
+	return 0
+}
+
+func (r outboundRef) Close() error {
+	if s := r.load(); s != nil {
+		return s.Close()
+	}
+	return nil
+}
+
+// rebuildWebhook swaps the audit webhook outbound per wh (nil = the section
+// was removed by the operator: stop the outbound). NewWebhook cannot fail,
+// so there is no keep-previous path here. The replaced instance is closed
+// after the swap (Close flushes in-flight events; Write-after-Close is a
+// safe no-op for every outbound store).
+func rebuildWebhook(cur *atomic.Pointer[alerting.Webhook], wh *config.WebhookSettings, logger *slog.Logger) {
+	if wh == nil {
+		if old := cur.Swap(nil); old != nil {
+			_ = old.Close()
+			logger.Info("webhook outbound disabled by revision")
+		}
+		return
+	}
+	nw := alerting.NewWebhook(*wh, logger)
+	old := cur.Swap(nw)
+	if old != nil {
+		_ = old.Close()
+	}
+	logger.Info("webhook outbound applied", "url", redact.URL(wh.URL))
+}
+
+// rebuildShipper swaps the audit log shipper per ls (nil = the section was
+// removed by the operator: stop the outbound). A failed rebuild keeps the
+// previous instance so live outbound is never interrupted; the replaced
+// instance is closed after the swap (Close flushes, Write-after-Close is a
+// safe no-op).
+func rebuildShipper(cur *atomic.Pointer[logshipper.Shipper], ls *config.ShipperSettings, logger *slog.Logger) {
+	if ls == nil {
+		if old := cur.Swap(nil); old != nil {
+			_ = old.Close()
+			logger.Info("log shipper disabled by revision")
+		}
+		return
+	}
+	sh, serr := logshipper.New(*ls, logger)
+	if serr != nil {
+		logger.Error("log shipper rebuild failed, keeping previous", "err", serr)
+		return
+	}
+	old := cur.Swap(sh)
+	if old != nil {
+		_ = old.Close()
+	}
+	logger.Info("log shipper applied", "type", ls.Type)
+}
+
+// rebuildAccess swaps the outbound access-log shipper per al (nil or
+// enabled=false disables outbound shipping and re-wires the data plane to
+// the resident live-tail ring only). A failed rebuild keeps the previous
+// shipper; on success the ring+shipper Tee replaces the sink BEFORE the old
+// shipper closes, so entries keep flowing during the swap. The ring instance
+// must survive every rebuild (it backs the console live tail and the API
+// AccessRing) and is never closed here.
+func rebuildAccess(cur *atomic.Pointer[accesslog.Shipper], ring *accesslog.Ring, setSink func(accesslog.Sink), al *config.AccessLogSettings, logger *slog.Logger) {
+	if al == nil || !al.Enabled {
+		if old := cur.Swap(nil); old != nil {
+			_ = old.Close()
+			setSink(ring)
+			logger.Info("access log pipeline disabled by revision")
+		}
+		return
+	}
+	as, aerr := accesslog.New(*al, logger)
+	if aerr != nil {
+		logger.Error("access log pipeline rebuild failed, keeping previous", "err", aerr)
+		return
+	}
+	old := cur.Swap(as)
+	setSink(accesslog.NewTee(ring, as))
+	if old != nil {
+		_ = old.Close()
+	}
+	logger.Info("access log pipeline applied", "type", al.Type, "url", redact.URL(al.URL), "sample_pct", al.SamplePctOrDefault())
+}
+
 func main() {
 	configPath := flag.String("config", "config.json", "path to the JSON config file (static seed / static mode)")
 	consoleAddr := flag.String("console-addr", "", "enable the embedded console+API on this address (all-in-one mode)")
@@ -180,38 +287,77 @@ func main() {
 	// until the low watermark (default 65%).
 	logstore.StartDiskGuard(ctx, auditStore, auditDir, filepath.Join(auditDir, "archive"), seed.DiskGuard, logger)
 
+	// Hot-swappable outbound stores: the audit webhook and the log shipper
+	// live behind atomic pointers, and the boot fan-out (logstore.Multi
+	// below) holds stable outboundRef slots forwarding every event to the
+	// CURRENT instance. Publishing a revision rebuilds both from the applied
+	// config (buildOutbound below) and swaps them atomically — credential or
+	// target changes take effect without a restart, a failed shipper rebuild
+	// keeps the previous instance, and removing the config section stops the
+	// outbound. The data plane never observes the swap.
+	var (
+		curWebhook atomic.Pointer[alerting.Webhook]
+		curShipper atomic.Pointer[logshipper.Shipper]
+	)
+	webhookRef := outboundRef{load: func() logstore.Store {
+		if wh := curWebhook.Load(); wh != nil {
+			return wh
+		}
+		return nil
+	}}
+	shipperRef := outboundRef{load: func() logstore.Store {
+		if sh := curShipper.Load(); sh != nil {
+			return sh
+		}
+		return nil
+	}}
 	auditStores := []logstore.Store{auditStore}
 	droppers := []logstore.Dropper{auditStore}
-	var auditShipper *logshipper.Shipper
-	if seed.Webhook != nil {
-		wh := alerting.NewWebhook(*seed.Webhook, logger)
-		auditStores = append(auditStores, wh)
-		droppers = append(droppers, wh)
-		defer func() { _ = wh.Close() }()
-		logger.Info("webhook alerting enabled", "url", redact.URL(seed.Webhook.URL))
-	}
-	if seed.LogShipper != nil {
-		sh, serr := logshipper.New(*seed.LogShipper, logger)
-		if serr != nil {
-			logger.Error("log shipper disabled", "err", serr)
-		} else {
-			auditStores = append(auditStores, sh)
-			droppers = append(droppers, sh)
-			auditShipper = sh
-			defer func() { _ = sh.Close() }()
-			logger.Info("log shipper enabled", "type", seed.LogShipper.Type)
-			if seed.LogShipper.Type == "s3" && seed.LogShipper.UploadArchives {
-				prefix := strings.Trim(seed.LogShipper.Prefix, "/")
-				if prefix == "" {
-					prefix = "kingmoat/audit"
-				}
-				archiver.SetUploader(func(localPath, _ string) error {
-					return sh.UploadArchive(localPath, prefix+"/archives/"+filepath.Base(localPath))
-				})
-				logger.Info("audit archive off-box upload enabled", "bucket", seed.LogShipper.Bucket)
+	auditStores = append(auditStores, webhookRef, shipperRef)
+	droppers = append(droppers, webhookRef, shipperRef)
+	// Process shutdown closes whatever instance is CURRENT (the boot
+	// instance may have been swapped by a hot reload), exactly once.
+	defer func() {
+		if wh := curWebhook.Load(); wh != nil {
+			_ = wh.Close()
+		}
+		if sh := curShipper.Load(); sh != nil {
+			_ = sh.Close()
+		}
+	}()
+
+	// buildOutbound rebuilds the audit webhook and the log shipper from the
+	// config just applied to the data plane. It also re-arms the archiver's
+	// off-box upload hook on every revision (the hook reads the CURRENT
+	// shipper, so later shipper swaps keep uploading without another
+	// SetUploader call).
+	uploaderArmed := false
+	buildOutbound := func(cfg *config.Config) {
+		rebuildWebhook(&curWebhook, cfg.Webhook, logger)
+		rebuildShipper(&curShipper, cfg.LogShipper, logger)
+		if cfg.LogShipper != nil && cfg.LogShipper.Type == "s3" && cfg.LogShipper.UploadArchives {
+			prefix := strings.Trim(cfg.LogShipper.Prefix, "/")
+			if prefix == "" {
+				prefix = "kingmoat/audit"
 			}
+			archiver.SetUploader(func(localPath, _ string) error {
+				sh := curShipper.Load()
+				if sh == nil {
+					return errors.New("log shipper not active")
+				}
+				return sh.UploadArchive(localPath, prefix+"/archives/"+filepath.Base(localPath))
+			})
+			uploaderArmed = true
+			logger.Info("audit archive off-box upload enabled", "bucket", cfg.LogShipper.Bucket)
+		} else if uploaderArmed {
+			archiver.SetUploader(nil)
+			uploaderArmed = false
+			logger.Info("audit archive off-box upload disabled by revision")
 		}
 	}
+	// Boot state follows the ACTIVE revision (audit retention / ACME
+	// pattern), not the disk seed.
+	buildOutbound(activeCfg)
 	audit := logstore.Multi(auditStores...)
 
 	auditDirAbs, _ := filepath.Abs(auditDir)
@@ -223,7 +369,14 @@ func main() {
 	metrics.LoadDailyRequestsBase(filepath.Join(auditDirAbs, "requests_daily.json"))
 	metrics.LoadRequestsHistory(filepath.Join(auditDirAbs, "requests_history.json"))
 	go metrics.StartDailyRequestsPersist(ctx, filepath.Join(auditDirAbs, "requests_daily.json"), filepath.Join(auditDirAbs, "requests_history.json"), 30*time.Second)
-	var accessSink *accesslog.Tee
+	// Full access-log pipeline (external storage only: ClickHouse/ES/Loki).
+	// The outbound shipper is hot-swappable: every applied revision rebuilds
+	// it from cfg.AccessLog (buildAccess below). accessRing is RESIDENT — it
+	// backs the console live tail and the API AccessRing (api.Options), so it
+	// must survive every rebuild; only the shipper instance is swapped (the
+	// old one is closed, never reused). accessShipper==nil ships nothing.
+	var accessShipper atomic.Pointer[accesslog.Shipper]
+	accessRing := accesslog.NewRing(5000)
 
 	// Expose the audit drop counter (previously defined but never set).
 	go func() {
@@ -240,33 +393,52 @@ func main() {
 				}
 				metrics.AuditDropped.Set(float64(sum))
 				metrics.AuditQueueDepth.Set(float64(auditStore.Pending()))
-				if auditShipper != nil {
-					metrics.LogShipperDropped.Set(float64(auditShipper.Dropped()))
-					metrics.LogShipperQueueDepth.Set(float64(auditShipper.Depth()))
+				if sh := curShipper.Load(); sh != nil {
+					metrics.LogShipperDropped.Set(float64(sh.Dropped()))
+					metrics.LogShipperQueueDepth.Set(float64(sh.Depth()))
+				} else {
+					// pipeline removed by a revision: zero the gauges instead of
+					// leaving stale values on the console (review C-3)
+					metrics.LogShipperDropped.Set(0)
+					metrics.LogShipperQueueDepth.Set(0)
 				}
-				if accessSink != nil {
-					metrics.AccessLogDropped.Set(float64(accessSink.Dropped()))
-					metrics.AccessLogQueueDepth.Set(float64(accessSink.Depth()))
+				if as := accessShipper.Load(); as != nil {
+					metrics.AccessLogDropped.Set(float64(as.Dropped()))
+					metrics.AccessLogQueueDepth.Set(float64(as.Depth()))
+				} else {
+					metrics.AccessLogDropped.Set(0)
+					metrics.AccessLogQueueDepth.Set(0)
 				}
 			}
 		}
 	}()
 
-	// Full access-log pipeline (external storage only: ClickHouse/ES/Loki).
-	var accessRing *accesslog.Ring
-	if seed.AccessLog != nil && seed.AccessLog.Enabled {
-		as, aerr := accesslog.New(*seed.AccessLog, logger)
+	// Boot state follows the ACTIVE revision (audit retention / ACME
+	// pattern), not the disk seed: the resident ring is wired unconditionally
+	// (live tail), and the boot shipper — if the config enables the pipeline —
+	// is stored behind the atomic pointer.
+	// Boot state follows the ACTIVE revision (audit retention / ACME
+	// pattern), not the disk seed: the resident ring is wired unconditionally
+	// (live tail), and the boot shipper - if the config enables the pipeline -
+	// is stored behind the atomic pointer.
+	// The shutdown flush is registered UNCONDITIONALLY (review B-2): the
+	// pipeline may also be enabled later by a publish (rebuildAccess stores
+	// into the same pointer), and boot-disabled instances would otherwise
+	// exit without flushing it.
+	if activeCfg.AccessLog != nil && activeCfg.AccessLog.Enabled {
+		as, aerr := accesslog.New(*activeCfg.AccessLog, logger)
 		if aerr != nil {
 			logger.Error("access log pipeline disabled", "err", aerr)
 		} else {
-			// Console live tail: keep the most recent entries in memory so the
-			// access-log page works even when the pipeline only ships off-host.
-			accessRing = accesslog.NewRing(5000)
-			accessSink = accesslog.NewTee(accessRing, as)
-			defer func() { _ = as.Close() }()
-			logger.Info("access log pipeline enabled", "type", seed.AccessLog.Type, "url", redact.URL(seed.AccessLog.URL), "sample_pct", seed.AccessLog.SamplePctOrDefault())
+			accessShipper.Store(as)
+			logger.Info("access log pipeline enabled", "type", activeCfg.AccessLog.Type, "url", redact.URL(activeCfg.AccessLog.URL), "sample_pct", activeCfg.AccessLog.SamplePctOrDefault())
 		}
 	}
+	defer func() {
+		if old := accessShipper.Load(); old != nil {
+			_ = old.Close()
+		}
+	}()
 
 	// Prometheus metrics push target (settings → feature toggles): the full
 	// /metrics body is POSTed to the configured receiver on an interval.
@@ -416,8 +588,13 @@ func main() {
 	// /api/status can compare engine vs. config-center revisions from the
 	// first request on (0 would read as a permanent mismatch).
 	handler.SetRunningRevision(bootRev)
-	if accessSink != nil {
-		handler.SetAccessSink(accessSink)
+	// Live tail is always wired (resident ring); the outbound shipper rides
+	// a Tee on top when enabled at boot. rebuildAccess keeps both in sync on
+	// every publish.
+	if as := accessShipper.Load(); as != nil {
+		handler.SetAccessSink(accesslog.NewTee(accessRing, as))
+	} else {
+		handler.SetAccessSink(accessRing)
 	}
 
 	// Arm HTTP-01 on both boot managers now that the port-80 fallback handler
@@ -451,6 +628,17 @@ func main() {
 		logger.Info("ACME certificate management reloaded", "hosts", len(certmgr.ACMEHosts(cfg)))
 	}
 
+	// buildAccess hot-applies the full access-log pipeline from the config
+	// just applied to the data plane (cfg.AccessLog): nil (section removed —
+	// the console save omits the key when the switch is off) and
+	// enabled=false share the disable path: stop outbound shipping, keep the
+	// resident live-tail ring wired. A failed rebuild keeps the previous
+	// shipper so live outbound is never interrupted. The ring instance
+	// survives swaps.
+	buildAccess := func(cfg *config.Config) {
+		rebuildAccess(&accessShipper, accessRing, handler.SetAccessSink, cfg.AccessLog, logger)
+	}
+
 	var aiBuilder func(cfg *config.Config)
 
 	// Telemetry wiring (state + builder) lives at this scope so the hot-reload
@@ -481,10 +669,12 @@ func main() {
 				bt := buildTelemetry
 				telMu.Unlock()
 				hotReloadAfter(logger, ev, applyErr,
-					rebuildACME,  // ACME sites hot-apply on publish
-					aiBuilder,    // nil until the console wires the AI assistant
-					bt,           // nil until the console wires telemetry
-					buildEngines, // alerts + risks toggle hot-applies
+					rebuildACME,   // ACME sites hot-apply on publish
+					aiBuilder,     // nil until the console wires the AI assistant
+					bt,            // nil until the console wires telemetry
+					buildEngines,  // alerts + risks toggle hot-applies
+					buildOutbound, // audit webhook + log shipper hot-apply on publish
+					buildAccess,   // access-log pipeline hot-applies on publish
 				)
 			})
 		}()

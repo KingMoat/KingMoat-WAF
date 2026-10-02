@@ -9,7 +9,7 @@
 
     <div style="flex:1;min-width:0">
       <el-alert type="info" :closable="false" show-icon style="margin-bottom:14px"
-                title="系统设置保存即发布为新配置版本并热生效（与站点配置同一版本库，可回滚）" />
+                title="系统设置保存即发布为新配置版本并热生效（与站点配置同一版本库，可回滚）；标注「需重启」的项在服务重启后生效，可使用「服务重启」卡片执行" />
 
       <!-- ① 通用 -->
       <template v-if="tab === 'general'">
@@ -105,6 +105,21 @@
                     :description="(upgTask.error || upgTask.message || '未知原因') + ' —— 任务失败后有冷却期，请稍后再试；也可前往 Release 页手动下载升级包。'" />
         </el-card>
 
+        <!-- 服务重启（admin）：POST /api/system/restart，能力探测/审计/升级互斥由后端负责 -->
+        <el-card shadow="never" style="margin-bottom:16px">
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <div class="km-title" style="margin:0">服务重启</div>
+            <div style="flex:1"></div>
+            <el-button size="small" type="warning" plain :loading="restartBusy"
+                       :disabled="!can('admin') || upgTaskActive" @click="confirmRestart">重启服务</el-button>
+          </div>
+          <div class="km-dim" style="font-size:12.5px;margin-top:10px;line-height:1.9">
+            适用于「保存后需重启生效」的配置（如审计保留期、登录态有效期、metrics 推送目标等；日志外发与访问日志管道已支持发布即时生效）。重启期间控制台与数据面约 30 秒不可访问，完成后需重新登录；升级任务进行中时后端会拒绝重启（409）。
+          </div>
+          <el-alert v-if="restartMsg" type="success" :closable="false" show-icon style="margin-top:10px" :title="restartMsg" />
+          <el-alert v-if="restartError" type="error" :closable="false" show-icon style="margin-top:10px" :title="'重启失败'" :description="restartError" />
+        </el-card>
+
         <el-card shadow="never" style="margin-bottom:16px">
           <div class="km-title">数据面监听</div>
           <el-form label-width="160px" label-position="left">
@@ -154,7 +169,7 @@
                 <span class="km-dim" style="font-size:12px">秒 · Bearer Token</span>
                 <el-input v-model="f.metrics_push_token" placeholder="可选" class="km-mono" style="width:200px" show-password />
               </div>
-              <div class="km-dim" style="font-size:12px;margin-top:4px">开启后按间隔将完整 /metrics 文本 POST 到目标（如 Pushgateway）；推送目标变更需重启服务生效</div>
+              <div class="km-dim" style="font-size:12px;margin-top:4px">开启后按间隔将完整 /metrics 文本 POST 到目标（如 Pushgateway）；推送目标变更需重启服务生效（顶部「服务重启」卡片可执行）</div>
               </div>
             </el-form-item>
           </template>
@@ -166,11 +181,11 @@
           <el-form label-width="200px" label-position="left">
             <el-form-item label="审计事件保留天数">
               <el-input-number v-model="f.audit_retention_days" :min="1" :max="365" />
-              <span class="km-dim" style="margin-left:10px;font-size:12px">本机活动库仅保留 N 天（默认 7；保存后需重启服务生效）</span>
+              <span class="km-dim" style="margin-left:10px;font-size:12px">本机活动库仅保留 N 天（默认 7；保存后需重启生效——顶部「服务重启」卡片可执行）</span>
             </el-form-item>
             <el-form-item label="归档快照保留天数">
               <el-input-number v-model="f.archive_retention_days" :min="1" :max="3650" />
-              <span class="km-dim" style="margin-left:10px;font-size:12px">每日 gzip 快照保留 N 天（默认 30；保存后需重启服务生效）</span>
+              <span class="km-dim" style="margin-left:10px;font-size:12px">每日 gzip 快照保留 N 天（默认 30；保存后需重启生效——顶部「服务重启」卡片可执行）</span>
             </el-form-item>
             <el-form-item label="紧急降级（停止日志查询）">
               <el-switch v-model="f.query_degraded" />
@@ -379,7 +394,7 @@
                     <el-input v-model="f.shipper_pass" type="password" show-password class="km-mono" style="width:260px" autocomplete="new-password" />
                   </el-form-item>
                 </template>
-                <div class="km-dim" style="font-size:12px;padding-left:140px">日志外发配置保存后需重启服务生效</div>
+                <div class="km-dim" style="font-size:12px;padding-left:140px">日志外发配置保存发布后即时生效（无需重启）</div>
               </template>
             </template>
           </el-form>
@@ -388,6 +403,7 @@
         <el-card shadow="never">
           <div class="km-title">全量访问日志管道（access_log）</div>
           <el-form label-width="140px" label-position="left">
+            <div class="km-dim" style="font-size:12px;margin:-6px 0 10px">外发配置保存发布后即时生效（无需重启）；关闭开关仅停外发，控制台实时查看保留</div>
             <el-form-item label="启用">
               <el-switch v-model="f.access_enabled" />
             </el-form-item>
@@ -467,7 +483,7 @@
             </el-form-item>
             <el-form-item label="会话空闲超时（分钟）">
               <el-input-number v-model="f.sec_session" :min="0" :max="10080" />
-              <span class="km-dim" style="margin-left:10px;font-size:12px">登录态有效期，保存后需重启服务生效（0 = 默认 12 小时）</span>
+              <span class="km-dim" style="margin-left:10px;font-size:12px">登录态有效期，保存后需重启生效（0 = 默认 12 小时；顶部「服务重启」卡片可执行）</span>
             </el-form-item>
             <el-form-item label="登录错误锁定">
               <el-input-number v-model="f.sec_login_max" :min="3" :max="100" style="width:130px" />
@@ -997,6 +1013,74 @@ function stopUpgradePoll() {
 }
 
 function reloadPage() { location.reload() }
+
+// ===== 服务重启（admin；非 systemd 形态后端 501 附手动指引，错误原文展示）=====
+const restartBusy = ref(false)
+const restartMsg = ref('')
+const restartError = ref('')
+async function confirmRestart() {
+  try {
+    await ElMessageBox.confirm(
+      '重启期间控制台与数据面约 30 秒不可访问，完成后需重新登录。确认现在重启服务？',
+      '重启服务',
+      { confirmButtonText: '确认重启', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  restartBusy.value = true
+  restartMsg.value = ''
+  restartError.value = ''
+  try {
+    await post('/api/system/restart', {})
+  } catch (e) {
+    restartBusy.value = false
+    restartError.value = e.message || String(e) // 409 升级互斥 / 501 非 systemd 手动指引：后端中文原文直接展示
+    return
+  }
+  // 重启提交成功：轮询 /api/status 直到服务恢复（2s 间隔，上限 90s；raw401 防重启窗口 401 跳登录）。
+  // 成功判定需要先观察到至少一次失败探测：延迟提交前/取消场景下首次探测可能仍 200，
+  // 直接把 200 当恢复会把「后端实际未重启」误报为成功（门禁 B-1②）；
+  // 401 表示服务已用新 sessionKey 恢复且旧会话失效，直接判成功（门禁 B-1①）。
+  const deadline = Date.now() + 90000
+  let sawFailure = false
+  const poll = async () => {
+    try {
+      await api('/api/status', { raw401: true })
+      if (!sawFailure) {
+        // 尚未见到任何失败探测：后端很可能还没真正重启（延迟窗内被取消或提交失败），继续等
+        if (Date.now() < deadline) {
+          setTimeout(poll, 2000)
+        } else {
+          restartBusy.value = false
+          restartError.value = '重启提交已受理，但 90 秒内未探测到服务重启——请稍后刷新页面或登录服务器检查（systemctl status kingmoatwaf）'
+        }
+        return
+      }
+      restartBusy.value = false
+      restartMsg.value = '服务已重启完成，请重新登录（如登录态已失效）'
+      return
+    } catch (e) {
+      sawFailure = true
+      if (e && e.status === 401) {
+        // 401 = 服务已恢复且旧会话失效（新 sessionKey）——直接判定成功
+        restartBusy.value = false
+        restartMsg.value = '服务已重启完成，请重新登录（当前会话已失效）'
+        return
+      }
+      // 网络错误/连接拒绝：重启窗口内属预期，继续轮询
+    }
+    if (Date.now() < deadline) {
+      restartPollTimer = setTimeout(poll, 2000)
+    } else {
+      restartBusy.value = false
+      restartError.value = '重启提交已受理，但 90 秒内未探测到服务恢复——请稍后刷新页面或登录服务器检查（systemctl status kingmoatwaf）'
+    }
+  }
+  restartPollTimer = setTimeout(poll, 4000)
+}
+let restartPollTimer = 0
+onBeforeUnmount(() => { if (restartPollTimer) clearTimeout(restartPollTimer) })
 
 // 拦截页定制：可用变量 + 实时预览（示例值替换 + iframe sandbox）
 const bpVars = ['{{request_id}}', '{{rule_id}}', '{{reason}}', '{{client_ip}}', '{{method}}', '{{host}}', '{{url}}', '{{ua}}', '{{timestamp}}']
